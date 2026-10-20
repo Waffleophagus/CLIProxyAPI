@@ -62,6 +62,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 	rootResult := gjson.ParseBytes(rawJSON)
 	mayHaveToolAddition := claudePayloadMayContainToolAddition(rawJSON)
 	toolNameMap := buildReverseMapFromClaudeOriginalToShortFromResult(rootResult, mayHaveToolAddition)
+	signatureTargetModel := translatorcommon.ResolveCodexReplayTargetModel(modelName, rawJSON)
 	template, _ = sjson.SetBytes(template, "model", modelName)
 	inputItems := translatorcommon.NewRawArrayItems(rootResult.Get("messages.#").Int())
 	toolsResult := rootResult.Get("tools")
@@ -214,7 +215,6 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 					appendCommentaryContent(part)
 					return
 				}
-				signatureTargetModel := translatorcommon.ResolveCodexReplayTargetModel(modelName, rawJSON)
 				signature, ok := translatorcommon.CodexReplaySignatureForTarget(signatureTargetModel, rawSignature)
 				if !ok && preserveEmptyThinkingBlocks && part.Get("signature").Type == gjson.String && strings.TrimSpace(rawSignature) != "" &&
 					sigcompat.DetectSignatureProviderForBlock(rawSignature, sigcompat.SignatureBlockKindClaudeThinking) == sigcompat.SignatureProviderUnknown {
