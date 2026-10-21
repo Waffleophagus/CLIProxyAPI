@@ -165,6 +165,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					continue
 				}
 				if eventType == "response.created" {
+					if localFrames == nil && opts.localInterrupt != nil {
+						// A duplex stream may start another response after a terminal one.
+						opts.localInterrupt.begin()
+						localFrames = opts.localInterrupt.framesChan()
+					}
 					responseStarted = true
 					completed = false
 					outputItemsByIndex = make(map[int64][]byte)
@@ -200,6 +205,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					// reason "interrupted", to acknowledge response.interrupt. Closing
 					// the client socket here would block the follow-up request.
 					completed = true
+					// Stop accepting local interrupts before the terminal event reaches the
+					// client: a later interrupt must be rejected, not acknowledged as an
+					// interruption of a response that has already ended.
+					opts.localInterrupt.end()
+					localFrames = nil
 					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
 					completedResponseID = responseCompletedIDFromPayload(payloads[i])
 				}

@@ -377,9 +377,6 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 	targetPath := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
 	targetID := ""
 	if targetAuth := h.findAuthForDelete(name); targetAuth != nil {
-		if !isPluginVirtualSourceDelete(name, targetAuth) {
-			return filepath.Base(name), http.StatusConflict, errPluginVirtualAuth
-		}
 		targetID = strings.TrimSpace(targetAuth.ID)
 		if path := strings.TrimSpace(authAttribute(targetAuth, "path")); path != "" {
 			targetPath = path
@@ -403,20 +400,6 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 	}
 	h.removeAuthsForPath(ctx, targetPath, targetID)
 	return filepath.Base(name), http.StatusOK, nil
-}
-
-func isPluginVirtualSourceDelete(name string, auth *coreauth.Auth) bool {
-	if !coreauth.IsPluginVirtualAuth(auth) {
-		return true
-	}
-	sourcePath := strings.TrimSpace(authAttribute(auth, coreauth.AttributeVirtualSource))
-	if sourcePath == "" {
-		sourcePath = strings.TrimSpace(authAttribute(auth, "path"))
-	}
-	if sourcePath == "" {
-		return false
-	}
-	return strings.EqualFold(filepath.Base(strings.TrimSpace(name)), filepath.Base(sourcePath))
 }
 
 func (h *Handler) findAuthForDelete(name string) *coreauth.Auth {
@@ -481,17 +464,6 @@ func (h *Handler) authIDForPath(path string) string {
 	return id
 }
 
-func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
-	if h.authManager == nil {
-		return nil
-	}
-	auth, err := h.buildAuthFromFileData(path, data)
-	if err != nil {
-		return err
-	}
-	return h.upsertAuthRecord(ctx, auth)
-}
-
 func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
 	if path == "" {
 		return nil, fmt.Errorf("auth path is empty")
@@ -513,6 +485,10 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		return nil, fmt.Errorf("%w: %w", errInvalidAuthFile, errExcluded)
 	}
 	provider, _ := metadata["type"].(string)
+	// Reject removed providers before anything is persisted; loading would ignore the file anyway.
+	if coreauth.IsRemovedAuthProvider(provider) {
+		return nil, fmt.Errorf("%w: credential type %q is no longer supported", errInvalidAuthFile, provider)
+	}
 	if provider == "" {
 		provider = "unknown"
 	}

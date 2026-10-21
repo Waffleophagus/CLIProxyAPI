@@ -474,8 +474,14 @@ func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bo
 // shouldLogRequest determines whether the request should be logged.
 // It skips management endpoints to avoid leaking secrets but allows
 // all other routes, including module-provided ones, to honor request-log.
+// The retired /v0/management prefix stays excluded because old clients may
+// still send credentials there even though the routes return 404.
 func shouldLogRequest(path string) bool {
 	if strings.HasPrefix(path, "/v0/management") || strings.HasPrefix(path, "/v8/management") || strings.HasPrefix(path, "/management") {
+		return false
+	}
+	// Static web UI assets.
+	if path == "/ui" || strings.HasPrefix(path, "/ui/") {
 		return false
 	}
 

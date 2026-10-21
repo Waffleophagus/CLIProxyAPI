@@ -98,10 +98,35 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if !equalStringMap(oldEntry.Headers, newEntry.Headers) {
 		details = append(details, "headers updated")
 	}
+	if oldFollow, newFollow := describeOpenAICompatFollow(oldEntry), describeOpenAICompatFollow(newEntry); oldFollow != newFollow {
+		details = append(details, fmt.Sprintf("follow [%s] -> [%s]", oldFollow, newFollow))
+	}
+	if strings.TrimSpace(oldEntry.FollowInterval) != strings.TrimSpace(newEntry.FollowInterval) {
+		details = append(details, fmt.Sprintf("follow-interval %q -> %q", strings.TrimSpace(oldEntry.FollowInterval), strings.TrimSpace(newEntry.FollowInterval)))
+	}
 	if len(details) == 0 {
 		return ""
 	}
 	return "(" + strings.Join(details, ", ") + ")"
+}
+
+// describeOpenAICompatFollow summarizes follow-mode entries as alias[=pin][~match].
+func describeOpenAICompatFollow(entry config.OpenAICompatibility) string {
+	parts := make([]string, 0)
+	for _, model := range entry.Models {
+		if !model.Follow {
+			continue
+		}
+		part := strings.TrimSpace(model.Alias)
+		if name := strings.TrimSpace(model.Name); name != "" {
+			part += "=" + name
+		}
+		if match := strings.TrimSpace(model.Match); match != "" {
+			part += "~" + match
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ",")
 }
 
 func countAPIKeys(entry config.OpenAICompatibility) int {

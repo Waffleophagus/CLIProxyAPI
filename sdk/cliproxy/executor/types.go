@@ -98,50 +98,7 @@ type Request struct {
 	Metadata map[string]any
 }
 
-// RequestAfterAuthInterceptor rewrites a request after credential selection and before executor translation.
-type RequestAfterAuthInterceptor func(context.Context, RequestAfterAuthInterceptRequest) RequestAfterAuthInterceptResponse
-
-// RequestAfterAuthInterceptRequest describes a selected-auth request before executor translation.
-type RequestAfterAuthInterceptRequest struct {
-	// SourceFormat is the original client protocol format.
-	SourceFormat sdktranslator.Format
-	// ToFormat is the selected upstream protocol format.
-	ToFormat sdktranslator.Format
-	// Model is the selected upstream model for this attempt.
-	Model string
-	// RequestedModel is the client-requested model before alias/model-pool rewriting.
-	RequestedModel string
-	// Stream reports whether the request expects streaming output.
-	Stream bool
-	// Headers contains the current upstream request headers.
-	Headers http.Header
-	// Body contains the current request payload. Treat it as read-only; modifications must be returned in RequestAfterAuthInterceptResponse.Body.
-	Body []byte
-	// Metadata is a best-effort cloned context snapshot. Treat it as read-only and JSON-like.
-	Metadata map[string]any
-}
-
-// RequestAfterAuthInterceptResponse returns selected-auth request modifications.
-type RequestAfterAuthInterceptResponse struct {
-	// Path optionally overrides the inbound request path in Options.Metadata[RequestPathMetadataKey].
-	Path string
-	// Headers replaces matching current request headers and preserves headers not mentioned here.
-	Headers http.Header
-	// Body replaces the current request body only when non-empty.
-	Body []byte
-	// ClearHeaders explicitly removes current request headers before Headers is applied.
-	ClearHeaders []string
-	// Terminate prevents the selected executor from receiving the request.
-	Terminate bool
-	// StatusCode is the downstream HTTP status used when Terminate is true.
-	StatusCode int
-	// ResponseHeaders contains downstream response headers used when Terminate is true.
-	ResponseHeaders http.Header
-	// ResponseBody contains the downstream response body used when Terminate is true.
-	ResponseBody []byte
-}
-
-// RequestTerminatedError carries a plugin-defined downstream response without executing upstream.
+// RequestTerminatedError carries a locally generated downstream response without executing upstream.
 type RequestTerminatedError struct {
 	HTTPStatus int
 	Header     http.Header
@@ -149,10 +106,10 @@ type RequestTerminatedError struct {
 }
 
 func (e *RequestTerminatedError) Error() string {
-	return "request terminated by plugin"
+	return "request terminated"
 }
 
-// StatusCode returns the plugin-defined downstream HTTP status.
+// StatusCode returns the downstream HTTP status.
 func (e *RequestTerminatedError) StatusCode() int {
 	if e == nil {
 		return 0
@@ -160,7 +117,7 @@ func (e *RequestTerminatedError) StatusCode() int {
 	return e.HTTPStatus
 }
 
-// ResponseHeaders returns a copy of the plugin-defined downstream headers.
+// ResponseHeaders returns a copy of the downstream headers.
 func (e *RequestTerminatedError) ResponseHeaders() http.Header {
 	if e == nil {
 		return nil
@@ -168,7 +125,7 @@ func (e *RequestTerminatedError) ResponseHeaders() http.Header {
 	return e.Header.Clone()
 }
 
-// ResponseBody returns a copy of the plugin-defined downstream body.
+// ResponseBody returns a copy of the downstream body.
 func (e *RequestTerminatedError) ResponseBody() []byte {
 	if e == nil {
 		return nil
@@ -214,12 +171,8 @@ type Options struct {
 	ResponseFormat sdktranslator.Format
 	// Metadata carries extra execution hints shared across selection and executors.
 	Metadata map[string]any
-	// RequestAfterAuthInterceptor runs after credential selection and before executor translation.
-	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
 	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
 	WebSocketResponseObserver WebSocketResponseObserver
-	// ExecutionLifecycle owns Home-dispatched execution resources. Executors must not add it to request metadata.
-	ExecutionLifecycle ExecutionLifecycle
 	// ProxyURL overrides the credential and global proxy for this execution only.
 	// Credential refresh and token exchange must ignore it.
 	ProxyURL string

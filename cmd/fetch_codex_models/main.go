@@ -86,7 +86,7 @@ func main() {
 	if strings.TrimSpace(configPath) == "" {
 		configPath = filepath.Join(wd, "config.yaml")
 	}
-	cfg, err := config.LoadConfigOptional(configPath, false)
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to load config file %s: %v\n", configPath, err)
 		os.Exit(1)

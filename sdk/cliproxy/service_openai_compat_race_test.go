@@ -139,9 +139,9 @@ func TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for i := 0; i < iterations; i++ {
-			putBody := fmt.Sprintf(`[{"name":"compat-%d","base-url":"https://compat.example.com/v1","api-key-entries":[{"api-key":"sk-%d"}],"models":[{"name":"model-%d","alias":"alias-%d"}]}]`, i, i, i, i)
+			putBody := fmt.Sprintf(`[{"name":"compat-%d","base-url":"https://compat.example.com/v1","keys":[{"api-key":"sk-%d"}],"models":[{"name":"model-%d","alias":"alias-%d"}]}]`, i, i, i, i)
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPut, "/v0/management/openai-compatibility", strings.NewReader(putBody))
+			req := httptest.NewRequest(http.MethodPut, "/v8/management/config/api-keys/openai-compatibility", strings.NewReader(putBody))
 			req.Header.Set("Authorization", "Bearer "+secretKey)
 			req.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(rec, req)
@@ -158,7 +158,7 @@ func TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559(t *testing.T) {
 		for i := 0; i < iterations; i++ {
 			patchBody := fmt.Sprintf(`{"name":%q,"prefix":"pfx-%d"}`, fileName, i)
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(patchBody))
+			req := httptest.NewRequest(http.MethodPatch, "/v8/management/credentials/fields", strings.NewReader(patchBody))
 			req.Header.Set("Authorization", "Bearer "+secretKey)
 			req.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(rec, req)
@@ -206,11 +206,6 @@ func TestPutOpenAICompatConcurrentWithConfigReloadAndAuthUpdate_Issue6559(t *tes
 		t.Fatalf("write auth file: %v", errWrite)
 	}
 
-	configPath := filepath.Join(authDir, "config.yaml")
-	if errWrite := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); errWrite != nil {
-		t.Fatalf("write config file: %v", errWrite)
-	}
-
 	reg := internalregistry.GetGlobalRegistry()
 	authID := fileName
 	reg.UnregisterClient(authID)
@@ -222,6 +217,13 @@ func TestPutOpenAICompatConcurrentWithConfigReloadAndAuthUpdate_Issue6559(t *tes
 	hashedSecret, errHash := bcrypt.GenerateFromPassword([]byte(secretKey), bcrypt.MinCost)
 	if errHash != nil {
 		t.Fatalf("bcrypt hash failed: %v", errHash)
+	}
+
+	// v8 management writes reload from disk, so the file must carry the management settings.
+	configPath := filepath.Join(authDir, "config.yaml")
+	configRaw := fmt.Sprintf("port: 8317\nremote-management:\n  allow-remote: true\n  secret-key: %q\n", string(hashedSecret))
+	if errWrite := os.WriteFile(configPath, []byte(configRaw), 0o600); errWrite != nil {
+		t.Fatalf("write config file: %v", errWrite)
 	}
 
 	buildCfg := func(iter int) *config.Config {
@@ -298,9 +300,9 @@ func TestPutOpenAICompatConcurrentWithConfigReloadAndAuthUpdate_Issue6559(t *tes
 		defer wg.Done()
 		<-start
 		for i := 0; i < iterations; i++ {
-			putBody := fmt.Sprintf(`[{"name":"compat-%d","base-url":"https://compat.example.com/v1","api-key-entries":[{"api-key":"sk-%d"}],"models":[{"name":"model-%d","alias":"alias-%d"}]}]`, i, i, i, i)
+			putBody := fmt.Sprintf(`[{"name":"compat-%d","base-url":"https://compat.example.com/v1","keys":[{"api-key":"sk-%d"}],"models":[{"name":"model-%d","alias":"alias-%d"}]}]`, i, i, i, i)
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPut, "/v0/management/openai-compatibility", strings.NewReader(putBody))
+			req := httptest.NewRequest(http.MethodPut, "/v8/management/config/api-keys/openai-compatibility", strings.NewReader(putBody))
 			req.Header.Set("Authorization", "Bearer "+secretKey)
 			req.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(rec, req)
@@ -317,7 +319,7 @@ func TestPutOpenAICompatConcurrentWithConfigReloadAndAuthUpdate_Issue6559(t *tes
 		for i := 0; i < iterations; i++ {
 			patchBody := fmt.Sprintf(`{"name":%q,"prefix":"pfx-%d"}`, fileName, i)
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(patchBody))
+			req := httptest.NewRequest(http.MethodPatch, "/v8/management/credentials/fields", strings.NewReader(patchBody))
 			req.Header.Set("Authorization", "Bearer "+secretKey)
 			req.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(rec, req)

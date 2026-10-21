@@ -16,8 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/slugs"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -49,20 +49,19 @@ type Handler struct {
 	failedAttempts          map[string]*attemptInfo // keyed by client IP
 	authManager             *coreauth.Manager
 	tokenStore              coreauth.Store
-	localPassword           string
 	allowRemoteOverride     bool
 	envSecret               string
 	logDir                  string
 	postAuthHook            coreauth.PostAuthHook
 	postAuthPersistHook     coreauth.PostAuthHook
-	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config)
-	pluginStoreRegistryURL  string
-	pluginStoreHTTPClient   pluginstore.HTTPDoer
-	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
-	pluginReleases          pluginReleaseCache
 	siwcOAuthFactory        func(*config.Config) siwcOAuthService
 	siwcCommitMu            sync.Mutex
+	slugResolver            *slugs.Manager
+	usageRuntime            *usagestore.Runtime
+	verifiedKeys            verifiedKeyCache
+	// compareKeyHash overrides bcrypt.CompareHashAndPassword in tests.
+	compareKeyHash func(hash, password []byte) error
 }
 
 type configReloadSnapshot struct {
@@ -86,6 +85,11 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	}
 	h.startAttemptCleanup()
 	return h
+}
+
+// NewHandlerWithoutConfigFilePath creates a management handler that skips config file persistence.
+func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manager) *Handler {
+	return NewHandler(cfg, "", manager)
 }
 
 // startAttemptCleanup launches a background goroutine that periodically
@@ -116,11 +120,6 @@ func (h *Handler) purgeStaleAttempts() {
 			delete(h.failedAttempts, ip)
 		}
 	}
-}
-
-// NewHandler creates a new management handler instance.
-func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manager) *Handler {
-	return NewHandler(cfg, "", manager)
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
@@ -162,18 +161,6 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Lock()
 	if h.authManager != manager {
 		h.authManager = manager
-	}
-	h.mu.Unlock()
-}
-
-// SetPluginHost updates the plugin host used by plugin-backed management endpoints.
-func (h *Handler) SetPluginHost(host *pluginhost.Host) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	if h.pluginHost != host {
-		h.pluginHost = host
 	}
 	h.mu.Unlock()
 }
@@ -226,12 +213,9 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot 
 		return
 	}
 	hook := h.configReloadHook
-	host := h.pluginHost
 	h.mu.Unlock()
 	if hook != nil {
 		hook(ctx, snapshot.cfg)
-	} else if host != nil {
-		host.ApplyConfig(ctx, snapshot.cfg)
 	}
 
 	h.mu.Lock()
@@ -260,9 +244,6 @@ func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, snap
 		h.reloadConfigAfterManagementSave(reloadCtx, snapshot)
 	}()
 }
-
-// SetLocalPassword configures the runtime-local password accepted for localhost requests.
-func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
 
 // SetLogDirectory updates the directory where main.log should be looked up.
 func (h *Handler) SetLogDirectory(dir string) {
@@ -295,7 +276,6 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		c.Header("X-CPA-VERSION", buildinfo.Version)
 		c.Header("X-CPA-COMMIT", buildinfo.Commit)
 		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
-		c.Header("X-CPA-SUPPORT-PLUGIN", pluginhost.SupportPluginHeaderValue())
 
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
@@ -397,18 +377,11 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return false, http.StatusForbidden, "remote management key not set"
 	}
 
+	// A request without any key reveals nothing about the secret, so it does
+	// not count toward the brute-force ban. The web UI probes this way to
+	// detect tailnet identity access before asking for a key.
 	if provided == "" {
-		fail()
 		return false, http.StatusUnauthorized, "missing management key"
-	}
-
-	if localClient {
-		if lp := h.localPassword; lp != "" {
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
-				reset()
-				return true, 0, ""
-			}
-		}
 	}
 
 	if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
@@ -416,7 +389,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return true, 0, ""
 	}
 
-	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
+	if secretHash == "" || !h.verifySecretHash(secretHash, provided) {
 		fail()
 		return false, http.StatusUnauthorized, "invalid management key"
 	}
@@ -426,64 +399,20 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	return true, 0, ""
 }
 
-// persistLocked saves the current in-memory config to disk.
-// It expects the caller to hold h.mu.
-func (h *Handler) persistLocked(c *gin.Context) bool {
-	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+// verifySecretHash checks provided against the configured bcrypt hash,
+// reusing a recent successful verification of the same key and hash.
+func (h *Handler) verifySecretHash(secretHash, provided string) bool {
+	digest := verifiedKeyDigest(secretHash, provided)
+	if h.verifiedKeys.contains(digest) {
+		return true
+	}
+	compare := h.compareKeyHash
+	if compare == nil {
+		compare = bcrypt.CompareHashAndPassword
+	}
+	if compare([]byte(secretHash), []byte(provided)) != nil {
 		return false
 	}
-	snapshot := h.reloadSnapshotConfigLocked()
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	var reqCtx context.Context
-	if c != nil && c.Request != nil {
-		reqCtx = c.Request.Context()
-	}
-	h.reloadConfigAfterManagementSaveAsync(reqCtx, snapshot)
+	h.verifiedKeys.add(digest)
 	return true
-}
-
-// Helper methods for simple types. The setter and the save run under h.mu, so a
-// reload publishing h.cfg cannot replace it between the change and the save.
-func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
-	var body struct {
-		Value *bool `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set(*body.Value)
-	h.persistLocked(c)
-}
-
-func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
-	var body struct {
-		Value *int `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set(*body.Value)
-	h.persistLocked(c)
-}
-
-func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
-	var body struct {
-		Value *string `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set(*body.Value)
-	h.persistLocked(c)
 }

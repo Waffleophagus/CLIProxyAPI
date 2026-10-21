@@ -42,7 +42,7 @@ func TestDecoratorPreservesSelectionAndClientPolicy(t *testing.T) {
 	if got == c || c.Transport != tr || got.Transport.(*wrappedRoundTripper).RoundTripper != tr || got.Timeout != c.Timeout || got.CheckRedirect == nil {
 		t.Fatal("client or transport policy changed")
 	}
-	if Decorate(WithoutDecorator(ctx), c) != c || calls != 1 {
+	if Decorate(WithDecorator(ctx, nil), c) != c || calls != 1 {
 		t.Fatal("intermediate suppression failed")
 	}
 	if Decorate(WithDecorator(ctx, func(http.RoundTripper) http.RoundTripper { return nil }), c) != c {
@@ -84,8 +84,8 @@ func TestInheritDecoratorPreservesExplicitParentAndPropagatesFallback(t *testing
 		t.Fatal("expected explicit parent decorator to take precedence")
 	}
 
-	suppressedParent := InheritDecorator(WithoutDecorator(context.Background()), reqCtx)
+	suppressedParent := InheritDecorator(WithDecorator(context.Background(), nil), reqCtx)
 	if Decorate(suppressedParent, c) != c {
-		t.Fatal("expected WithoutDecorator on parent context to remain suppressed")
+		t.Fatal("expected nil decorator on parent context to remain suppressed")
 	}
 }

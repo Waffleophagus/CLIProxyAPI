@@ -130,23 +130,7 @@ func TestModelExecutionRejectsSpeechOnlyModelOutsideSpeechProtocol(t *testing.T)
 	})
 	requireSpeechOnlyError(t, errMsg)
 
-	_, errMsg = handler.ExecuteModel(context.Background(), ModelExecutionRequest{
-		EntryProtocol: "openai",
-		ExitProtocol:  "openai",
-		Model:         "grok-tts",
-		Body:          body,
-	})
-	requireSpeechOnlyError(t, errMsg)
-
 	_, errMsg = handler.ExecuteProtocolWithAuthManager(context.Background(), ProtocolExecutionRequest{
-		EntryProtocol: "openai-speech",
-		ExitProtocol:  "openai-speech",
-		Model:         "grok-tts",
-		Body:          body,
-	})
-	requireNotSpeechOnlyError(t, errMsg)
-
-	_, errMsg = handler.ExecuteModel(context.Background(), ModelExecutionRequest{
 		EntryProtocol: "openai-speech",
 		ExitProtocol:  "openai-speech",
 		Model:         "grok-tts",
@@ -155,40 +139,10 @@ func TestModelExecutionRejectsSpeechOnlyModelOutsideSpeechProtocol(t *testing.T)
 	requireNotSpeechOnlyError(t, errMsg)
 }
 
-func TestHandlerProvidersForExecutionRejectsSpeechOnlyModelOnProviderRoute(t *testing.T) {
+func TestHandlerProvidersForExecutionRejectsSpeechOnlyModelOnForcedProvider(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
-	cases := []struct {
-		name          string
-		modelName     string
-		originalModel string
-		decision      modelRouteDecision
-		execOptions   modelExecutionOptions
-	}{
-		{
-			name:          "target-model",
-			modelName:     "ignored",
-			originalModel: "original-model",
-			decision:      modelRouteDecision{Provider: "xai", Model: "grok-tts"},
-		},
-		{
-			name:          "original-model-thinking-suffix",
-			modelName:     "ignored",
-			originalModel: "grok-voice-tts-1.0(auto)",
-			decision:      modelRouteDecision{Provider: "xai"},
-		},
-		{
-			name:          "forced-provider",
-			modelName:     "xai/grok-tts",
-			originalModel: "xai/grok-tts",
-			execOptions:   modelExecutionOptions{ForcedProvider: "xai"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, errMsg := handler.providersForExecution(tc.modelName, tc.originalModel, false, tc.decision, tc.execOptions)
-			requireSpeechOnlyError(t, errMsg)
-		})
-	}
+	_, _, errMsg := handler.providersForExecution("xai/grok-tts", "xai/grok-tts", false, modelExecutionOptions{ForcedProvider: "xai"})
+	requireSpeechOnlyError(t, errMsg)
 }
 
 func TestSpeechOnlyModelsKeepImageAndVideoBehavior(t *testing.T) {

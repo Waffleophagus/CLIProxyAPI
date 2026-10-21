@@ -26,7 +26,7 @@ func TestManager_RefreshAuth_DropsStaleConcurrentCredential(t *testing.T) {
 	store := newMemoryAuthTestStore()
 	manager := NewManager(store, &RoundRobinSelector{}, nil)
 	executor := &issue6417BlockingRefreshExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -34,7 +34,7 @@ func TestManager_RefreshAuth_DropsStaleConcurrentCredential(t *testing.T) {
 
 	auth := &Auth{
 		ID:       "issue-6417-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
 			"access_token":  "access-token-a",

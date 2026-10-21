@@ -29,8 +29,7 @@ func newIssue6631Handler(t *testing.T, raw string) (*Handler, string, *gin.Engin
 	}
 	h := &Handler{cfg: cfg, configFilePath: path}
 	router := gin.New()
-	router.PUT("/v0/management/request-retry", h.PutRequestRetry)
-	router.PUT("/v0/management/max-retry-credentials", h.PutMaxRetryCredentials)
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
 	return h, path, router
 }
 
@@ -64,9 +63,9 @@ func TestSetConfigIgnoresConfigLoadedBeforeManagementSave_Issue6631(t *testing.T
 		t.Fatal(errLoad)
 	}
 
-	putIssue6631Value(t, router, "/v0/management/request-retry", `{"value":5}`)
+	putIssue6631Value(t, router, "/v8/management/config/routing/retry/request-retry", `5`)
 	h.SetConfig(staleReload)
-	putIssue6631Value(t, router, "/v0/management/max-retry-credentials", `{"value":7}`)
+	putIssue6631Value(t, router, "/v8/management/config/routing/retry/max-retry-credentials", `7`)
 
 	h.mu.Lock()
 	memoryRetry, memoryCredentials := h.cfg.RequestRetry, h.cfg.MaxRetryCredentials
@@ -99,7 +98,7 @@ func TestSetConfigAppliesCurrentFileAndNonFileConfigs_Issue6631(t *testing.T) {
 		t.Fatalf("request-retry after external edit = %d, want 9", gotExternal)
 	}
 
-	// Configs that were not loaded from the file, such as Home updates, still apply.
+	// Configs that were not loaded from the file still apply.
 	h.SetConfig(&config.Config{RequestRetry: 11})
 	h.mu.Lock()
 	gotNonFile := h.cfg.RequestRetry
@@ -137,8 +136,8 @@ func TestManagementWritesSurviveConcurrentReloadPublications_Issue6631(t *testin
 
 	const writes = 40
 	for i := 1; i <= writes; i++ {
-		putIssue6631Value(t, router, "/v0/management/request-retry", fmt.Sprintf(`{"value":%d}`, i))
-		putIssue6631Value(t, router, "/v0/management/max-retry-credentials", fmt.Sprintf(`{"value":%d}`, i))
+		putIssue6631Value(t, router, "/v8/management/config/routing/retry/request-retry", fmt.Sprintf(`%d`, i))
+		putIssue6631Value(t, router, "/v8/management/config/routing/retry/max-retry-credentials", fmt.Sprintf(`%d`, i))
 	}
 	stopPublisher()
 

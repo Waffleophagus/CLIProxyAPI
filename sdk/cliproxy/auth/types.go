@@ -60,7 +60,7 @@ type Auth struct {
 	Generation uint64 `json:"generation,omitempty"`
 	// Index is a stable runtime identifier derived from auth metadata (not persisted).
 	Index string `json:"-"`
-	// Provider is the upstream provider key (e.g. "gemini", "claude").
+	// Provider is the upstream provider key (e.g. "claude", "codex").
 	Provider string `json:"provider"`
 	// Prefix optionally namespaces models for routing (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `json:"prefix,omitempty"`
@@ -215,49 +215,6 @@ func (a *Auth) FileSnapshotMatchesDisk() bool {
 		return false
 	}
 	return canonicalAuthFileDigest(data) == a.fileSnapshotDigest
-}
-
-const (
-	AttributeAuthIndexSeed   = "auth_index_seed"
-	AttributePluginVirtual   = "plugin_virtual"
-	AttributeVirtualSource   = "virtual_source"
-	pluginVirtualAttrEnabled = "true"
-)
-
-// MarkPluginVirtualAuth marks an auth that was expanded from a plugin-owned source file.
-func MarkPluginVirtualAuth(auth *Auth, sourcePath string, ordinal int) {
-	if auth == nil {
-		return
-	}
-	if auth.Attributes == nil {
-		auth.Attributes = make(map[string]string)
-	}
-	auth.Attributes[AttributePluginVirtual] = pluginVirtualAttrEnabled
-	sourcePath = strings.TrimSpace(sourcePath)
-	if sourcePath != "" {
-		auth.Attributes[AttributeVirtualSource] = sourcePath
-	}
-	seedID := strings.TrimSpace(auth.ID)
-	if seedID == "" {
-		seedID = strings.TrimSpace(auth.FileName)
-	}
-	if seedID == "" {
-		seedID = strconv.Itoa(ordinal)
-	}
-	auth.Attributes[AttributeAuthIndexSeed] = strings.Join([]string{
-		strings.ToLower(strings.TrimSpace(auth.Provider)),
-		sourcePath,
-		seedID,
-		strconv.Itoa(ordinal),
-	}, "|")
-}
-
-// IsPluginVirtualAuth reports whether an auth was expanded from a plugin-owned source file.
-func IsPluginVirtualAuth(auth *Auth) bool {
-	if auth == nil || len(auth.Attributes) == 0 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(auth.Attributes[AttributePluginVirtual]), pluginVirtualAttrEnabled)
 }
 
 const (
@@ -482,12 +439,6 @@ func (a *Auth) indexSeed() string {
 		return ""
 	}
 
-	if a.Attributes != nil {
-		if seed := strings.TrimSpace(a.Attributes[AttributeAuthIndexSeed]); seed != "" {
-			return AttributeAuthIndexSeed + ":" + seed
-		}
-	}
-
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
 	compatName := ""
 	baseURL := ""
@@ -537,10 +488,6 @@ func (a *Auth) indexSeed() string {
 		switch {
 		case compatName != "" || strings.EqualFold(provider, "openai-compatibility"):
 			apiPrefix = "openai-compatibility"
-		case strings.EqualFold(provider, "gemini"):
-			apiPrefix = "gemini-api-key"
-		case strings.EqualFold(provider, "gemini-interactions"):
-			apiPrefix = "interactions-api-key"
 		case strings.EqualFold(provider, "codex"):
 			apiPrefix = "codex-api-key"
 		case strings.EqualFold(provider, "xai"):

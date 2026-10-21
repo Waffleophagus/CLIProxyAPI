@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestLoadConfigOptional_ClaudeHeaderDefaults(t *testing.T) {
+func TestLoadConfig_ClaudeHeaderDefaults(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	configYAML := []byte(`
@@ -25,9 +25,9 @@ claude-header-defaults:
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	cfg, err := LoadConfigOptional(configPath, false)
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", err)
+		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
 	if got := cfg.ClaudeHeaderDefaults.UserAgent; got != "claude-cli/2.1.70 (external, cli)" {

@@ -14,12 +14,12 @@ import (
 func TestManager_ForceRefreshAuth_ClearsErrorAndRefreshes(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
-	executor := &countingRefreshExecutor{id: "antigravity"}
+	executor := &countingRefreshExecutor{id: "acme"}
 	manager.RegisterExecutor(executor)
 
 	auth := &Auth{
 		ID:          "ag-err",
-		Provider:    "antigravity",
+		Provider:    "acme",
 		Status:      StatusError,
 		Unavailable: true,
 		LastError:   &Error{Code: "unauthorized", Message: "token revoked"},
@@ -58,22 +58,22 @@ func TestManager_ForceRefreshAuth_ClearsErrorAndRefreshes(t *testing.T) {
 func TestManager_ForceRefreshAll(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
-	executor := &countingRefreshExecutor{id: "antigravity"}
+	executor := &countingRefreshExecutor{id: "acme"}
 	manager.RegisterExecutor(executor)
 
 	auth1 := &Auth{
 		ID:       "ag-1",
-		Provider: "antigravity",
+		Provider: "acme",
 		Metadata: map[string]any{"refresh_token": "ref-1"},
 	}
 	auth2 := &Auth{
 		ID:       "ag-2",
-		Provider: "antigravity",
+		Provider: "acme",
 		Metadata: map[string]any{"refresh_token": "ref-2"},
 	}
 	auth3NoRef := &Auth{
 		ID:       "ag-no-ref",
-		Provider: "antigravity",
+		Provider: "acme",
 		Metadata: map[string]any{"access_token": "no-refresh"},
 	}
 	_, _ = manager.Register(ctx, auth1)
@@ -101,7 +101,7 @@ func TestManager_ForceRefreshAuth_PreservesErrorOnFailure(t *testing.T) {
 
 	auth := &Auth{
 		ID:          "ag-fail",
-		Provider:    "antigravity",
+		Provider:    "acme",
 		Status:      StatusError,
 		Unavailable: true,
 		LastError:   &Error{Code: "unauthorized", Message: "token revoked"},
@@ -186,7 +186,7 @@ func TestManager_ForceRefreshAll_WorkersBounded(t *testing.T) {
 	manager.runtimeConfig.Store(&internalconfig.Config{AuthAutoRefreshWorkers: 2})
 
 	executor := &concurrencyTrackingRefreshExecutor{
-		id:        "antigravity",
+		id:        "acme",
 		enteredCh: make(chan struct{}, 6),
 		releaseCh: make(chan struct{}),
 	}
@@ -195,7 +195,7 @@ func TestManager_ForceRefreshAll_WorkersBounded(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		auth := &Auth{
 			ID:       fmt.Sprintf("ag-%d", i),
-			Provider: "antigravity",
+			Provider: "acme",
 			Metadata: map[string]any{"refresh_token": fmt.Sprintf("ref-%d", i)},
 		}
 		if _, err := manager.Register(ctx, auth); err != nil {
@@ -239,13 +239,13 @@ func TestManager_ForceRefreshAll_CanceledContextSkipsExecutors(t *testing.T) {
 
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.runtimeConfig.Store(&internalconfig.Config{AuthAutoRefreshWorkers: 2})
-	executor := &countingRefreshExecutor{id: "antigravity"}
+	executor := &countingRefreshExecutor{id: "acme"}
 	manager.RegisterExecutor(executor)
 
 	for i := 0; i < 6; i++ {
 		auth := &Auth{
 			ID:       fmt.Sprintf("ag-%d", i),
-			Provider: "antigravity",
+			Provider: "acme",
 			Metadata: map[string]any{"refresh_token": fmt.Sprintf("ref-%d", i)},
 		}
 		if _, err := manager.Register(context.Background(), auth); err != nil {
@@ -301,7 +301,7 @@ func TestManager_ForceRefreshAll_DynamicCancellationSkipsRemaining(t *testing.T)
 	manager.runtimeConfig.Store(&internalconfig.Config{AuthAutoRefreshWorkers: 2})
 
 	executor := &concurrencyTrackingRefreshExecutor{
-		id:        "antigravity",
+		id:        "acme",
 		enteredCh: make(chan struct{}, 6),
 		releaseCh: make(chan struct{}),
 	}
@@ -310,7 +310,7 @@ func TestManager_ForceRefreshAll_DynamicCancellationSkipsRemaining(t *testing.T)
 	for i := 0; i < 6; i++ {
 		auth := &Auth{
 			ID:       fmt.Sprintf("ag-%d", i),
-			Provider: "antigravity",
+			Provider: "acme",
 			Metadata: map[string]any{"access_token": "old-access", "refresh_token": "old-refresh"},
 		}
 		if _, err := manager.Register(WithSkipPersist(context.Background()), auth); err != nil {

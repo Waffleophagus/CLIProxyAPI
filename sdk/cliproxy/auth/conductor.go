@@ -10,7 +10,6 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -103,20 +102,6 @@ type Selector interface {
 	Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error)
 }
 
-type PluginScheduler interface {
-	PickAuth(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error)
-}
-
-// PluginSchedulerAcrossPriorities is an optional interface implemented by schedulers
-// that opt into receiving candidates across all priority tiers.
-type PluginSchedulerAcrossPriorities interface {
-	SchedulerWantsAcrossPriorities() bool
-}
-
-type pluginSchedulerState interface {
-	HasScheduler() bool
-}
-
 // StoppableSelector is an optional interface for selectors that hold resources.
 // Selectors that implement this interface will have Stop called during shutdown.
 type StoppableSelector interface {
@@ -187,20 +172,8 @@ type Manager struct {
 	authEpochs         map[string]uint64
 	authChangeWatchers map[string]map[chan struct{}]struct{}
 	scheduler          *authScheduler
-	// pluginScheduler runs outside m.mu before falling back to native selection.
-	pluginScheduler PluginScheduler
-	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
-	homeRuntimeAuths map[string]map[string]*Auth
-	// homeRuntimeAuthOwners prevents a stale selection from clearing a replacement auth.
-	homeRuntimeAuthOwners map[string]map[string]*HomeDispatchSelection
-	// homeSessionSelections owns retained Home selections for websocket sessions.
-	homeSessionSelections map[string]map[homeSessionSelectionKey]*HomeDispatchSelection
-	homeSessionLocks      sync.Map
-	homeSessionAliases    homeSessionAliasCache
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
-	providerOffsets             map[string]int
-	homeDispatchBundle          atomic.Pointer[HomeDispatchBundle]
-	homeInFlightPublisherConfig atomic.Pointer[HomeInFlightPublisherConfig]
+	providerOffsets map[string]int
 
 	// Retry controls request retry behavior.
 	requestRetry        atomic.Int32
@@ -253,26 +226,19 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:                 store,
-		authLoadGate:          semaphore.NewWeighted(math.MaxInt64),
-		executors:             make(map[string]ProviderExecutor),
-		selector:              selector,
-		hook:                  hook,
-		auths:                 make(map[string]*Auth),
-		authEpochs:            make(map[string]uint64),
-		homeRuntimeAuths:      make(map[string]map[string]*Auth),
-		homeRuntimeAuthOwners: make(map[string]map[string]*HomeDispatchSelection),
-		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
-		providerOffsets:       make(map[string]int),
-		modelPoolOffsets:      make(map[string]int),
+		store:            store,
+		authLoadGate:     semaphore.NewWeighted(math.MaxInt64),
+		executors:        make(map[string]ProviderExecutor),
+		selector:         selector,
+		hook:             hook,
+		auths:            make(map[string]*Auth),
+		authEpochs:       make(map[string]uint64),
+		providerOffsets:  make(map[string]int),
+		modelPoolOffsets: make(map[string]int),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})
-	defaultInFlightConfig, errInFlightConfig := HomeInFlightPublisherConfigFromConfig(internalconfig.DefaultCredentialInFlightConfig())
-	if errInFlightConfig == nil {
-		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
-	}
 	manager.scheduler = newAuthScheduler(selector)
 	return manager
 }

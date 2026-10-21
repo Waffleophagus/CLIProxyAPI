@@ -7,9 +7,9 @@ import (
 	"github.com/gin-gonic/gin"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/safemode"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/webui"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -21,26 +21,15 @@ var corsExposedResponseHeaders = []string{
 	"X-CPA-VERSION",
 	"X-CPA-COMMIT",
 	"X-CPA-BUILD-DATE",
-	"X-CPA-SUPPORT-PLUGIN",
-	"X-CPA-HOME-VERSION",
-	"X-CPA-HOME-BUILD-DATE",
 	"X-SERVER-VERSION",
 	"X-SERVER-BUILD-DATE",
 	"Location",
 	"Retry-After",
-	// Cross-origin management clients must read the config version token to
-	// send it back as If-Match on writes.
-	"ETag",
 	"X-Request-Id",
 	"OpenAI-Request-Id",
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
-
-const (
-	exampleAPIKeyManagementPath = "/management.html"
-	exampleAPIKeyManagementURL  = "/management.html?safe-mode=configure"
-)
 
 func (s *Server) maxRequestBodyBytes() int64 {
 	if s == nil {
@@ -74,29 +63,6 @@ func (s *Server) maxRequestBodyBytesMiddleware() gin.HandlerFunc {
 	}
 }
 
-func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		cfg := s.getConfig()
-		if s == nil || cfg == nil || !cfg.Home.Enabled {
-			c.Next()
-			return
-		}
-		if c != nil && c.Request != nil {
-			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v8/management/") || path == "/v8/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" {
-				c.Next()
-				return
-			}
-		}
-		client := home.Current()
-		if client == nil || !client.HeartbeatOK() {
-			c.AbortWithStatus(http.StatusServiceUnavailable)
-			return
-		}
-		c.Next()
-	}
-}
-
 func (s *Server) exampleAPIKeySafeModeRequired(cfg *config.Config) bool {
 	return s != nil && s.exampleAPIKeySafeModeEnabled && cfg != nil && safemode.HasExampleAPIKeys(cfg.APIKeys)
 }
@@ -109,11 +75,7 @@ func (s *Server) exampleAPIKeySafeModeMiddleware() gin.HandlerFunc {
 		}
 
 		path := c.Request.URL.Path
-		if path == exampleAPIKeyManagementPath && c.Query("safe-mode") == "configure" {
-			c.Next()
-			return
-		}
-		if (path == "/" || path == exampleAPIKeyManagementPath) && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) {
+		if path == "/" && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) {
 			s.serveExampleAPIKeyWarningPage(c)
 			return
 		}
@@ -125,7 +87,7 @@ func (s *Server) exampleAPIKeySafeModeMiddleware() gin.HandlerFunc {
 		c.Header("X-CPA-SAFE-MODE", "example-api-key")
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 			"error":   "unsafe_example_api_key",
-			"message": "Proxy API endpoints are disabled because api-keys contains template values. Open /management.html?safe-mode=configure, update api-keys in Management, then retry.",
+			"message": "Proxy API endpoints are disabled because api-keys contains template values. Update api-keys in the config file (or via /v8/management/config), then retry.",
 		})
 	}
 }
@@ -143,7 +105,11 @@ func (s *Server) serveExampleAPIKeyWarningPage(c *gin.Context) {
 		c.Abort()
 		return
 	}
-	c.String(http.StatusOK, safemode.ExampleAPIKeyWarningPageHTML(keys, exampleAPIKeyManagementURL))
+	uiPath := ""
+	if s.webUIEnabled() {
+		uiPath = webui.BasePath
+	}
+	c.String(http.StatusOK, safemode.ExampleAPIKeyWarningPageHTML(keys, uiPath))
 	c.Abort()
 }
 
@@ -163,12 +129,18 @@ func isExampleAPIKeySafeModeProxyPath(path string) bool {
 }
 
 // corsMiddleware returns a Gin middleware handler that adds CORS headers
-// to every response, allowing cross-origin requests.
+// to every response, allowing cross-origin requests to the inference API.
+// The management API is same-origin only: its responses carry no CORS headers
+// and preflights to it are not answered, so browsers block cross-origin pages.
 //
 // Returns:
 //   - gin.HandlerFunc: The CORS middleware handler
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if c.Request != nil && c.Request.URL != nil && isManagementPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "*")
@@ -182,6 +154,26 @@ func corsMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// usageEndpointMiddleware stores the matched route template in the request
+// context on the request goroutine, so usage records published later (for
+// example by streaming goroutines after the handler returned) never read the
+// pooled gin.Context.
+func usageEndpointMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if path := c.FullPath(); path != "" {
+			c.Request = c.Request.WithContext(coreusage.WithEndpoint(c.Request.Context(), path))
+		}
+		c.Next()
+	}
+}
+
+// isManagementPath reports whether path is under the management API.
+func isManagementPath(path string) bool {
+	return path == managementPathPrefix || strings.HasPrefix(path, managementPathPrefix+"/")
+}
+
+const managementPathPrefix = "/v8/management"
 
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,

@@ -85,7 +85,7 @@ func TestGetOAuthSessionHidesCompletedSession(t *testing.T) {
 		t.Fatalf("GetOAuthSession() = (%q, %q, true), want completed session hidden", provider, status)
 	}
 
-	_, _, _, _, completed, detailsOK := GetOAuthSessionDetails("completed-state")
+	_, _, completed, detailsOK := GetOAuthSessionDetails("completed-state")
 	if !detailsOK || !completed {
 		t.Fatalf("GetOAuthSessionDetails() completed/ok = %t/%t, want true/true", completed, detailsOK)
 	}
@@ -120,7 +120,7 @@ func TestOAuthCallbackRejectsCompletedSession(t *testing.T) {
 
 	handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
 	router := gin.New()
-	router.POST("/oauth-callback", handler.PostOAuthCallback)
+	router.POST("/oauth-callback", handler.PostOAuthCallbackV8)
 
 	req := httptest.NewRequest(
 		http.MethodPost,
@@ -229,7 +229,7 @@ func TestGuardOAuthSessionPendingForSave(t *testing.T) {
 	store := newOAuthSessionStore(time.Minute)
 	replaceOAuthSessionStoreForTest(t, store)
 
-	providers := []string{"anthropic", "codex", "antigravity", "xai", "kimi", "kimi-ai", "kimi.ai", "meta"}
+	providers := []string{"anthropic", "codex", "acme", "xai", "kimi", "kimi-ai", "kimi.ai", "meta"}
 	for _, provider := range providers {
 		state := provider + "-save-guard"
 		store.Register(state, provider)

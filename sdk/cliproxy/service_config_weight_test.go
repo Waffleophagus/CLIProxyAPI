@@ -21,28 +21,6 @@ func TestWeightedRoundRobinRoutingSelector(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsInvalidCredentialWeightConfigCommit(t *testing.T) {
-	originalCfg := &internalconfig.Config{}
-	service := &Service{cfg: originalCfg}
-	invalidWeight := internalconfig.MaxCredentialWeight + 1
-	newCfg := &internalconfig.Config{
-		VertexCompatAPIKey: []internalconfig.VertexCompatKey{{
-			APIKey: "vertex-key",
-			Weight: &invalidWeight,
-		}},
-	}
-
-	if service.applyConfigUpdateWithAuthSynthesis(nil, newCfg, true) {
-		t.Fatal("hot config application accepted an invalid credential weight")
-	}
-	if service.cfg != originalCfg {
-		t.Fatal("invalid hot config replaced the active config")
-	}
-	if service.configSequence != 0 {
-		t.Fatalf("config sequence = %d, want 0", service.configSequence)
-	}
-}
-
 type trackingStoppableSelector struct {
 	stopped bool
 }
@@ -73,5 +51,27 @@ func TestApplyManagerConfigStopsReplacedServiceAffinitySelector(t *testing.T) {
 
 	if !tracking.stopped {
 		t.Fatal("expected replaced selector to be stopped during routing config apply")
+	}
+}
+
+func TestServiceRejectsInvalidCredentialWeightConfigCommit(t *testing.T) {
+	originalCfg := &internalconfig.Config{}
+	service := &Service{cfg: originalCfg}
+	invalidWeight := internalconfig.MaxCredentialWeight + 1
+	newCfg := &internalconfig.Config{
+		ClaudeKey: []internalconfig.ClaudeKey{{
+			APIKey: "claude-key",
+			Weight: &invalidWeight,
+		}},
+	}
+
+	if service.applyConfigUpdateWithAuthSynthesis(nil, newCfg, true) {
+		t.Fatal("hot config application accepted an invalid credential weight")
+	}
+	if service.cfg != originalCfg {
+		t.Fatal("invalid hot config replaced the active config")
+	}
+	if service.configSequence != 0 {
+		t.Fatalf("config sequence = %d, want 0", service.configSequence)
 	}
 }

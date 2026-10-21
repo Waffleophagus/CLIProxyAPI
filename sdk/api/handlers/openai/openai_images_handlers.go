@@ -339,9 +339,6 @@ func (h *OpenAIAPIHandler) routingXAIImagesModel(model string) string {
 			return prefixedModel
 		}
 	}
-	if h != nil && h.BaseAPIHandler != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
-		return prefixedModel
-	}
 	if _, ok := registeredXAIImagesModel(canonical); !ok {
 		return prefixedModel
 	}

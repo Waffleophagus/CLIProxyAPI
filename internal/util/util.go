@@ -17,7 +17,8 @@ import (
 
 var functionNameSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_.:-]`)
 
-// SanitizeFunctionName ensures a function name matches the requirements for Gemini/Vertex AI.
+// SanitizeFunctionName ensures a function name matches the restricted function-name
+// character set (used when building function declarations for tool identity mapping).
 // It replaces invalid characters with underscores, ensures it starts with a letter or underscore,
 // and truncates it to 64 characters if necessary.
 // Regex Rule: [^a-zA-Z0-9_.:-] replaced with _.
@@ -125,4 +126,45 @@ func WritablePath() string {
 		}
 	}
 	return ""
+}
+
+// ConfigDir returns the absolute directory containing configFilePath, or ""
+// when no config file path is known.
+func ConfigDir(configFilePath string) string {
+	configFilePath = strings.TrimSpace(configFilePath)
+	if configFilePath == "" {
+		return ""
+	}
+	if abs, errAbs := filepath.Abs(configFilePath); errAbs == nil {
+		configFilePath = abs
+	}
+	return filepath.Dir(configFilePath)
+}
+
+// DataDir returns the directory for persistent runtime data (usage database,
+// tailscale state): $WRITABLE_PATH/data when set, else a data/ directory next
+// to the config file.
+func DataDir(configFilePath string) string {
+	if base := WritablePath(); base != "" {
+		return filepath.Join(base, "data")
+	}
+	return filepath.Join(ConfigDir(configFilePath), "data")
+}
+
+// ResolveDataPath expands a leading "~" and resolves a relative path against
+// the config file directory. An empty path stays empty.
+func ResolveDataPath(path, configFilePath string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if strings.HasPrefix(path, "~") {
+		if home, errHome := os.UserHomeDir(); errHome == nil {
+			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+		}
+	}
+	if configDir := ConfigDir(configFilePath); !filepath.IsAbs(path) && configDir != "" {
+		path = filepath.Join(configDir, path)
+	}
+	return filepath.Clean(path)
 }

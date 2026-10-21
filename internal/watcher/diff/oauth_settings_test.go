@@ -12,7 +12,7 @@ func TestDiffOAuthSettingsChanges(t *testing.T) {
 		"codex": {
 			{Name: "gpt-6-sol", MaxContextLength: 272000},
 		},
-		"vertex": {
+		"vendora": {
 			{Name: "gemini-2.5-pro", MaxContextLength: 1048576},
 		},
 	}
@@ -28,7 +28,7 @@ func TestDiffOAuthSettingsChanges(t *testing.T) {
 
 	changes, affected := DiffOAuthSettingsChanges(oldMap, newMap)
 
-	// vertex removed, claude added, codex updated
+	// vendora removed, claude added, codex updated
 	expectContains := func(slice []string, expected string) {
 		t.Helper()
 		found := false
@@ -43,11 +43,11 @@ func TestDiffOAuthSettingsChanges(t *testing.T) {
 		}
 	}
 
-	expectContains(changes, "oauth-settings[vertex]: removed")
+	expectContains(changes, "oauth-settings[vendora]: removed")
 	expectContains(changes, "oauth-settings[claude]: added (1 entries)")
 	expectContains(changes, "oauth-settings[codex]: updated (1 -> 1 entries)")
 
-	expectContains(affected, "vertex")
+	expectContains(affected, "vendora")
 	expectContains(affected, "claude")
 	expectContains(affected, "codex")
 }

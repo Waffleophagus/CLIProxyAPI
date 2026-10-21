@@ -1187,73 +1187,6 @@ func TestSessionAffinitySelector_FailoverWhenAuthUnavailable(t *testing.T) {
 	}
 }
 
-func TestExtractSessionID_NestedRequestSubagent(t *testing.T) {
-	t.Parallel()
-
-	// 1. Nested request with sessionId and metadata.agent_id
-	payloadAgent := []byte(`{
-		"request": {
-			"sessionId": "root",
-			"metadata": {
-				"agent_id": "worker"
-			}
-		}
-	}`)
-	if got := ExtractSessionID(nil, payloadAgent, nil); got != "session:root:agent:worker" {
-		t.Fatalf("ExtractSessionID() = %q, want session:root:agent:worker", got)
-	}
-	primary, fallback := extractExplicitSessionIDs(nil, payloadAgent, nil)
-	if primary != "session:root:agent:worker" || fallback != "session:root" {
-		t.Fatalf("extractExplicitSessionIDs() = (%q, %q), want (session:root:agent:worker, session:root)", primary, fallback)
-	}
-
-	// 2. Nested request with sessionId and metadata.subagent_id
-	payloadSubagent := []byte(`{
-		"request": {
-			"sessionId": "root",
-			"metadata": {
-				"subagent_id": "worker"
-			}
-		}
-	}`)
-	if got := ExtractSessionID(nil, payloadSubagent, nil); got != "session:root:agent:worker" {
-		t.Fatalf("ExtractSessionID() = %q, want session:root:agent:worker", got)
-	}
-	primary, fallback = extractExplicitSessionIDs(nil, payloadSubagent, nil)
-	if primary != "session:root:agent:worker" || fallback != "session:root" {
-		t.Fatalf("extractExplicitSessionIDs() = (%q, %q), want (session:root:agent:worker, session:root)", primary, fallback)
-	}
-
-	// 3. Nested request with sessionId and parentSessionId
-	payloadParent := []byte(`{
-		"request": {
-			"sessionId": "root",
-			"parentSessionId": "parent-root",
-			"metadata": {
-				"agent_id": "worker"
-			}
-		}
-	}`)
-	if got := ExtractSessionID(nil, payloadParent, nil); got != "session:root:agent:worker" {
-		t.Fatalf("ExtractSessionID() = %q, want session:root:agent:worker", got)
-	}
-	primary, fallback = extractExplicitSessionIDs(nil, payloadParent, nil)
-	if primary != "session:root:agent:worker" || fallback != "session:parent-root" {
-		t.Fatalf("extractExplicitSessionIDs() = (%q, %q), want (session:root:agent:worker, session:parent-root)", primary, fallback)
-	}
-
-	// 4. Nested promptCacheKey when top-level prompt_cache_key is empty string
-	payloadPCKShadow := []byte(`{
-		"prompt_cache_key": "",
-		"request": {
-			"promptCacheKey": "nested-pck-valid"
-		}
-	}`)
-	if got := ExtractSessionID(nil, payloadPCKShadow, nil); got != "pck:nested-pck-valid" {
-		t.Fatalf("ExtractSessionID() with shadowed empty top-level pck = %q, want pck:nested-pck-valid", got)
-	}
-}
-
 func TestExtractSessionID_ClaudeCodePriorityOverHeader(t *testing.T) {
 	t.Parallel()
 
@@ -1462,46 +1395,6 @@ func TestExtractSessionID_ClaudeAPITopLevelSystem(t *testing.T) {
 	}
 	if got3 == got2 {
 		t.Error("Multi-turn hash should differ from first-turn hash (includes assistant)")
-	}
-}
-
-func TestExtractSessionID_GeminiFormat(t *testing.T) {
-	t.Parallel()
-
-	// Gemini format with systemInstruction and contents
-	payload := []byte(`{
-		"systemInstruction": {"parts": [{"text": "You are a helpful assistant."}]},
-		"contents": [
-			{"role": "user", "parts": [{"text": "Hello Gemini"}]},
-			{"role": "model", "parts": [{"text": "Hi there!"}]}
-		]
-	}`)
-
-	got := ExtractSessionID(nil, payload, nil)
-	if got == "" {
-		t.Error("ExtractSessionID() with Gemini format should return hash-based session ID")
-	}
-	if !strings.HasPrefix(got, "msg:") {
-		t.Errorf("ExtractSessionID() = %q, want prefix 'msg:'", got)
-	}
-
-	// Same payload should produce same hash
-	got2 := ExtractSessionID(nil, payload, nil)
-	if got != got2 {
-		t.Errorf("ExtractSessionID() not stable: got %q then %q", got, got2)
-	}
-
-	// Different user message should produce different hash
-	differentPayload := []byte(`{
-		"systemInstruction": {"parts": [{"text": "You are a helpful assistant."}]},
-		"contents": [
-			{"role": "user", "parts": [{"text": "Hello different"}]},
-			{"role": "model", "parts": [{"text": "Hi there!"}]}
-		]
-	}`)
-	got3 := ExtractSessionID(nil, differentPayload, nil)
-	if got == got3 {
-		t.Errorf("ExtractSessionID() should produce different hash for different user message")
 	}
 }
 

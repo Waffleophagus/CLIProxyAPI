@@ -138,7 +138,7 @@ func applyPatchIdentitySource(interactions bool, first, boundary string, snapsho
 }
 
 func TestApplyPatchNamedLateIdentityActualTransports(t *testing.T) {
-	for _, transport := range []string{"xai", "meta", "kimi", "interactions", "ws-sse", "ws-raw"} {
+	for _, transport := range []string{"xai", "meta", "kimi", "ws-sse", "ws-raw"} {
 		for _, first := range []string{"item", "call", "neither", "neither-item-first", "neither-call-first"} {
 			for _, boundary := range []string{"delta", "item", "terminal"} {
 				for _, snapshot := range []bool{false, true} {
@@ -177,50 +177,8 @@ func TestApplyPatchNamedLateIdentityActualTransports(t *testing.T) {
 	}
 }
 
-func applyPatchIdentityExecutor(t *testing.T, transport string, source [][]byte) (cliproxyauth.ProviderExecutor, *cliproxyauth.Auth) {
-	t.Helper()
-	ws := strings.HasPrefix(transport, "ws-")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !ws {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = io.WriteString(w, task6RepairSSE(source))
-			return
-		}
-		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
-		if errUpgrade != nil {
-			return
-		}
-		defer func() {
-			if errClose := conn.Close(); errClose != nil {
-				t.Logf("close fixture socket: %v", errClose)
-			}
-		}()
-		if _, _, errReadMessage := conn.ReadMessage(); errReadMessage != nil {
-			return
-		}
-		for _, event := range source {
-			if errWriteMessage := conn.WriteMessage(websocket.TextMessage, event); errWriteMessage != nil {
-				return
-			}
-		}
-	}))
-	t.Cleanup(server.Close)
-	exec := task6RepairExecutor(transport)
-	if transport == "interactions" {
-		exec = NewGeminiInteractionsExecutor(&config.Config{})
-	}
-	if ws {
-		wsExec := NewXAIWebsocketsExecutor(&config.Config{})
-		wsExec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
-		exec = wsExec
-	}
-	auth := &cliproxyauth.Auth{ID: t.Name(), Provider: exec.Identifier(), Attributes: map[string]string{"api_key": "test", "base_url": server.URL, "websockets": "true"}}
-	return exec, auth
-}
-
 func TestApplyPatchNamedLateIdentityActualFailures(t *testing.T) {
-	for _, transport := range []string{"xai", "meta", "kimi", "interactions", "ws-sse", "ws-raw"} {
+	for _, transport := range []string{"xai", "meta", "kimi", "ws-sse", "ws-raw"} {
 		for _, mode := range []string{"item-conflict", "call-conflict", "partial-snapshot", "invalid-snapshot", "eof"} {
 			t.Run(transport+"/"+mode, func(t *testing.T) {
 				interactions := transport == "interactions"
@@ -287,7 +245,7 @@ func TestApplyPatchNamedLateIdentityActualFailures(t *testing.T) {
 }
 
 func TestApplyPatchNamedLateIdentityActualInterleaved(t *testing.T) {
-	for _, transport := range []string{"xai", "meta", "kimi", "interactions", "ws-sse", "ws-raw"} {
+	for _, transport := range []string{"xai", "meta", "kimi", "ws-sse", "ws-raw"} {
 		t.Run(transport, func(t *testing.T) {
 			interactions := transport == "interactions"
 			first := applyPatchIdentitySource(interactions, "item", "item", false)
@@ -369,4 +327,43 @@ func TestApplyPatchNamedLateIdentityActualInterleaved(t *testing.T) {
 			assertApplyPatchIdentityLifecycle(t, perCall[1], "b", "d", "uv", 1, []string{"u", "v"})
 		})
 	}
+}
+
+func applyPatchIdentityExecutor(t *testing.T, transport string, source [][]byte) (cliproxyauth.ProviderExecutor, *cliproxyauth.Auth) {
+	t.Helper()
+	ws := strings.HasPrefix(transport, "ws-")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ws {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, task6RepairSSE(source))
+			return
+		}
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			return
+		}
+		defer func() {
+			if errClose := conn.Close(); errClose != nil {
+				t.Logf("close fixture socket: %v", errClose)
+			}
+		}()
+		if _, _, errReadMessage := conn.ReadMessage(); errReadMessage != nil {
+			return
+		}
+		for _, event := range source {
+			if errWriteMessage := conn.WriteMessage(websocket.TextMessage, event); errWriteMessage != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	exec := task6RepairExecutor(transport)
+	if ws {
+		wsExec := NewXAIWebsocketsExecutor(&config.Config{})
+		wsExec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+		exec = wsExec
+	}
+	auth := &cliproxyauth.Auth{ID: t.Name(), Provider: exec.Identifier(), Attributes: map[string]string{"api_key": "test", "base_url": server.URL, "websockets": "true"}}
+	return exec, auth
 }

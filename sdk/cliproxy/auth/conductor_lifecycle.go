@@ -421,14 +421,6 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
-	if existing.Metadata != nil {
-		if persistedHints, hasHints := existing.Metadata["antigravity_capability_hints"]; hasHints {
-			if auth.Metadata == nil {
-				auth.Metadata = make(map[string]any)
-			}
-			auth.Metadata["antigravity_capability_hints"] = persistedHints
-		}
-	}
 	auth.EnsureIndex()
 	// Save before publication, including the transactional Meta mint path.
 	// Runtime-only changes made during I/O are merged below, never overwritten.
@@ -490,15 +482,6 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	m.notifyAuthChangeLocked(id)
 	if m.modelPoolOffsets != nil {
 		delete(m.modelPoolOffsets, id)
-	}
-	for sessionID, sessionAuths := range m.homeRuntimeAuths {
-		if sessionAuths == nil {
-			continue
-		}
-		delete(sessionAuths, id)
-		if len(sessionAuths) == 0 {
-			delete(m.homeRuntimeAuths, sessionID)
-		}
 	}
 	if m.authEpochs == nil {
 		m.authEpochs = make(map[string]uint64)
@@ -653,9 +636,6 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 		if v := strings.ToLower(strings.TrimSpace(auth.Attributes["runtime_only"])); v == "true" {
 			return nil
 		}
-	}
-	if IsPluginVirtualAuth(auth) {
-		return nil
 	}
 	// Skip persistence when metadata is absent (e.g., runtime-only auths).
 	if auth.Metadata == nil {

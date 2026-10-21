@@ -38,9 +38,6 @@ const (
 	// providerKey is the identifier for our custom provider.
 	providerKey = "myprov"
 
-	// fOpenAI represents the OpenAI chat format.
-	fOpenAI = sdktr.Format("openai.chat")
-
 	// fMyProv represents our custom provider's chat format.
 	fMyProv = sdktr.Format("myprov.chat")
 )
@@ -48,8 +45,11 @@ const (
 // init registers trivial translators for demonstration purposes.
 // In a real implementation, you would implement proper request/response
 // transformation logic between OpenAI format and your provider's format.
+// Inbound formats use the sdktr.Format* constants (e.g. sdktr.FormatOpenAI for
+// /v1/chat/completions). The manager does not apply these translators; the
+// executor calls them explicitly (see Execute and ExecuteStream).
 func init() {
-	sdktr.Register(fOpenAI, fMyProv,
+	sdktr.Register(sdktr.FormatOpenAI, fMyProv,
 		func(model string, raw []byte, stream bool) ([]byte, error) { return raw, nil },
 		sdktr.ResponseTransform{
 			Stream: func(ctx context.Context, model string, originalReq, translatedReq, raw []byte, param *any) [][]byte {
@@ -116,7 +116,12 @@ func (MyExecutor) Execute(ctx context.Context, a *coreauth.Auth, req clipexec.Re
 	client := buildHTTPClient(a)
 	endpoint := upstreamEndpoint(a)
 
-	httpReq, errNew := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(req.Payload))
+	// req.Payload is the inbound request in opts.SourceFormat; translate it to
+	// the provider format here. Without a registered translator for the pair,
+	// the payload passes through unchanged.
+	translated := sdktr.TranslateRequest(opts.SourceFormat, fMyProv, req.Model, req.Payload, false)
+
+	httpReq, errNew := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(translated))
 	if errNew != nil {
 		return clipexec.Response{}, errNew
 	}
@@ -137,7 +142,11 @@ func (MyExecutor) Execute(ctx context.Context, a *coreauth.Auth, req clipexec.Re
 		}
 	}()
 	body, _ := io.ReadAll(resp.Body)
-	return clipexec.Response{Payload: body}, nil
+
+	// Translate the provider response back into the format the client expects.
+	var param any
+	out := sdktr.TranslateNonStream(ctx, fMyProv, clipexec.ResponseFormatOrSource(opts), req.Model, opts.OriginalRequest, translated, body, &param)
+	return clipexec.Response{Payload: out}, nil
 }
 
 func (MyExecutor) HttpRequest(ctx context.Context, a *coreauth.Auth, req *http.Request) (*http.Response, error) {
@@ -160,10 +169,17 @@ func (MyExecutor) CountTokens(context.Context, *coreauth.Auth, clipexec.Request,
 }
 
 func (MyExecutor) ExecuteStream(ctx context.Context, a *coreauth.Auth, req clipexec.Request, opts clipexec.Options) (*clipexec.StreamResult, error) {
+	translated := sdktr.TranslateRequest(opts.SourceFormat, fMyProv, req.Model, req.Payload, true)
+	responseFormat := clipexec.ResponseFormatOrSource(opts)
 	ch := make(chan clipexec.StreamChunk, 1)
 	go func() {
 		defer close(ch)
-		ch <- clipexec.StreamChunk{Payload: []byte("data: {\"ok\":true}\n\n")}
+		// A real executor would send translated upstream and translate each event.
+		var param any
+		upstreamEvent := []byte("data: {\"ok\":true}\n\n")
+		for _, chunk := range sdktr.TranslateStream(ctx, fMyProv, responseFormat, req.Model, opts.OriginalRequest, translated, upstreamEvent, &param) {
+			ch <- clipexec.StreamChunk{Payload: chunk}
+		}
 	}()
 	return &clipexec.StreamResult{Chunks: ch}, nil
 }

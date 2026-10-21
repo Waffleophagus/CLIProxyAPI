@@ -222,3 +222,12 @@ func TestOpenAICompatKeyUsesModelNameWhenAliasEmpty(t *testing.T) {
 		t.Fatalf("expected model-name fallback, got %s/%s", key, label)
 	}
 }
+
+func TestDiffOpenAICompatibilityFollowChanges(t *testing.T) {
+	oldList := []config.OpenAICompatibility{{Name: "dgx-spark", BaseURL: "http://spark/v1", Models: []config.OpenAICompatibilityModel{{Name: "GLM-a", Alias: "DGX-SPARK"}}}}
+	newList := []config.OpenAICompatibility{{Name: "dgx-spark", BaseURL: "http://spark/v1", FollowInterval: "1m", Models: []config.OpenAICompatibilityModel{{Alias: "DGX-SPARK", Follow: true, Match: "GLM-*"}}}}
+	changes := DiffOpenAICompatibility(oldList, newList)
+	if len(changes) != 1 || !strings.Contains(changes[0], "follow [] -> [DGX-SPARK~GLM-*]") || !strings.Contains(changes[0], `follow-interval "" -> "1m"`) {
+		t.Fatalf("changes = %v", changes)
+	}
+}

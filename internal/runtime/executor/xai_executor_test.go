@@ -3074,7 +3074,7 @@ func TestXAIExecutorOmitsUnsupportedReasoningEffort(t *testing.T) {
 }
 
 func TestXAIExecutorThinkingPayloadOverride(t *testing.T) {
-	const remoteModel = "grok-home-only-thinking-test"
+	const remoteModel = "grok-remote-only-thinking-test"
 	if registry.LookupModelInfo(remoteModel, "xai") != nil {
 		t.Fatal("test model must be absent from the local registry")
 	}
@@ -3088,28 +3088,12 @@ func TestXAIExecutorThinkingPayloadOverride(t *testing.T) {
 		wantEffort  string
 	}{
 		{
-			name: "home-only model", model: remoteModel,
-			metadataKey: "cliproxy.resolved_home_model_info", thinking: levels, wantEffort: "high",
-		},
-		{
 			name: "configured API-key model", model: remoteModel,
 			metadataKey: "cliproxy.resolved_api_key_model_info", thinking: levels, wantEffort: "high",
 		},
 		{
-			name: "home disables local thinking support", model: "grok-4.5",
-			metadataKey: "cliproxy.resolved_home_model_info",
-		},
-		{
 			name: "API-key disables local thinking support", model: "grok-4.5",
 			metadataKey: "cliproxy.resolved_api_key_model_info",
-		},
-		{
-			name: "home supplies no thinking levels", model: "grok-4.5",
-			metadataKey: "cliproxy.resolved_home_model_info", thinking: &registry.ThinkingSupport{}, wantEffort: "high",
-		},
-		{
-			name: "home restricts thinking levels", model: "grok-4.5",
-			metadataKey: "cliproxy.resolved_home_model_info", thinking: &registry.ThinkingSupport{Levels: []string{"low"}}, wantEffort: "low",
 		},
 		{name: "local supported fallback", model: "grok-4.5", wantEffort: "high"},
 		{name: "local unsupported fallback", model: "grok-build-0.1"},

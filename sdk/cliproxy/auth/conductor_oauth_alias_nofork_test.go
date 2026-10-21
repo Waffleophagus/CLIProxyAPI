@@ -80,7 +80,7 @@ func (e *noForkAliasTestExecutor) LastAuthID() string {
 // Test 1: no-fork alias retains cooldown across reconcile
 func TestManager_NoForkAlias_RetainsCooldownAfterReconcile(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -157,7 +157,7 @@ func TestManager_NoForkAlias_RetainsCooldownAfterReconcile(t *testing.T) {
 // Test 2: requesting alias skips cooling credential and executes on available credential
 func TestManager_NoForkAlias_BypassesCoolingAuthOnSubsequentRequest(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -232,7 +232,7 @@ func TestManager_NoForkAlias_BypassesCoolingAuthOnSubsequentRequest(t *testing.T
 // Test 3: cooldown store persistence consistency
 func TestManager_NoForkAlias_CooldownPersistenceConsistency(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -317,7 +317,7 @@ func TestManager_NoForkAlias_CooldownPersistenceConsistency(t *testing.T) {
 // Test 4: multiple aliases pointing to the same upstream target model
 func TestManager_NoForkAlias_MultipleAliasesToSameTarget(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel1 = "[ant1]gemini-3.7-flash-high"
 		routeModel2 = "[ant2]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
@@ -405,7 +405,7 @@ func TestManager_NoForkAlias_MultipleAliasesToSameTarget(t *testing.T) {
 // Test 5: cleanup after all aliases pointing to target model are removed
 func TestManager_NoForkAlias_CleanupAfterAliasRemoved(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 		otherModel  = "other-model"
@@ -488,7 +488,7 @@ func TestManager_NoForkAlias_CleanupAfterAliasRemoved(t *testing.T) {
 // Test 6: Fork: true regression test
 func TestManager_ForkTrue_RetainsStateAndSuspendsBoth(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "claude-opus-4-6"
 		targetModel = "claude-opus-4-6-thinking"
 	)
@@ -557,7 +557,7 @@ func TestManager_ForkTrue_RetainsStateAndSuspendsBoth(t *testing.T) {
 // Test 7: expired cooldown is reset cleanly on reconcile
 func TestManager_NoForkAlias_ExpiredCooldownResetClean(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -616,7 +616,7 @@ func TestManager_NoForkAlias_ExpiredCooldownResetClean(t *testing.T) {
 // Test 8: MarkResult and ResetQuota projection on no-fork alias
 func TestManager_NoForkAlias_MarkResultAndResetQuotaProjection(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -687,7 +687,7 @@ func TestManager_NoForkAlias_MarkResultAndResetQuotaProjection(t *testing.T) {
 // Test 9: per-auth alias and per-auth overriding global alias with no-fork reconcile
 func TestManager_NoForkAlias_PerAuthAlias_RetainsCooldownAfterReconcile(t *testing.T) {
 	const (
-		provider      = "antigravity"
+		provider      = "acme"
 		routeModel    = "[ant]gemini-3.7-flash-high"
 		globalTarget  = "gemini-3.7-flash-global"
 		perAuthTarget = "gemini-3.7-flash-perauth"
@@ -783,7 +783,7 @@ func TestManager_NoForkAlias_PerAuthAlias_RetainsCooldownAfterReconcile(t *testi
 // Test 10: real persistence restore from store and verify execution bypasses cooling credential
 func TestManager_NoForkAlias_RealPersistenceRestore_BypassesCoolingAuth(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -899,7 +899,7 @@ func TestManager_NoForkAlias_RealPersistenceRestore_BypassesCoolingAuth(t *testi
 // Test 11: store persistence records cleaned when alias is removed
 func TestManager_NoForkAlias_StorePersistenceCleanedWhenAliasRemoved(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 		otherModel  = "other-clean-model"
@@ -982,7 +982,7 @@ func TestManager_NoForkAlias_StorePersistenceCleanedWhenAliasRemoved(t *testing.
 // Test 12: multiple aliases (B1, B2 -> A) both skip cooling auth end-to-end
 func TestManager_NoForkAlias_MultipleAliases_BothSkipCoolingAuthEndToEnd(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel1 = "[ant1]gemini-3.7-flash-high"
 		routeModel2 = "[ant2]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
@@ -1064,7 +1064,7 @@ func TestManager_NoForkAlias_MultipleAliases_BothSkipCoolingAuthEndToEnd(t *test
 // Test 13: alias repointing scenarios (B -> A changed to B -> C, and route A mapped to C)
 func TestManager_NoForkAlias_AliasRepointing_PrunesOldTargetAndReconciles(t *testing.T) {
 	const (
-		provider = "antigravity"
+		provider = "acme"
 		modelA   = "gemini-model-a"
 		modelB   = "[alias]gemini-model-b"
 		modelC   = "gemini-model-c"
@@ -1221,7 +1221,7 @@ func TestManager_NoForkAlias_AliasRepointing_PrunesOldTargetAndReconciles(t *tes
 // Test 14: concurrent Reconcile and MarkResult stability
 func TestManager_NoForkAlias_ConcurrentReconcileAndMarkResult(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -1308,7 +1308,7 @@ func TestManager_NoForkAlias_ConcurrentReconcileAndMarkResult(t *testing.T) {
 // Test 15: MarkResult with route model B generates authoritative ModelStates[A] and never ModelStates[B]
 func TestManager_NoForkAlias_MarkResultRouteModelWritesAuthoritativeState(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -1411,7 +1411,7 @@ func TestManager_NoForkAlias_MarkResultRouteModelWritesAuthoritativeState(t *tes
 // Test 16: Legacy ModelStates[B] is automatically pruned on Reconcile when configured as B -> A
 func TestManager_NoForkAlias_LegacyModelStatePrunedOnReconcile(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -1490,7 +1490,7 @@ func TestManager_NoForkAlias_LegacyModelStatePrunedOnReconcile(t *testing.T) {
 // Test 17: Real disk file persistence restore using NewFileCooldownStateStoreWithAuthDir
 func TestManager_NoForkAlias_RealDiskFileStoreRestore_BypassesCoolingAuth(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -1507,10 +1507,10 @@ func TestManager_NoForkAlias_RealDiskFileStoreRestore_BypassesCoolingAuth(t *tes
 
 	auth1File := filepath.Join(authDir, "auth1.json")
 	auth2File := filepath.Join(authDir, "auth2.json")
-	if errWrite := os.WriteFile(auth1File, []byte(`{"id":"disk-auth-1","provider":"antigravity"}`), 0644); errWrite != nil {
+	if errWrite := os.WriteFile(auth1File, []byte(`{"id":"disk-auth-1","provider":"acme"}`), 0644); errWrite != nil {
 		t.Fatalf("write auth1File: %v", errWrite)
 	}
-	if errWrite := os.WriteFile(auth2File, []byte(`{"id":"disk-auth-2","provider":"antigravity"}`), 0644); errWrite != nil {
+	if errWrite := os.WriteFile(auth2File, []byte(`{"id":"disk-auth-2","provider":"acme"}`), 0644); errWrite != nil {
 		t.Fatalf("write auth2File: %v", errWrite)
 	}
 
@@ -1625,7 +1625,7 @@ func TestManager_NoForkAlias_RealDiskFileStoreRestore_BypassesCoolingAuth(t *tes
 // Test 18: Concurrent Reconcile, MarkResult, and ResetQuota with full consistency assertion
 func TestManager_NoForkAlias_ConcurrentReconcileMarkResult_FullConsistency(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 	)
@@ -1786,7 +1786,7 @@ func TestManager_NoForkAlias_ConcurrentReconcileMarkResult_FullConsistency(t *te
 // Test 19: Reconcile with cancelled context still cleans cooldown store properly
 func TestManager_NoForkAlias_CancelledContextReconcile_CooldownStoreCleaned(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-high"
 		targetModel = "gemini-3.7-flash-high"
 		otherModel  = "other-clean-model"
@@ -1884,7 +1884,7 @@ func TestManager_NoForkAlias_CancelledContextReconcile_CooldownStoreCleaned(t *t
 // Test 20: MarkResult receiving already targetModel does NOT perform secondary alias resolution
 func TestManager_NoForkAlias_MarkResultTargetModelNoSecondaryAliasResolution(t *testing.T) {
 	const (
-		provider = "antigravity"
+		provider = "acme"
 		modelB   = "route-model-b"
 		modelA   = "target-model-a"
 		modelC   = "chained-model-c"
@@ -1967,7 +1967,7 @@ func TestManager_NoForkAlias_MarkResultTargetModelNoSecondaryAliasResolution(t *
 // Test 21: MarkResult on 500/503/transient errors immediately suspends route alias in registry
 func TestManager_NoForkAlias_MarkResultTransientErrorsSyncSuspendRegistry(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-transient"
 		targetModel = "gemini-3.7-flash-transient"
 	)
@@ -2068,7 +2068,7 @@ func TestManager_NoForkAlias_MarkResultTransientErrorsSyncSuspendRegistry(t *tes
 // Test 22: Stale disabled snapshot cannot remove updated active entry in scheduler
 func TestManager_Scheduler_StaleDisabledSnapshotCannotRemoveActiveEntry(t *testing.T) {
 	const (
-		provider = "antigravity"
+		provider = "acme"
 		model    = "gemini-3.7-flash-gen-test"
 	)
 
@@ -2200,7 +2200,7 @@ func (s *strictContextCheckingStore) savedRecords() []CooldownStateRecord {
 // Test 23: Strict context-checking store persists and cleans invalid records on Reconcile even with cancelled outer context
 func TestManager_NoForkAlias_StrictContextCheckingStore_ReconcilePersistsUnderCancelledContext(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-strict"
 		targetModel = "gemini-3.7-flash-strict"
 		otherModel  = "other-model-strict"
@@ -2299,7 +2299,7 @@ func TestManager_NoForkAlias_StrictContextCheckingStore_ReconcilePersistsUnderCa
 // Test 24: Scheduler tombstone protection - delayed stale active snapshot cannot reactivate disabled auth
 func TestManager_Scheduler_Tombstone_StaleActiveSnapshotCannotReactivateDisabledEntry(t *testing.T) {
 	const (
-		provider = "antigravity"
+		provider = "acme"
 		model    = "gemini-3.7-tombstone-test"
 	)
 
@@ -2431,7 +2431,7 @@ func TestModelRegistry_Projection_GenerationProtection(t *testing.T) {
 // Test 26: Historical state only containing route ModelStates[B] migrates to authoritative target ModelStates[A]
 func TestManager_NoForkAlias_HistoricalRouteStateOnly_MigratedToTargetCooldown(t *testing.T) {
 	const (
-		provider     = "antigravity"
+		provider     = "acme"
 		routeModelB  = "[ant]gemini-3.7-flash-mig"
 		targetModelA = "gemini-3.7-flash-mig"
 	)
@@ -2502,7 +2502,7 @@ func TestManager_NoForkAlias_HistoricalRouteStateOnly_MigratedToTargetCooldown(t
 // Test 27: ResetQuota reliably clears CooldownStateStore even when outer context is cancelled
 func TestManager_NoForkAlias_ResetQuota_CancelledContextCleansCooldownStore(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-rq-test"
 		targetModel = "gemini-3.7-flash-rq-test"
 	)
@@ -2588,7 +2588,7 @@ func TestManager_NoForkAlias_ResetQuota_CancelledContextCleansCooldownStore(t *t
 // Test 28: Concurrent operations natural termination final consistency (no manual post-reconciliation)
 func TestManager_NoForkAlias_ConcurrentOperations_NaturalFinalConsistency(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "[ant]gemini-3.7-flash-nat-test"
 		targetModel = "gemini-3.7-flash-nat-test"
 	)
@@ -2733,7 +2733,7 @@ func TestManager_NoForkAlias_ConcurrentOperations_NaturalFinalConsistency(t *tes
 // Test 29: Remove records tombstone so stale active snapshots cannot resurrect removed auth (including via rebuild)
 func TestManager_Scheduler_Tombstone_RemoveRejectsDelayedActiveSnapshotAndRebuild(t *testing.T) {
 	const (
-		provider = "antigravity"
+		provider = "acme"
 		model    = "gemini-3.7-flash-remove-tombstone"
 	)
 
@@ -2894,7 +2894,7 @@ func TestModelRegistry_UnregisterClient_TombstoneAndGhostProjectionProtection(t 
 // Test 31: Chained alias configuration (B -> A and A -> C) preserves authoritative ModelStates[A] on Reconcile
 func TestManager_NoForkAlias_ChainedAlias_MarkResultTargetA_ReconcilePreservesStateA(t *testing.T) {
 	const (
-		provider = "antigravity"
+		provider = "acme"
 		routeB   = "route-model-b-chain"
 		targetA  = "canonical-model-a-chain"
 		targetC  = "target-model-c-chain"
@@ -3130,7 +3130,7 @@ func TestManager_RemoveAndReRegister_ClearsSchedulerTombstone(t *testing.T) {
 // Test 34: Chained alias when both B and A are registered routes: targetA is authoritative and never migrated/deleted
 func TestManager_NoForkAlias_ChainedAlias_BothRoutesRegistered_SafeTwoPhaseMigration(t *testing.T) {
 	const (
-		provider = "antigravity"
+		provider = "acme"
 		routeB   = "route-model-b-chain-both"
 		targetA  = "canonical-model-a-chain-both"
 		targetC  = "target-model-c-chain-both"
@@ -3243,7 +3243,7 @@ func (s *mockFailingAuthStoreForResetQuota) Delete(ctx context.Context, id strin
 // Test 35: ResetQuota reliably clears CooldownStore via defer even when Auth Store.Save returns error
 func TestManager_NoForkAlias_ResetQuota_ErrorPersistCleansCooldownStore(t *testing.T) {
 	const (
-		provider    = "antigravity"
+		provider    = "acme"
 		routeModel  = "route-model-err-persist"
 		targetModel = "target-model-err-persist"
 	)

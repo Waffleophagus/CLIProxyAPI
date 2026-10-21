@@ -8,11 +8,9 @@ import (
 	"errors"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 	log "github.com/sirupsen/logrus"
 )
@@ -24,36 +22,17 @@ import (
 // Parameters:
 //   - cfg: The application configuration
 //   - configPath: The path to the configuration file
-//   - localPassword: Optional password accepted for local management requests
-func StartService(cfg *config.Config, configPath string, localPassword string) {
-	StartServiceWithPluginHost(cfg, configPath, localPassword, nil)
-}
-
-// StartServiceWithPluginHost builds and runs the proxy service with a shared plugin host.
-func StartServiceWithPluginHost(cfg *config.Config, configPath string, localPassword string, host *pluginhost.Host, serverOptions ...api.ServerOption) {
+//   - serverOptions: Optional additional server options
+func StartService(cfg *config.Config, configPath string, serverOptions ...api.ServerOption) {
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
-		WithConfigPath(configPath).
-		WithLocalManagementPassword(localPassword)
-	if host != nil {
-		builder = builder.WithPluginHost(host)
-	}
+		WithConfigPath(configPath)
 	if len(serverOptions) > 0 {
 		builder = builder.WithServerOptions(serverOptions...)
 	}
 
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	runCtx := ctxSignal
-	if localPassword != "" {
-		var keepAliveCancel context.CancelFunc
-		runCtx, keepAliveCancel = context.WithCancel(ctxSignal)
-		builder = builder.WithServerOptions(api.WithKeepAliveEndpoint(10*time.Second, func() {
-			log.Warn("keep-alive endpoint idle for 10s, shutting down")
-			keepAliveCancel()
-		}))
-	}
 
 	service, err := builder.Build()
 	if err != nil {
@@ -61,61 +40,8 @@ func StartServiceWithPluginHost(cfg *config.Config, configPath string, localPass
 		return
 	}
 
-	err = service.Run(runCtx)
+	err = service.Run(ctxSignal)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Errorf("proxy service exited with error: %v", err)
 	}
-}
-
-// StartServiceBackground starts the proxy service in a background goroutine
-// and returns a cancel function for shutdown and a done channel.
-func StartServiceBackground(cfg *config.Config, configPath string, localPassword string) (cancel func(), done <-chan struct{}) {
-	return StartServiceBackgroundWithPluginHost(cfg, configPath, localPassword, nil)
-}
-
-// StartServiceBackgroundWithPluginHost starts the proxy service with a shared plugin host.
-func StartServiceBackgroundWithPluginHost(cfg *config.Config, configPath string, localPassword string, host *pluginhost.Host, serverOptions ...api.ServerOption) (cancel func(), done <-chan struct{}) {
-	builder := cliproxy.NewBuilder().
-		WithConfig(cfg).
-		WithConfigPath(configPath).
-		WithLocalManagementPassword(localPassword)
-	if host != nil {
-		builder = builder.WithPluginHost(host)
-	}
-	if len(serverOptions) > 0 {
-		builder = builder.WithServerOptions(serverOptions...)
-	}
-
-	ctx, cancelFn := context.WithCancel(context.Background())
-	doneCh := make(chan struct{})
-
-	service, err := builder.Build()
-	if err != nil {
-		log.Errorf("failed to build proxy service: %v", err)
-		close(doneCh)
-		return cancelFn, doneCh
-	}
-
-	go func() {
-		defer close(doneCh)
-		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Errorf("proxy service exited with error: %v", err)
-		}
-	}()
-
-	return cancelFn, doneCh
-}
-
-// WaitForCloudDeploy waits indefinitely for shutdown signals in cloud deploy mode
-// when no configuration file is available.
-func WaitForCloudDeploy() {
-	// Clarify that we are intentionally idle for configuration and not running the API server.
-	log.Info("Cloud deploy mode: No config found; standing by for configuration. API server is not started. Press Ctrl+C to exit.")
-
-	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	// Block until shutdown signal is received
-	<-ctxSignal.Done()
-	log.Info("Cloud deploy mode: Shutdown signal received; exiting")
 }

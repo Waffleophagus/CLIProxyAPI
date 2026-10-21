@@ -29,7 +29,7 @@ func TestSanitizeOAuthModelAlias_PreservesOptionalFields(t *testing.T) {
 func TestSanitizeOAuthModelAlias_AllowsMultipleAliasesForSameName(t *testing.T) {
 	cfg := &Config{
 		OAuthModelAlias: map[string][]OAuthModelAlias{
-			"antigravity": {
+			"acme": {
 				{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101", Fork: true},
 				{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101-thinking", Fork: true},
 				{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5", Fork: true},
@@ -39,7 +39,7 @@ func TestSanitizeOAuthModelAlias_AllowsMultipleAliasesForSameName(t *testing.T) 
 
 	cfg.SanitizeOAuthModelAlias()
 
-	aliases := cfg.OAuthModelAlias["antigravity"]
+	aliases := cfg.OAuthModelAlias["acme"]
 	expected := []OAuthModelAlias{
 		{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101", Fork: true},
 		{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101-thinking", Fork: true},

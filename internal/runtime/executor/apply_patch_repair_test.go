@@ -211,31 +211,6 @@ func TestApplyPatchRepairXAIWebsocketSourceTerminal(t *testing.T) {
 	}
 }
 
-type task6RepairLifecycle struct {
-	mu    sync.Mutex
-	close func() error
-	ended chan string
-	once  sync.Once
-}
-
-func (l *task6RepairLifecycle) Bind(closeResource func() error) error {
-	l.mu.Lock()
-	l.close = closeResource
-	l.mu.Unlock()
-	return nil
-}
-func (l *task6RepairLifecycle) End(reason string) { l.once.Do(func() { l.ended <- reason }) }
-func (*task6RepairLifecycle) Retain()             {}
-func (l *task6RepairLifecycle) detach() error {
-	l.mu.Lock()
-	closeResource := l.close
-	l.mu.Unlock()
-	if closeResource == nil {
-		return errors.New("lifecycle was not bound")
-	}
-	return closeResource()
-}
-
 func task6RepairAwait(t *testing.T, ch <-chan struct{}, label string) {
 	t.Helper()
 	select {
@@ -252,182 +227,159 @@ func TestApplyPatchRepairXAIWebsocketPersistentFailureRetry(t *testing.T) {
 				// Raw downstream WebSockets deliberately bypass the SDK translator.
 				continue
 			}
-			for _, detach := range []bool{false, true} {
-				t.Run(fmt.Sprintf("%s/raw=%v/detach=%v", branch, raw, detach), func(t *testing.T) {
-					if strings.HasPrefix(branch, "translator") {
-						// Inject only the optional translator failure; retain the real executor/socket.
-						sdktranslator.Register(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatCodex, nil, sdktranslator.ResponseTransform{Stream: func(ctx context.Context, model string, original, effective, event []byte, param *any) [][]byte {
-							payload := bytes.TrimSpace(bytes.TrimPrefix(event, []byte("data: ")))
-							if gjson.GetBytes(payload, "type").String() == "repair.invalid" || (gjson.GetBytes(payload, "type").String() == "response.completed" && gjson.GetBytes(payload, "response.id").String() == "repair-invalid") {
-								state := &translatorcommon.ApplyPatchErrorState{}
-								state.SetToolInputError(errors.New("RAW_SECRET"))
-								*param = state
-								return [][]byte{[]byte("data: " + string(translatorcommon.ApplyPatchFailure("r", 1)) + "\n\n")}
-							}
-							return codexresponses.ConvertCodexResponseToOpenAIResponses(ctx, model, original, effective, event, param)
-						}})
-						defer sdktranslator.Register(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatCodex, nil, sdktranslator.ResponseTransform{Stream: codexresponses.ConvertCodexResponseToOpenAIResponses, NonStream: codexresponses.ConvertCodexResponseToOpenAIResponsesNonStream})
+			t.Run(fmt.Sprintf("%s/raw=%v", branch, raw), func(t *testing.T) {
+				if strings.HasPrefix(branch, "translator") {
+					// Inject only the optional translator failure; retain the real executor/socket.
+					sdktranslator.Register(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatCodex, nil, sdktranslator.ResponseTransform{Stream: func(ctx context.Context, model string, original, effective, event []byte, param *any) [][]byte {
+						payload := bytes.TrimSpace(bytes.TrimPrefix(event, []byte("data: ")))
+						if gjson.GetBytes(payload, "type").String() == "repair.invalid" || (gjson.GetBytes(payload, "type").String() == "response.completed" && gjson.GetBytes(payload, "response.id").String() == "repair-invalid") {
+							state := &translatorcommon.ApplyPatchErrorState{}
+							state.SetToolInputError(errors.New("RAW_SECRET"))
+							*param = state
+							return [][]byte{[]byte("data: " + string(translatorcommon.ApplyPatchFailure("r", 1)) + "\n\n")}
+						}
+						return codexresponses.ConvertCodexResponseToOpenAIResponses(ctx, model, original, effective, event, param)
+					}})
+					defer sdktranslator.Register(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatCodex, nil, sdktranslator.ResponseTransform{Stream: codexresponses.ConvertCodexResponseToOpenAIResponses, NonStream: codexresponses.ConvertCodexResponseToOpenAIResponsesNonStream})
+				}
+				oldClosed := make(chan struct{})
+				freshRequest := make(chan struct{})
+				releaseSuccess := make(chan struct{})
+				var connections atomic.Int32
+				upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+					if errUpgrade != nil {
+						return
 					}
-					oldClosed := make(chan struct{})
-					freshRequest := make(chan struct{})
-					releaseSuccess := make(chan struct{})
-					var connections atomic.Int32
-					upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						conn, errUpgrade := upgrader.Upgrade(w, r, nil)
-						if errUpgrade != nil {
-							return
+					n := connections.Add(1)
+					defer func() {
+						if errClose := conn.Close(); errClose != nil {
+							t.Log(errClose)
 						}
-						n := connections.Add(1)
-						defer func() {
-							if errClose := conn.Close(); errClose != nil {
-								t.Log(errClose)
-							}
-						}()
-						if _, _, errReadMessage := conn.ReadMessage(); errReadMessage != nil {
-							return
+					}()
+					if _, _, errReadMessage := conn.ReadMessage(); errReadMessage != nil {
+						return
+					}
+					if n == 1 {
+						events := [][]byte{[]byte(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"a","call_id":"c","name":"apply_patch","arguments":""}}`), []byte(`{"type":"response.function_call_arguments.delta","item_id":"a","output_index":0,"delta":"{\"input\":7,\"secret\":\"RAW_SECRET\"}"}`)}
+						if branch == "translator" {
+							events = [][]byte{[]byte(`{"type":"repair.invalid"}`)}
+						} else if branch == "translator-terminal" {
+							events = [][]byte{[]byte(`{"type":"response.completed","response":{"id":"repair-invalid","output":[],"usage":{"input_tokens":5,"output_tokens":3}}}`)}
+						} else if branch == "translator-warmup" {
+							events = [][]byte{[]byte(`{"type":"response.created","response":{"id":"repair-invalid"}}`)}
 						}
-						if n == 1 {
-							events := [][]byte{[]byte(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"a","call_id":"c","name":"apply_patch","arguments":""}}`), []byte(`{"type":"response.function_call_arguments.delta","item_id":"a","output_index":0,"delta":"{\"input\":7,\"secret\":\"RAW_SECRET\"}"}`)}
-							if branch == "translator" {
-								events = [][]byte{[]byte(`{"type":"repair.invalid"}`)}
-							} else if branch == "translator-terminal" {
-								events = [][]byte{[]byte(`{"type":"response.completed","response":{"id":"repair-invalid","output":[],"usage":{"input_tokens":5,"output_tokens":3}}}`)}
-							} else if branch == "translator-warmup" {
-								events = [][]byte{[]byte(`{"type":"response.created","response":{"id":"repair-invalid"}}`)}
-							}
-							for _, event := range events {
-								if errWriteMessage := conn.WriteMessage(websocket.TextMessage, event); errWriteMessage != nil {
-									return
-								}
-							}
-							// Leave the attempt open. A same-socket retry would get stale output.
-							if _, _, errReadMessage := conn.ReadMessage(); errReadMessage == nil {
-								_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"stale","output":[]}}`))
-								t.Error("failed socket accepted a second request")
-							} else {
-								close(oldClosed)
-							}
-							return
-						}
-						close(freshRequest)
-						<-releaseSuccess
-						for _, event := range task6RepairSource("response.completed") {
+						for _, event := range events {
 							if errWriteMessage := conn.WriteMessage(websocket.TextMessage, event); errWriteMessage != nil {
 								return
 							}
 						}
-						_, _, _ = conn.ReadMessage()
-					}))
-					defer server.Close()
-					var releaseOnce sync.Once
-					release := func() { releaseOnce.Do(func() { close(releaseSuccess) }) }
-					defer release()
-					exec := NewXAIWebsocketsExecutor(&config.Config{})
-					exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
-					exec.idStore = &xaiWebsocketIDStateStore{sessions: make(map[string]*xaiWebsocketIDState)}
-					sessionID := t.Name()
-					defer exec.CloseExecutionSession(sessionID)
-					ctx, cancel := context.WithCancel(t.Context())
-					defer cancel()
-					if raw {
-						ctx = cliproxyexecutor.WithDownstreamWebsocket(ctx)
-					}
-					auth := &cliproxyauth.Auth{ID: t.Name(), Provider: "xai", Attributes: map[string]string{"api_key": "test", "base_url": server.URL}}
-					req := cliproxyexecutor.Request{Model: "grok-4", Payload: []byte(task6PatchRequest)}
-					if branch == "translator-warmup" {
-						req.Payload = []byte(`{"generate":false,"input":"patch","tools":[{"type":"custom","name":"apply_patch"}]}`)
-					}
-					oldLifecycle := &task6RepairLifecycle{ended: make(chan string, 1)}
-					opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionID}, ExecutionLifecycle: oldLifecycle}
-					checkUsage := task6CaptureFailureUsage(t, auth.ID)
-					first, errExecuteStream := exec.ExecuteStream(ctx, auth, req, opts)
-					if errExecuteStream != nil {
-						t.Fatal(errExecuteStream)
-					}
-					// The failure frame is a synchronization point before the request lock releases.
-					failed := 0
-					for chunk := range first.Chunks {
-						if bytes.Contains(chunk.Payload, []byte("RAW_SECRET")) || task6RepairChunkType(chunk.Payload) == "response.completed" {
-							t.Fatalf("failed attempt leaked/completed: %s", chunk.Payload)
-						}
-						if task6RepairChunkType(chunk.Payload) != "response.failed" {
-							if chunk.Err != nil {
-								t.Fatal(chunk.Err)
-							}
-							continue
-						}
-						failed++
-						sess := exec.getOrCreateSession(sessionID)
-						sess.connMu.Lock()
-						live := sess.conn != nil
-						sess.connMu.Unlock()
-						if live {
-							t.Fatal("validation failure delivered before invalidating persistent connection")
-						}
-						break
-					}
-					if failed != 1 {
-						t.Fatal("missing clean failure frame")
-					}
-					// Retry starts while the first attempt is blocked delivering its clean error.
-					type attempt struct {
-						stream *cliproxyexecutor.StreamResult
-						err    error
-					}
-					secondResult := make(chan attempt, 1)
-					req.Payload = []byte(task6PatchRequest)
-					opts.ExecutionLifecycle = &task6RepairLifecycle{ended: make(chan string, 1)}
-					go func() {
-						stream, errRetry := exec.ExecuteStream(ctx, auth, req, opts)
-						secondResult <- attempt{stream: stream, err: errRetry}
-					}()
-					errorCount := 0
-					for chunk := range first.Chunks {
-						if chunk.Err != nil {
-							errorCount++
-							assertTask6PatchError(t, chunk.Err)
+						// Leave the attempt open. A same-socket retry would get stale output.
+						if _, _, errReadMessage := conn.ReadMessage(); errReadMessage == nil {
+							_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"stale","output":[]}}`))
+							t.Error("failed socket accepted a second request")
 						} else {
-							t.Errorf("extra failure payload: %s", chunk.Payload)
+							close(oldClosed)
+						}
+						return
+					}
+					close(freshRequest)
+					<-releaseSuccess
+					for _, event := range task6RepairSource("response.completed") {
+						if errWriteMessage := conn.WriteMessage(websocket.TextMessage, event); errWriteMessage != nil {
+							return
 						}
 					}
-					if errorCount != 1 {
-						t.Errorf("clean errors=%d, want one", errorCount)
+					_, _, _ = conn.ReadMessage()
+				}))
+				defer server.Close()
+				var releaseOnce sync.Once
+				release := func() { releaseOnce.Do(func() { close(releaseSuccess) }) }
+				defer release()
+				exec := NewXAIWebsocketsExecutor(&config.Config{})
+				exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+				exec.idStore = &xaiWebsocketIDStateStore{sessions: make(map[string]*xaiWebsocketIDState)}
+				sessionID := t.Name()
+				defer exec.CloseExecutionSession(sessionID)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if raw {
+					ctx = cliproxyexecutor.WithDownstreamWebsocket(ctx)
+				}
+				auth := &cliproxyauth.Auth{ID: t.Name(), Provider: "xai", Attributes: map[string]string{"api_key": "test", "base_url": server.URL}}
+				req := cliproxyexecutor.Request{Model: "grok-4", Payload: []byte(task6PatchRequest)}
+				if branch == "translator-warmup" {
+					req.Payload = []byte(`{"generate":false,"input":"patch","tools":[{"type":"custom","name":"apply_patch"}]}`)
+				}
+				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionID}}
+				checkUsage := task6CaptureFailureUsage(t, auth.ID)
+				first, errExecuteStream := exec.ExecuteStream(ctx, auth, req, opts)
+				if errExecuteStream != nil {
+					t.Fatal(errExecuteStream)
+				}
+				// The failure frame is a synchronization point before the request lock releases.
+				failed := 0
+				for chunk := range first.Chunks {
+					if bytes.Contains(chunk.Payload, []byte("RAW_SECRET")) || task6RepairChunkType(chunk.Payload) == "response.completed" {
+						t.Fatalf("failed attempt leaked/completed: %s", chunk.Payload)
 					}
-					checkUsage()
-					task6RepairAwait(t, oldClosed, "first attempt must close open upstream")
-					task6RepairAwait(t, freshRequest, "retry must use a fresh connection")
-					select {
-					case reason := <-oldLifecycle.ended:
-						if reason != "invalid_tool_arguments" {
-							t.Errorf("lifecycle ended as %q", reason)
+					if task6RepairChunkType(chunk.Payload) != "response.failed" {
+						if chunk.Err != nil {
+							t.Fatal(chunk.Err)
 						}
-					default:
-						t.Error("failed lifecycle was not ended")
+						continue
 					}
-					if detach {
-						// A stale bound-resource callback races with the new active connection.
-						detached := make(chan struct{})
-						go func() {
-							if errDetach := oldLifecycle.detach(); errDetach != nil {
-								t.Error(errDetach)
-							}
-							close(detached)
-						}()
-						task6RepairAwait(t, detached, "stale lifecycle detach")
+					failed++
+					sess := exec.getOrCreateSession(sessionID)
+					sess.connMu.Lock()
+					live := sess.conn != nil
+					sess.connMu.Unlock()
+					if live {
+						t.Fatal("validation failure delivered before invalidating persistent connection")
 					}
-					release()
-					second := <-secondResult
-					if second.err != nil {
-						t.Fatal(second.err)
+					break
+				}
+				if failed != 1 {
+					t.Fatal("missing clean failure frame")
+				}
+				// Retry starts while the first attempt is blocked delivering its clean error.
+				type attempt struct {
+					stream *cliproxyexecutor.StreamResult
+					err    error
+				}
+				secondResult := make(chan attempt, 1)
+				req.Payload = []byte(task6PatchRequest)
+				go func() {
+					stream, errRetry := exec.ExecuteStream(ctx, auth, req, opts)
+					secondResult <- attempt{stream: stream, err: errRetry}
+				}()
+				errorCount := 0
+				for chunk := range first.Chunks {
+					if chunk.Err != nil {
+						errorCount++
+						assertTask6PatchError(t, chunk.Err)
+					} else {
+						t.Errorf("extra failure payload: %s", chunk.Payload)
 					}
-					task6RepairReadStream(t, second.stream, false)
-					task6DrainUsage(t)
-					if connections.Load() != 2 {
-						t.Errorf("connections=%d, want two", connections.Load())
-					}
-				})
-			}
+				}
+				if errorCount != 1 {
+					t.Errorf("clean errors=%d, want one", errorCount)
+				}
+				checkUsage()
+				task6RepairAwait(t, oldClosed, "first attempt must close open upstream")
+				task6RepairAwait(t, freshRequest, "retry must use a fresh connection")
+				release()
+				second := <-secondResult
+				if second.err != nil {
+					t.Fatal(second.err)
+				}
+				task6RepairReadStream(t, second.stream, false)
+				task6DrainUsage(t)
+				if connections.Load() != 2 {
+					t.Errorf("connections=%d, want two", connections.Load())
+				}
+			})
 		}
 	}
 }

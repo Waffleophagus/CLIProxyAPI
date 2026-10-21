@@ -288,29 +288,29 @@ func TestScheduler_InterleavedMarkResult_DoesNotTriggerRebuild(t *testing.T) {
 }
 
 // TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve verifies that with a large
-// number of credentials (as in production Antigravity deployments with issue #5988),
+// number of credentials (as in production Acme deployments with issue #5988),
 // concurrent cooldown pick failures do not cause lock starvation or rebuilds.
 func TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
-	manager.RegisterExecutor(schedulerProviderTestExecutor{provider: "antigravity"})
+	manager.RegisterExecutor(schedulerProviderTestExecutor{provider: "acme"})
 
 	const credentialCount = 40
-	targetModel := "antigravity-cooldown-model"
-	siblingModel := "antigravity-healthy-model"
+	targetModel := "acme-cooldown-model"
+	siblingModel := "acme-healthy-model"
 
 	reg := registry.GetGlobalRegistry()
 	for i := 0; i < credentialCount; i++ {
 		authID := fmt.Sprintf("ag-auth-%d", i)
 		auth := &Auth{
 			ID:       authID,
-			Provider: "antigravity",
+			Provider: "acme",
 		}
 		if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
 			t.Fatalf("register auth %d: %v", i, errRegister)
 		}
 		// Register BOTH models in a single call to preserve targetModel.
-		reg.RegisterClient(authID, "antigravity", []*registry.ModelInfo{
+		reg.RegisterClient(authID, "acme", []*registry.ModelInfo{
 			{ID: targetModel},
 			{ID: siblingModel},
 		})
@@ -321,7 +321,7 @@ func TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve(t *testing.T) {
 	}
 
 	// Verify targetModel can be picked initially.
-	initialPicked, errInitial := manager.scheduler.pickSingle(ctx, "antigravity", targetModel, cliproxyexecutor.Options{}, nil)
+	initialPicked, errInitial := manager.scheduler.pickSingle(ctx, "acme", targetModel, cliproxyexecutor.Options{}, nil)
 	if errInitial != nil || initialPicked == nil {
 		t.Fatalf("initial targetModel pick failed: %v", errInitial)
 	}
@@ -331,7 +331,7 @@ func TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve(t *testing.T) {
 		authID := fmt.Sprintf("ag-auth-%d", i)
 		manager.MarkResult(ctx, Result{
 			AuthID:   authID,
-			Provider: "antigravity",
+			Provider: "acme",
 			Model:    targetModel,
 			Success:  false,
 			Error:    &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exceeded"},
@@ -339,14 +339,14 @@ func TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve(t *testing.T) {
 	}
 
 	// Verify targetModel is in modelCooldownError.
-	_, errTargetCooldown := manager.scheduler.pickSingle(ctx, "antigravity", targetModel, cliproxyexecutor.Options{}, nil)
+	_, errTargetCooldown := manager.scheduler.pickSingle(ctx, "acme", targetModel, cliproxyexecutor.Options{}, nil)
 	var cooldownErr *modelCooldownError
 	if !errors.As(errTargetCooldown, &cooldownErr) {
 		t.Fatalf("expected targetModel error to be *modelCooldownError, got: %v", errTargetCooldown)
 	}
 
 	manager.scheduler.mu.Lock()
-	providerBefore := manager.scheduler.providers["antigravity"]
+	providerBefore := manager.scheduler.providers["acme"]
 	manager.scheduler.mu.Unlock()
 
 	// Launch concurrent picks on targetModel (all cooling) and siblingModel (healthy).
@@ -359,7 +359,7 @@ func TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-startGate
-			_, _, errPick := manager.pickNext(ctx, "antigravity", targetModel, cliproxyexecutor.Options{}, nil)
+			_, _, errPick := manager.pickNext(ctx, "acme", targetModel, cliproxyexecutor.Options{}, nil)
 			if errPick == nil {
 				t.Errorf("expected pickNext on targetModel to fail with cooldown error")
 			}
@@ -373,7 +373,7 @@ func TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve(t *testing.T) {
 	healthyDone := make(chan struct{})
 	go func() {
 		<-startGate
-		picked, _, errPick := manager.pickNext(ctx, "antigravity", siblingModel, cliproxyexecutor.Options{}, nil)
+		picked, _, errPick := manager.pickNext(ctx, "acme", siblingModel, cliproxyexecutor.Options{}, nil)
 		if errPick != nil || picked == nil {
 			t.Errorf("sibling model pick failed: picked=%v, err=%v", picked, errPick)
 		}
@@ -401,7 +401,7 @@ func TestScheduler_LargeCredentialSet_CooldownDoesNotLockStarve(t *testing.T) {
 	}
 
 	manager.scheduler.mu.Lock()
-	providerAfter := manager.scheduler.providers["antigravity"]
+	providerAfter := manager.scheduler.providers["acme"]
 	manager.scheduler.mu.Unlock()
 
 	if providerBefore != providerAfter {

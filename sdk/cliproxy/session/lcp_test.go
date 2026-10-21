@@ -10,64 +10,6 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-func TestExtractCanonicalTurnsProtocols(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		format sdktranslator.Format
-		body   string
-		roles  []string
-	}{
-		{
-			name:   "openai chat",
-			format: sdktranslator.FormatOpenAI,
-			body:   `{"messages":[{"role":"system","content":"Be helpful"},{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}`,
-			roles:  []string{"system", "user", "assistant"},
-		},
-		{
-			name:   "claude messages",
-			format: sdktranslator.FormatClaude,
-			body:   `{"system":[{"type":"text","text":"Be helpful"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},{"role":"assistant","content":"hi"}]}`,
-			roles:  []string{"system", "user", "assistant"},
-		},
-		{
-			name:   "openai responses",
-			format: sdktranslator.FormatOpenAIResponse,
-			body:   `{"instructions":"Be helpful","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}`,
-			roles:  []string{"system", "user", "assistant"},
-		},
-		{
-			name:   "gemini",
-			format: sdktranslator.FormatGemini,
-			body:   `{"systemInstruction":{"parts":[{"text":"Be helpful"}]},"contents":[{"role":"user","parts":[{"text":"hello"}]},{"role":"model","parts":[{"text":"hi"}]}]}`,
-			roles:  []string{"system", "user", "assistant"},
-		},
-		{
-			name:   "interactions",
-			format: sdktranslator.FormatInteractions,
-			body:   `{"system_instruction":"Be helpful","input":[{"type":"user_input","content":[{"type":"text","text":"hello"}]},{"type":"model_output","content":[{"type":"text","text":"hi"}]}]}`,
-			roles:  []string{"system", "user", "assistant"},
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			turns := ExtractCanonicalTurns(test.format, []byte(test.body))
-			if len(turns) != len(test.roles) {
-				t.Fatalf("ExtractCanonicalTurns() returned %d turns, want %d: %#v", len(turns), len(test.roles), turns)
-			}
-			for index, wantRole := range test.roles {
-				if turns[index].Role != wantRole {
-					t.Fatalf("turn %d role = %q, want %q", index, turns[index].Role, wantRole)
-				}
-			}
-		})
-	}
-}
-
 func TestExtractCanonicalTurnsBoundsTurnAllocation(t *testing.T) {
 	t.Parallel()
 
@@ -154,29 +96,6 @@ func TestExtractCanonicalTurnsBoundsPartsPerTurn(t *testing.T) {
 	}
 }
 
-func TestExtractCanonicalTurnsGrowthAndCrossProtocolNormalization(t *testing.T) {
-	t.Parallel()
-
-	firstOpenAI := []byte(`{"messages":[{"role":"system","content":"Be helpful"},{"role":"user","content":"hello"}]}`)
-	grownOpenAI := []byte(`{"messages":[{"role":"system","content":"Be helpful"},{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"continue"}]}`)
-	firstGemini := []byte(`{"systemInstruction":{"parts":[{"text":"Be helpful"}]},"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
-
-	openAITurns := ExtractCanonicalTurns(sdktranslator.FormatOpenAI, firstOpenAI)
-	grownTurns := ExtractCanonicalTurns(sdktranslator.FormatOpenAI, grownOpenAI)
-	geminiTurns := ExtractCanonicalTurns(sdktranslator.FormatGemini, firstGemini)
-	if len(openAITurns) != 2 || len(grownTurns) != 4 || len(geminiTurns) != 2 {
-		t.Fatalf("unexpected turn counts: openai=%d grown=%d gemini=%d", len(openAITurns), len(grownTurns), len(geminiTurns))
-	}
-	for index := range openAITurns {
-		if FastTurnFingerprint(openAITurns[index]) != FastTurnFingerprint(geminiTurns[index]) {
-			t.Fatalf("cross-protocol fingerprint %d differs", index)
-		}
-		if FastTurnFingerprint(openAITurns[index]) != FastTurnFingerprint(grownTurns[index]) {
-			t.Fatalf("conversation growth changed prefix fingerprint %d", index)
-		}
-	}
-}
-
 func TestExtractCanonicalTurnsIgnoresStructuredReasoningParts(t *testing.T) {
 	t.Parallel()
 
@@ -229,26 +148,6 @@ func TestExtractCanonicalTurnsSortsParallelToolCalls(t *testing.T) {
 	}
 	if FastTurnFingerprint(leftTurns[0]) != FastTurnFingerprint(rightTurns[0]) {
 		t.Fatal("parallel tool-call reordering changed the fingerprint")
-	}
-}
-
-func TestExtractCanonicalTurnsSortsGeminiFunctionParts(t *testing.T) {
-	t.Parallel()
-
-	left := []byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"second","args":{"value":2}}},{"functionCall":{"name":"first","args":{"value":1}}}]}]}`)
-	right := []byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"first","args":{"value":1}}},{"functionCall":{"name":"second","args":{"value":2}}}]}]}`)
-	leftTurns := ExtractCanonicalTurns(sdktranslator.FormatGemini, left)
-	rightTurns := ExtractCanonicalTurns(sdktranslator.FormatGemini, right)
-	if len(leftTurns) != 1 || len(rightTurns) != 1 {
-		t.Fatalf("unexpected turn counts: left=%d right=%d", len(leftTurns), len(rightTurns))
-	}
-	for _, part := range leftTurns[0].Parts {
-		if part.Kind != "tool:function_call" {
-			t.Fatalf("Gemini functionCall part kind = %q, want tool:function_call", part.Kind)
-		}
-	}
-	if FastTurnFingerprint(leftTurns[0]) != FastTurnFingerprint(rightTurns[0]) {
-		t.Fatal("Gemini functionCall reordering changed the fingerprint")
 	}
 }
 
@@ -612,27 +511,6 @@ func TestMerklePrefixMatcherTouchExpiredEntry(t *testing.T) {
 	match, ok := matcher.MatchFingerprints(namespace, fingerprints, minPrefixLength)
 	if !ok || match.AuthID != "auth-A" {
 		t.Fatalf("expected active match after fresh touch, got match=%v, ok=%v", match, ok)
-	}
-}
-
-func TestExtractCanonicalTurnsAntigravityNestedRequest(t *testing.T) {
-	t.Parallel()
-
-	nested := []byte(`{
-		"project_id": "proj-123",
-		"request": {
-			"systemInstruction": {"parts":[{"text":"system prompt"}]},
-			"contents": [
-				{"role":"user","parts":[{"text":"hello antigravity"}]}
-			]
-		}
-	}`)
-	turns := ExtractCanonicalTurns(sdktranslator.FormatAntigravity, nested)
-	if len(turns) != 2 {
-		t.Fatalf("len(turns) = %d, want 2", len(turns))
-	}
-	if turns[0].Role != "system" || turns[1].Role != "user" {
-		t.Fatalf("unexpected turn roles: %+v", turns)
 	}
 }
 
@@ -1847,4 +1725,79 @@ func turnsFromTexts(values ...string) []CanonicalTurn {
 		})
 	}
 	return turns
+}
+
+func TestExtractCanonicalTurnsProtocols(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		format sdktranslator.Format
+		body   string
+		roles  []string
+	}{
+		{
+			name:   "openai chat",
+			format: sdktranslator.FormatOpenAI,
+			body:   `{"messages":[{"role":"system","content":"Be helpful"},{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}`,
+			roles:  []string{"system", "user", "assistant"},
+		},
+		{
+			name:   "claude messages",
+			format: sdktranslator.FormatClaude,
+			body:   `{"system":[{"type":"text","text":"Be helpful"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},{"role":"assistant","content":"hi"}]}`,
+			roles:  []string{"system", "user", "assistant"},
+		},
+		{
+			name:   "openai responses",
+			format: sdktranslator.FormatOpenAIResponse,
+			body:   `{"instructions":"Be helpful","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}`,
+			roles:  []string{"system", "user", "assistant"},
+		},
+		{
+			name:   "interactions",
+			format: sdktranslator.FormatInteractions,
+			body:   `{"system_instruction":"Be helpful","input":[{"type":"user_input","content":[{"type":"text","text":"hello"}]},{"type":"model_output","content":[{"type":"text","text":"hi"}]}]}`,
+			roles:  []string{"system", "user", "assistant"},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			turns := ExtractCanonicalTurns(test.format, []byte(test.body))
+			if len(turns) != len(test.roles) {
+				t.Fatalf("ExtractCanonicalTurns() returned %d turns, want %d: %#v", len(turns), len(test.roles), turns)
+			}
+			for index, wantRole := range test.roles {
+				if turns[index].Role != wantRole {
+					t.Fatalf("turn %d role = %q, want %q", index, turns[index].Role, wantRole)
+				}
+			}
+		})
+	}
+}
+
+func TestExtractCanonicalTurnsGrowthAndCrossProtocolNormalization(t *testing.T) {
+	t.Parallel()
+
+	firstOpenAI := []byte(`{"messages":[{"role":"system","content":"Be helpful"},{"role":"user","content":"hello"}]}`)
+	grownOpenAI := []byte(`{"messages":[{"role":"system","content":"Be helpful"},{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"continue"}]}`)
+	firstClaude := []byte(`{"system":[{"type":"text","text":"Be helpful"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	openAITurns := ExtractCanonicalTurns(sdktranslator.FormatOpenAI, firstOpenAI)
+	grownTurns := ExtractCanonicalTurns(sdktranslator.FormatOpenAI, grownOpenAI)
+	claudeTurns := ExtractCanonicalTurns(sdktranslator.FormatClaude, firstClaude)
+	if len(openAITurns) != 2 || len(grownTurns) != 4 || len(claudeTurns) != 2 {
+		t.Fatalf("unexpected turn counts: openai=%d grown=%d claude=%d", len(openAITurns), len(grownTurns), len(claudeTurns))
+	}
+	for index := range openAITurns {
+		if FastTurnFingerprint(openAITurns[index]) != FastTurnFingerprint(claudeTurns[index]) {
+			t.Fatalf("cross-protocol fingerprint %d differs", index)
+		}
+		if FastTurnFingerprint(openAITurns[index]) != FastTurnFingerprint(grownTurns[index]) {
+			t.Fatalf("conversation growth changed prefix fingerprint %d", index)
+		}
+	}
 }

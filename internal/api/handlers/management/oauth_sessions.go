@@ -22,14 +22,12 @@ const (
 
 const (
 	oauthSessionSourceBuiltin = "builtin"
-	oauthSessionSourcePlugin  = "plugin"
 )
 
 var (
 	errInvalidOAuthState      = errors.New("invalid oauth state")
 	errUnsupportedOAuthFlow   = errors.New("unsupported oauth provider")
 	errOAuthSessionNotPending = errors.New("oauth session is not pending")
-	errOAuthSessionExists     = errors.New("oauth session already exists")
 )
 
 // ErrSIWCCallbackRequiresV8 prevents legacy callback sinks from accepting SIWC codes.
@@ -39,7 +37,6 @@ type oauthSession struct {
 	Provider       string
 	Status         string
 	Source         string
-	Metadata       map[string]any
 	SIWC           *siwcBindSession
 	SIWCCommitting bool
 	Completed      bool
@@ -101,35 +98,6 @@ func (s *oauthSessionStore) Register(state, provider string) {
 	}
 }
 
-func (s *oauthSessionStore) RegisterPlugin(state, provider string, metadata map[string]any) error {
-	state = strings.TrimSpace(state)
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if state == "" || provider == "" {
-		return fmt.Errorf("%w: empty state or provider", errInvalidOAuthState)
-	}
-	if errState := ValidateOAuthState(state); errState != nil {
-		return errState
-	}
-	now := time.Now()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.purgeExpiredLocked(now)
-	if _, ok := s.sessions[state]; ok {
-		return errOAuthSessionExists
-	}
-	s.sessions[state] = oauthSession{
-		Provider:  provider,
-		Status:    "",
-		Source:    oauthSessionSourcePlugin,
-		Metadata:  cloneOAuthSessionMetadata(metadata),
-		CreatedAt: now,
-		ExpiresAt: now.Add(s.ttl),
-	}
-	return nil
-}
-
 func (s *oauthSessionStore) SetError(state, message string) {
 	state = strings.TrimSpace(state)
 	message = strings.TrimSpace(message)
@@ -171,7 +139,6 @@ func (s *oauthSessionStore) Complete(state string) {
 		return
 	}
 	session.Status = ""
-	session.Metadata = nil
 	session.SIWCCommitting = false
 	session.Completed = true
 	session.ExpiresAt = now.Add(s.completedTTL)
@@ -194,7 +161,6 @@ func (s *oauthSessionStore) CompleteProvider(provider string, source string) int
 	for state, session := range s.sessions {
 		if session.SIWC == nil && !session.Completed && strings.EqualFold(session.Provider, provider) && (source == "" || session.Source == source) {
 			session.Status = ""
-			session.Metadata = nil
 			session.Completed = true
 			session.ExpiresAt = now.Add(s.completedTTL)
 			s.sessions[state] = session
@@ -213,7 +179,6 @@ func (s *oauthSessionStore) Get(state string) (oauthSession, bool) {
 
 	s.purgeExpiredLocked(now)
 	session, ok := s.sessions[state]
-	session.Metadata = cloneOAuthSessionMetadata(session.Metadata)
 	return session, ok
 }
 
@@ -270,36 +235,13 @@ func (s *oauthSessionStore) Cancel(state string) bool {
 	return true
 }
 
-func cloneOAuthSessionMetadata(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}
-
 var oauthSessions = newOAuthSessionStore(oauthSessionTTL)
 
 func RegisterOAuthSession(state, provider string) { oauthSessions.Register(state, provider) }
 
-func RegisterPluginOAuthSession(state, provider string, metadata map[string]any) error {
-	return oauthSessions.RegisterPlugin(state, provider, metadata)
-}
-
 func SetOAuthSessionError(state, message string) { oauthSessions.SetError(state, message) }
 
 func CompleteOAuthSession(state string) { oauthSessions.Complete(state) }
-
-func CompleteOAuthSessionsByProvider(provider string) int {
-	return oauthSessions.CompleteProvider(provider, oauthSessionSourceBuiltin)
-}
-
-func CompletePluginOAuthSessionsByProvider(provider string) int {
-	return oauthSessions.CompleteProvider(provider, oauthSessionSourcePlugin)
-}
 
 func GetOAuthSession(state string) (provider string, status string, ok bool) {
 	session, ok := oauthSessions.Get(state)
@@ -309,12 +251,16 @@ func GetOAuthSession(state string) (provider string, status string, ok bool) {
 	return session.Provider, session.Status, true
 }
 
-func GetOAuthSessionDetails(state string) (provider string, status string, isPlugin bool, metadata map[string]any, completed bool, ok bool) {
+func CompleteOAuthSessionsByProvider(provider string) int {
+	return oauthSessions.CompleteProvider(provider, oauthSessionSourceBuiltin)
+}
+
+func GetOAuthSessionDetails(state string) (provider string, status string, completed bool, ok bool) {
 	session, ok := oauthSessions.Get(state)
 	if !ok {
-		return "", "", false, nil, false, false
+		return "", "", false, false
 	}
-	return session.Provider, session.Status, session.Source == oauthSessionSourcePlugin, cloneOAuthSessionMetadata(session.Metadata), session.Completed, true
+	return session.Provider, session.Status, session.Completed, true
 }
 
 func IsOAuthSessionPending(state, provider string) bool {
@@ -386,8 +332,6 @@ func NormalizeOAuthProvider(provider string) (string, error) {
 		return "anthropic", nil
 	case "codex", "openai":
 		return "codex", nil
-	case "antigravity", "anti-gravity":
-		return "antigravity", nil
 	case "xai", "x-ai", "x.ai", "grok":
 		return "xai", nil
 	case "devin", "cognition":
@@ -403,10 +347,10 @@ func NormalizeOAuthCallbackProvider(provider string) (string, error) {
 	if normalized, errNormalize := NormalizeOAuthProvider(provider); errNormalize == nil {
 		return normalized, nil
 	}
-	return NormalizePluginOAuthCallbackProvider(provider)
+	return normalizeOAuthProviderSlug(provider)
 }
 
-func NormalizePluginOAuthCallbackProvider(provider string) (string, error) {
+func normalizeOAuthProviderSlug(provider string) (string, error) {
 	trimmed := strings.ToLower(strings.TrimSpace(provider))
 	if trimmed == "" {
 		return "", errUnsupportedOAuthFlow
@@ -421,14 +365,6 @@ func NormalizePluginOAuthCallbackProvider(provider string) (string, error) {
 		}
 	}
 	return trimmed, nil
-}
-
-func normalizeOAuthCallbackProviderForPendingSession(provider, state string) (string, error) {
-	session, ok := oauthSessions.Get(state)
-	if ok && session.Source == oauthSessionSourcePlugin {
-		return NormalizePluginOAuthCallbackProvider(provider)
-	}
-	return NormalizeOAuthCallbackProvider(provider)
 }
 
 type oauthCallbackFilePayload struct {
@@ -497,7 +433,7 @@ func writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessag
 }
 
 func WriteOAuthCallbackFileForPendingSession(authDir, provider, state, code, errorMessage string) (string, error) {
-	canonicalProvider, err := normalizeOAuthCallbackProviderForPendingSession(provider, state)
+	canonicalProvider, err := NormalizeOAuthCallbackProvider(provider)
 	if err != nil {
 		return "", err
 	}

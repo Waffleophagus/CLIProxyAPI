@@ -1,0 +1,256 @@
+name: CI and container
+
+# Branch work is covered by pull_request; push only runs for main and release
+# tags, so a push to a PR branch triggers one run instead of two. Use
+# workflow_dispatch to run (and publish a branch-<name> image for) any branch.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  go:
+    name: Go build, vet and test
+    runs-on: ubuntu-latest
+    container: ghcr.io/catthehacker/ubuntu:act-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [[ -n "$unformatted" ]]; then
+            echo "These files need gofmt:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -p 4 ./...
+
+  web:
+    name: Web UI lint, check, test and build
+    runs-on: ubuntu-latest
+    container: ghcr.io/catthehacker/ubuntu:act-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The pnpm version comes from web/package.json's packageManager field.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: ESLint
+        run: pnpm lint
+      - name: Formatting
+        run: pnpm format:check
+      - name: Svelte check
+        run: pnpm check
+      - name: Unit tests
+        run: pnpm test
+      - name: Production build
+        run: pnpm build
+
+  image:
+    name: Container image
+    needs: [go, web]
+    runs-on: ubuntu-latest
+    container: ghcr.io/catthehacker/ubuntu:act-24.04
+    timeout-minutes: 45
+    env:
+      BUILDER: cliproxy-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_IMAGE: cliproxy:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_CONTAINER: cliproxy-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${SERVER_URL:?Runner server_url is missing}"
+          : "${REPOSITORY:?Runner repository is missing}"
+          registry="${SERVER_URL#*://}"
+          registry="${registry%%/*}"
+          image="$(printf '%s/%s' "$registry" "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          revision="$(git rev-parse HEAD)"
+          short="$(git rev-parse --short=12 HEAD)"
+          version="$(git describe --tags --always --dirty 2>/dev/null || echo "$short")"
+          tags="$image:sha-$short"
+          publish=false
+          case "$REF" in
+            refs/heads/main)
+              if [[ "$EVENT_NAME" == push || "$EVENT_NAME" == workflow_dispatch ]]; then
+                publish=true
+                tags="$tags,$image:latest"
+              fi
+              ;;
+            refs/tags/v*)
+              publish=true
+              tag="${REF#refs/tags/}"
+              tags="$tags,$image:$(printf '%s' "$tag" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+              version="$tag"
+              ;;
+            refs/heads/*)
+              # A manual dispatch on any other branch publishes a branch-<name> image for testing.
+              if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+                publish=true
+                branch="${REF#refs/heads/}"
+                tags="$tags,$image:branch-$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+              fi
+              ;;
+          esac
+          if [[ "$publish" == true && ( -z "$REGISTRY_USERNAME" || -z "$REGISTRY_TOKEN" ) ]]; then
+            echo "::warning::REGISTRY_USERNAME/REGISTRY_TOKEN secrets are not set; the image is built and tested but not published."
+            publish=false
+          fi
+          {
+            echo "registry=$registry"
+            echo "image=$image"
+            echo "revision=$revision"
+            echo "version=$version"
+            echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "tags=$tags"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        shell: bash
+        run: docker buildx create --driver docker-container --name "$BUILDER" --use
+      - name: Log in to Forgejo registry
+        if: steps.meta.outputs.publish == 'true'
+        shell: bash
+        env:
+          REGISTRY: ${{ steps.meta.outputs.registry }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
+      - name: Build image for smoke testing
+        shell: bash
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
+          PUBLISH: ${{ steps.meta.outputs.publish }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cache=()
+          if [[ "$PUBLISH" == true ]]; then
+            cache+=(--cache-from "type=registry,ref=$IMAGE:buildcache")
+          fi
+          docker buildx build --builder "$BUILDER" --platform linux/amd64 --load \
+            --tag "$SMOKE_IMAGE" \
+            --build-arg "VERSION=$VERSION" --build-arg "COMMIT=$REVISION" --build-arg "BUILD_DATE=$BUILD_DATE" \
+            --label "org.opencontainers.image.source=$SOURCE_URL" \
+            --label "org.opencontainers.image.revision=$REVISION" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            "${cache[@]}" .
+      - name: Smoke test image
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The example config keeps placeholder client keys, so the server starts in safe mode:
+          # health and the embedded UI respond, inference is refused.
+          docker run --detach --name "$SMOKE_CONTAINER" "$SMOKE_IMAGE" \
+            sh -c 'cp config.example.yaml config.yaml && exec ./CLIProxyAPI'
+          probe() {
+            docker run --rm --network "container:$SMOKE_CONTAINER" curlimages/curl:8.11.1 \
+              -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:8317$1" || true
+          }
+          for attempt in $(seq 1 30); do
+            [[ "$(probe /healthz)" == 200 ]] && break
+            sleep 1
+          done
+          health="$(probe /healthz)"
+          ui="$(probe /ui/)"
+          models="$(probe /v1/models)"
+          echo "healthz=$health ui=$ui v1/models=$models"
+          docker logs "$SMOKE_CONTAINER" 2>&1 | tail -n 40
+          [[ "$health" == 200 ]] || { echo "healthz did not return 200" >&2; exit 1; }
+          [[ "$ui" == 200 ]] || { echo "embedded UI did not return 200" >&2; exit 1; }
+          [[ "$models" == 401 || "$models" == 403 ]] || { echo "unauthenticated /v1/models returned $models" >&2; exit 1; }
+      - name: Publish image to Forgejo
+        if: steps.meta.outputs.publish == 'true'
+        shell: bash
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag_args=()
+          IFS=',' read -ra tag_list <<< "$TAGS"
+          for t in "${tag_list[@]}"; do tag_args+=(--tag "$t"); done
+          docker buildx build --builder "$BUILDER" --platform linux/amd64 --push \
+            "${tag_args[@]}" \
+            --build-arg "VERSION=$VERSION" --build-arg "COMMIT=$REVISION" --build-arg "BUILD_DATE=$BUILD_DATE" \
+            --label "org.opencontainers.image.source=$SOURCE_URL" \
+            --label "org.opencontainers.image.revision=$REVISION" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max" \
+            --provenance=mode=min --sbom=true .
+          echo "Published: $TAGS"
+      - name: Clean up
+        if: always()
+        shell: bash
+        env:
+          REGISTRY: ${{ steps.meta.outputs.registry }}
+        run: |
+          docker rm --force "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
+          docker buildx rm "$BUILDER" >/dev/null 2>&1 || true
+          docker image rm "$SMOKE_IMAGE" >/dev/null 2>&1 || true
+          if [[ -n "${REGISTRY:-}" ]]; then
+            docker logout "$REGISTRY" >/dev/null 2>&1 || true
+          fi

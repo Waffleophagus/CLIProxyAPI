@@ -8,19 +8,19 @@ import (
 
 func TestDiffOAuthModelAliasChanges_IncludesDisplayName(t *testing.T) {
 	oldMap := map[string][]config.OAuthModelAlias{
-		"antigravity": {
-			{Name: "claude-opus-4-6-thinking", Alias: "claude-antigravity-opus-4-6-thinking", DisplayName: "Antigravity Opus 4.6"},
+		"acme": {
+			{Name: "claude-opus-4-6-thinking", Alias: "claude-acme-opus-4-6-thinking", DisplayName: "Acme Opus 4.6"},
 		},
 	}
 	newMap := map[string][]config.OAuthModelAlias{
-		"antigravity": {
-			{Name: "claude-opus-4-6-thinking", Alias: "claude-antigravity-opus-4-6-thinking", DisplayName: "Antigravity Opus 4.6 (Thinking)"},
+		"acme": {
+			{Name: "claude-opus-4-6-thinking", Alias: "claude-acme-opus-4-6-thinking", DisplayName: "Acme Opus 4.6 (Thinking)"},
 		},
 	}
 
 	changes, affected := DiffOAuthModelAliasChanges(oldMap, newMap)
-	expectContains(t, changes, "oauth-model-alias[antigravity]: updated (1 -> 1 entries)")
-	if len(affected) != 1 || affected[0] != "antigravity" {
-		t.Fatalf("expected antigravity to be affected, got %#v", affected)
+	expectContains(t, changes, "oauth-model-alias[acme]: updated (1 -> 1 entries)")
+	if len(affected) != 1 || affected[0] != "acme" {
+		t.Fatalf("expected acme to be affected, got %#v", affected)
 	}
 }

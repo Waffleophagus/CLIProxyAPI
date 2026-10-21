@@ -43,20 +43,11 @@ func QuotaCooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabledForAuth(auth)
 }
 
-// QuotaCooldownDisabledForAuthWithConfig returns whether cooling is disabled for the auth with the given config.
-func QuotaCooldownDisabledForAuthWithConfig(auth *Auth, cfg *internalconfig.Config) bool {
-	return quotaCooldownDisabledForAuthWithConfig(auth, cfg)
-}
-
 func quotaCooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabledForAuthWithConfig(auth, nil)
 }
 
 func quotaCooldownDisabledForAuthWithConfig(auth *Auth, cfg *internalconfig.Config) bool {
-	// Home owns cooldown state, so downstream instances must not schedule local cooldowns.
-	if cfg != nil && cfg.Home.Enabled {
-		return true
-	}
 	if auth != nil {
 		if override, ok := auth.DisableCoolingOverride(); ok {
 			return override
@@ -96,10 +87,6 @@ func providerCoolingOverrideForAuth(auth *Auth, cfg *internalconfig.Config) (boo
 		return false, false
 	}
 	return *entry.DisableCooling, true
-}
-
-func nextTransientErrorRetryAfter(now time.Time) time.Time {
-	return recoverableFailureRetryAfterWithHint(now, nil, false)
 }
 
 func recoverableFailureRetryAfter(now time.Time, disableCooling bool) time.Time {
@@ -156,10 +143,6 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	m.mu.RLock()
 	oldCooldownStore := m.cooldownStore
 	m.mu.RUnlock()
-	previousCfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
-	if homeSessionAliasTTL(previousCfg) != homeSessionAliasTTL(cfg) {
-		m.homeSessionAliases.clear()
-	}
 	m.runtimeConfig.Store(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if clearedCooldowns && oldCooldownStore != nil {
@@ -168,9 +151,6 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 			m.pendingCooldownStateStore = oldCooldownStore
 		}
 		m.mu.Unlock()
-	}
-	if !cfg.Home.Enabled {
-		m.clearHomeRuntimeAuths()
 	}
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	return clearedCooldowns
@@ -898,7 +878,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			m.mu.Unlock()
 			releaseMutation()
 			m.hook.OnResult(ctx, result)
-			m.publishErrorEvent(result, nil)
 			return
 		}
 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
@@ -1366,7 +1345,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 
 	m.hook.OnResult(ctx, result)
-	m.publishErrorEvent(result, authSnapshot)
 	m.updateSessionAffinity(result)
 }
 
@@ -1382,7 +1360,7 @@ func (m *Manager) updateSessionAffinity(result Result) {
 	}
 }
 
-func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) {
+func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth) {
 	if auth != nil {
 		if result.CredentialVersion == 0 {
 			result.CredentialVersion = auth.CredentialVersion
@@ -1391,25 +1369,7 @@ func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth
 			result.RegistrationEpoch = auth.RegistrationEpoch
 		}
 	}
-	if !ephemeral {
-		m.MarkResult(ctx, result)
-		return
-	}
-	m.reportHomeResult(ctx, result, auth)
-}
-
-// reportHomeResult only observes a Home dispatch result and never updates local auth state.
-func (m *Manager) reportHomeResult(ctx context.Context, result Result, auth *Auth) {
-	if m == nil || result.AuthID == "" {
-		return
-	}
-	var snapshot *Auth
-	if auth != nil {
-		snapshot = auth.Clone()
-	}
-	m.hook.OnResult(ctx, result)
-	m.publishErrorEvent(result, snapshot)
-	m.updateSessionAffinity(result)
+	m.MarkResult(ctx, result)
 }
 
 func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Result) {
@@ -1417,7 +1377,6 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		return
 	}
 
-	var authSnapshot *Auth
 	releaseMutation := m.lockAuthMutation(result.AuthID)
 	defer releaseMutation()
 	m.mu.Lock()
@@ -1426,7 +1385,6 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 			m.mu.Unlock()
 			releaseMutation()
 			m.hook.OnResult(ctx, result)
-			m.publishErrorEvent(result, nil)
 			return
 		}
 		now := time.Now()
@@ -1439,13 +1397,11 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		auth.Generation++
 		auth.UpdatedAt = now
 		_ = m.persistLocked(ctx, auth)
-		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()
 	releaseMutation()
 
 	m.hook.OnResult(ctx, result)
-	m.publishErrorEvent(result, authSnapshot)
 }
 
 func existingModelState(auth *Auth, model string) *ModelState {
@@ -1617,56 +1573,6 @@ func isModelStateActiveCooldown(state *ModelState, now time.Time) bool {
 		return true
 	}
 	return false
-}
-
-func (m *Manager) registryModelsForAuthAndModel(auth *Auth, authID, modelKey string) []string {
-	authID = strings.TrimSpace(authID)
-	modelKey = strings.TrimSpace(modelKey)
-	if authID == "" && auth != nil {
-		authID = auth.ID
-	}
-	if auth == nil && m != nil && authID != "" {
-		m.mu.RLock()
-		auth = m.auths[authID]
-		m.mu.RUnlock()
-	}
-	if authID == "" || modelKey == "" {
-		return nil
-	}
-
-	targetCanonical := canonicalModelKey(modelKey)
-	supportedModels := registry.GetGlobalRegistry().GetModelsForClient(authID)
-	if len(supportedModels) == 0 {
-		return nil
-	}
-
-	out := make([]string, 0, len(supportedModels))
-	seen := make(map[string]struct{}, len(supportedModels))
-
-	for _, model := range supportedModels {
-		if model == nil || strings.TrimSpace(model.ID) == "" {
-			continue
-		}
-		regModelID := strings.TrimSpace(model.ID)
-		stateKey := ""
-		if m != nil {
-			stateKey = m.selectionModelKeyForAuth(auth, regModelID)
-		}
-		if stateKey == "" {
-			stateKey = canonicalModelKey(regModelID)
-		}
-		if stateKey == targetCanonical {
-			if _, exists := seen[regModelID]; !exists {
-				seen[regModelID] = struct{}{}
-				out = append(out, regModelID)
-			}
-		}
-	}
-
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 func modelStateIsClean(state *ModelState) bool {
@@ -1849,13 +1755,6 @@ func cloneError(err *Error) *Error {
 		Retryable:  err.Retryable,
 		HTTPStatus: err.HTTPStatus,
 	}
-}
-
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func statusCodeFromError(err error) int {

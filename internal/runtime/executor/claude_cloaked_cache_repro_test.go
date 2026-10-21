@@ -91,6 +91,316 @@ func TestComputeFingerprintUsesNativeUTF16Indices(t *testing.T) {
 	}
 }
 
+// TestClaudeCloakedStreamingPrefixStability asserts that streaming requests also produce
+// identical upstream bodies on repeated requests, including fully draining the stream.
+func TestClaudeCloakedStreamingPrefixStability(t *testing.T) {
+	var capturedBodies [][]byte
+	call := 0
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body, errRead := io.ReadAll(req.Body)
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		capturedBodies = append(capturedBodies, body)
+		call++
+		sse := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_%d\",\"type\":\"message\",\"model\":\"claude-opus-5\",\"role\":\"assistant\",\"content\":[]}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", call)
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(sse)),
+			Request:    req,
+		}, nil
+	})
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{
+		ID:         "test-cloaked-stream-oauth",
+		Attributes: map[string]string{"api_key": "sk-ant-oat-test-stream-oauth-key"},
+		Metadata: map[string]any{
+			"account_uuid": "11111111-2222-4333-8444-555555555555",
+			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
+				"0000000000000000000000000000000000000000000000000000000000000001",
+			},
+		},
+	}
+	exec := NewClaudeExecutor(&config.Config{})
+	options := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Stream:       true,
+	}
+
+	payload1 := `{
+		"model": "claude-opus-5",
+		"system": [{"type": "text", "text": "system instructions", "cache_control": {"type": "ephemeral"}}],
+		"messages": [{"role": "user", "content": "Say OK."}],
+		"max_tokens": 100
+	}`
+
+	resp1, err1 := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: []byte(payload1)}, options)
+	if err1 != nil {
+		t.Fatalf("stream 1 failed: %v", err1)
+	}
+	// Fully drain stream 1 chunks to trigger completion and commit continuity state
+	if resp1 != nil && resp1.Chunks != nil {
+		for range resp1.Chunks {
+		}
+	}
+
+	resp2, err2 := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: []byte(payload1)}, options)
+	if err2 != nil {
+		t.Fatalf("stream 2 failed: %v", err2)
+	}
+	if resp2 != nil && resp2.Chunks != nil {
+		for range resp2.Chunks {
+		}
+	}
+
+	if len(capturedBodies) != 2 {
+		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
+	}
+
+	if !bytes.Equal(capturedBodies[0], capturedBodies[1]) {
+		t.Fatalf("streaming request bodies differ:\nBody 1: %s\nBody 2: %s", string(capturedBodies[0]), string(capturedBodies[1]))
+	}
+}
+
+// TestClaudeCloakedOpenAIFormatPrefixStability verifies that requests arriving in OpenAI format
+// (such as from LiteLLM or OpenAI client SDKs) translated to Claude produce 100% byte-identical
+// upstream request bodies on repeated requests.
+func TestClaudeCloakedOpenAIFormatPrefixStability(t *testing.T) {
+	var capturedBodies [][]byte
+	call := 0
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body, errRead := io.ReadAll(req.Body)
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		capturedBodies = append(capturedBodies, body)
+		call++
+		sse := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_%d\",\"type\":\"message\",\"model\":\"claude-opus-5\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"}]}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", call)
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(sse)),
+			Request:    req,
+		}, nil
+	})
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{
+		ID:         "test-cloaked-openai-oauth",
+		Attributes: map[string]string{"api_key": "sk-ant-oat-test-openai-key"},
+		Metadata: map[string]any{
+			"account_uuid": "11111111-2222-4333-8444-555555555555",
+			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
+				"0000000000000000000000000000000000000000000000000000000000000001",
+			},
+		},
+	}
+	exec := NewClaudeExecutor(&config.Config{})
+	options := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAI,
+	}
+
+	openaiPayload := []byte(`{
+		"model": "claude-opus-5",
+		"messages": [
+			{"role": "system", "content": "You are a helpful assistant."},
+			{"role": "user", "content": "Say OK."}
+		]
+	}`)
+
+	req1 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: openaiPayload}
+	if _, err := exec.Execute(ctx, auth, req1, options); err != nil {
+		t.Fatalf("openai req 1 failed: %v", err)
+	}
+
+	req2 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: openaiPayload}
+	if _, err := exec.Execute(ctx, auth, req2, options); err != nil {
+		t.Fatalf("openai req 2 failed: %v", err)
+	}
+
+	if len(capturedBodies) != 2 {
+		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
+	}
+
+	if !bytes.Equal(capturedBodies[0], capturedBodies[1]) {
+		t.Fatalf("openai format upstream bodies differ:\nBody 1: %s\nBody 2: %s", string(capturedBodies[0]), string(capturedBodies[1]))
+	}
+}
+
+// TestClaudeCloakedToolContinuationPreservesExplicitPromptID verifies that when a turn
+// is initiated with an explicit cc_prompt_id, subsequent tool_result continuations that omit
+// billing tags preserve that exact explicit prompt ID from continuity state.
+func TestClaudeCloakedToolContinuationPreservesExplicitPromptID(t *testing.T) {
+	var capturedBodies [][]byte
+	call := 0
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body, errRead := io.ReadAll(req.Body)
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		capturedBodies = append(capturedBodies, body)
+		call++
+		response := fmt.Sprintf(`{"id":"msg_%d","type":"message","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":10,"output_tokens":2}}`, call)
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(response)),
+			Request:    req,
+		}, nil
+	})
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{
+		ID:         "test-cloaked-explicit-prompt-oauth",
+		Attributes: map[string]string{"api_key": "sk-ant-oat-test-explicit-prompt-key", "cloak_mode": "always"},
+		Metadata: map[string]any{
+			"account_uuid": "11111111-2222-4333-8444-555555555555",
+			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
+				"0000000000000000000000000000000000000000000000000000000000000001",
+			},
+		},
+	}
+	exec := NewClaudeExecutor(&config.Config{})
+	options := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Headers:      http.Header{"Session-Id": []string{"sess-explicit-tool-1"}},
+	}
+
+	explicitUUID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	turn1Payload := []byte(`{
+		"model": "claude-opus-5",
+		"system": [
+			{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.258.000; cc_entrypoint=cli; cch=00000; cc_prompt_id=` + explicitUUID + `;"}
+		],
+		"messages": [{"role": "user", "content": "run tool"}]
+	}`)
+
+	if _, err := exec.Execute(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: turn1Payload}, options); err != nil {
+		t.Fatalf("turn 1 failed: %v", err)
+	}
+
+	// Turn 1.1 tool result continuation (without any billing header)
+	turn1ToolPayload := []byte(`{
+		"model": "claude-opus-5",
+		"messages": [
+			{"role": "user", "content": "run tool"},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "output"}]}
+		]
+	}`)
+
+	if _, err := exec.Execute(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: turn1ToolPayload}, options); err != nil {
+		t.Fatalf("turn 1.1 failed: %v", err)
+	}
+
+	if len(capturedBodies) != 2 {
+		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
+	}
+
+	sysTool := gjson.GetBytes(capturedBodies[1], "system.0.text").String()
+	promptTool := extractTag(sysTool, "cc_prompt_id=")
+	if promptTool != explicitUUID {
+		t.Fatalf("tool continuation lost explicit prompt ID: got %q, want %q", promptTool, explicitUUID)
+	}
+}
+
+// TestClaudeCloakedColdStartToolContinuationUsesDeterministicPromptID verifies that when
+// a tool continuation arrives on a cold start (no prior committed session state, e.g. after a failure),
+// it deterministically resolves promptID based on the conversation anchor rather than
+// adopting an uncommitted random UUID.
+func TestClaudeCloakedColdStartToolContinuationUsesDeterministicPromptID(t *testing.T) {
+	var capturedBodies [][]byte
+	call := 0
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body, errRead := io.ReadAll(req.Body)
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		capturedBodies = append(capturedBodies, body)
+		call++
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
+
+		// First call fails (e.g. 500 error, uncommitted state)
+		if call == 1 {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"api_error","message":"temporary failure"}}`)),
+				Request:    req,
+			}, nil
+		}
+
+		response := fmt.Sprintf(`{"id":"msg_%d","type":"message","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":10,"output_tokens":2}}`, call)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(response)),
+			Request:    req,
+		}, nil
+	})
+
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{
+		ID:         "test-cloaked-cold-start-tool-oauth",
+		Attributes: map[string]string{"api_key": "sk-ant-oat-test-cold-start-key", "cloak_mode": "always"},
+		Metadata: map[string]any{
+			"account_uuid": "11111111-2222-4333-8444-555555555555",
+			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
+				"0000000000000000000000000000000000000000000000000000000000000001",
+			},
+		},
+	}
+	exec := NewClaudeExecutor(&config.Config{})
+	options := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+	}
+
+	// Cold start tool continuation turn: ending in tool_result without preceding request on this instance
+	toolPayload := []byte(`{
+		"model": "claude-opus-5",
+		"messages": [
+			{"role": "user", "content": "run tool"},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "output"}]}
+		]
+	}`)
+
+	req1 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: toolPayload}
+	// First execution fails (uncommitted)
+	_, _ = exec.Execute(ctx, auth, req1, options)
+
+	// Repeated cold start tool continuation retry
+	req2 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: toolPayload}
+	if _, err := exec.Execute(ctx, auth, req2, options); err != nil {
+		t.Fatalf("cold start tool continuation retry failed: %v", err)
+	}
+
+	if len(capturedBodies) != 2 {
+		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
+	}
+
+	sys1 := gjson.GetBytes(capturedBodies[0], "system.0.text").String()
+	sys2 := gjson.GetBytes(capturedBodies[1], "system.0.text").String()
+	p1 := extractTag(sys1, "cc_prompt_id=")
+	p2 := extractTag(sys2, "cc_prompt_id=")
+	if p1 == "" || p1 != p2 {
+		t.Fatalf("cold start tool continuation prompt IDs differ between failure and retry: %q != %q", p1, p2)
+	}
+}
+
 // TestClaudeCloakedSingleTurnPrefixStability asserts that repeated identical single-turn requests
 // (such as the repro in Issue #5730) produce identical upstream request bodies so that Anthropic
 // prompt caching hits rather than misses on every run.
@@ -417,312 +727,8 @@ func TestClaudeCloakedMultiTurnPrefixStability(t *testing.T) {
 	}
 }
 
-// TestClaudeCloakedStreamingPrefixStability asserts that streaming requests also produce
-// identical upstream bodies on repeated requests, including fully draining the stream.
-func TestClaudeCloakedStreamingPrefixStability(t *testing.T) {
-	var capturedBodies [][]byte
-	call := 0
-	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		body, errRead := io.ReadAll(req.Body)
-		if errRead != nil {
-			t.Fatal(errRead)
-		}
-		capturedBodies = append(capturedBodies, body)
-		call++
-		sse := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_%d\",\"type\":\"message\",\"model\":\"claude-opus-5\",\"role\":\"assistant\",\"content\":[]}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", call)
-		header := make(http.Header)
-		header.Set("Content-Type", "text/event-stream")
-		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     header,
-			Body:       io.NopCloser(strings.NewReader(sse)),
-			Request:    req,
-		}, nil
-	})
+type roundTripperFunc func(*http.Request) (*http.Response, error)
 
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
-	auth := &cliproxyauth.Auth{
-		ID:         "test-cloaked-stream-oauth",
-		Attributes: map[string]string{"api_key": "sk-ant-oat-test-stream-oauth-key"},
-		Metadata: map[string]any{
-			"account_uuid": "11111111-2222-4333-8444-555555555555",
-			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
-				"0000000000000000000000000000000000000000000000000000000000000001",
-			},
-		},
-	}
-	exec := NewClaudeExecutor(&config.Config{})
-	options := cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatClaude,
-		Stream:       true,
-	}
-
-	payload1 := `{
-		"model": "claude-opus-5",
-		"system": [{"type": "text", "text": "system instructions", "cache_control": {"type": "ephemeral"}}],
-		"messages": [{"role": "user", "content": "Say OK."}],
-		"max_tokens": 100
-	}`
-
-	resp1, err1 := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: []byte(payload1)}, options)
-	if err1 != nil {
-		t.Fatalf("stream 1 failed: %v", err1)
-	}
-	// Fully drain stream 1 chunks to trigger completion and commit continuity state
-	if resp1 != nil && resp1.Chunks != nil {
-		for range resp1.Chunks {
-		}
-	}
-
-	resp2, err2 := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: []byte(payload1)}, options)
-	if err2 != nil {
-		t.Fatalf("stream 2 failed: %v", err2)
-	}
-	if resp2 != nil && resp2.Chunks != nil {
-		for range resp2.Chunks {
-		}
-	}
-
-	if len(capturedBodies) != 2 {
-		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
-	}
-
-	if !bytes.Equal(capturedBodies[0], capturedBodies[1]) {
-		t.Fatalf("streaming request bodies differ:\nBody 1: %s\nBody 2: %s", string(capturedBodies[0]), string(capturedBodies[1]))
-	}
-}
-
-// TestClaudeCloakedOpenAIFormatPrefixStability verifies that requests arriving in OpenAI format
-// (such as from LiteLLM or OpenAI client SDKs) translated to Claude produce 100% byte-identical
-// upstream request bodies on repeated requests.
-func TestClaudeCloakedOpenAIFormatPrefixStability(t *testing.T) {
-	var capturedBodies [][]byte
-	call := 0
-	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		body, errRead := io.ReadAll(req.Body)
-		if errRead != nil {
-			t.Fatal(errRead)
-		}
-		capturedBodies = append(capturedBodies, body)
-		call++
-		sse := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_%d\",\"type\":\"message\",\"model\":\"claude-opus-5\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"}]}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", call)
-		header := make(http.Header)
-		header.Set("Content-Type", "text/event-stream")
-		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     header,
-			Body:       io.NopCloser(strings.NewReader(sse)),
-			Request:    req,
-		}, nil
-	})
-
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
-	auth := &cliproxyauth.Auth{
-		ID:         "test-cloaked-openai-oauth",
-		Attributes: map[string]string{"api_key": "sk-ant-oat-test-openai-key"},
-		Metadata: map[string]any{
-			"account_uuid": "11111111-2222-4333-8444-555555555555",
-			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
-				"0000000000000000000000000000000000000000000000000000000000000001",
-			},
-		},
-	}
-	exec := NewClaudeExecutor(&config.Config{})
-	options := cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatOpenAI,
-	}
-
-	openaiPayload := []byte(`{
-		"model": "claude-opus-5",
-		"messages": [
-			{"role": "system", "content": "You are a helpful assistant."},
-			{"role": "user", "content": "Say OK."}
-		]
-	}`)
-
-	req1 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: openaiPayload}
-	if _, err := exec.Execute(ctx, auth, req1, options); err != nil {
-		t.Fatalf("openai req 1 failed: %v", err)
-	}
-
-	req2 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: openaiPayload}
-	if _, err := exec.Execute(ctx, auth, req2, options); err != nil {
-		t.Fatalf("openai req 2 failed: %v", err)
-	}
-
-	if len(capturedBodies) != 2 {
-		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
-	}
-
-	if !bytes.Equal(capturedBodies[0], capturedBodies[1]) {
-		t.Fatalf("openai format upstream bodies differ:\nBody 1: %s\nBody 2: %s", string(capturedBodies[0]), string(capturedBodies[1]))
-	}
-}
-
-// TestClaudeCloakedToolContinuationPreservesExplicitPromptID verifies that when a turn
-// is initiated with an explicit cc_prompt_id, subsequent tool_result continuations that omit
-// billing tags preserve that exact explicit prompt ID from continuity state.
-func TestClaudeCloakedToolContinuationPreservesExplicitPromptID(t *testing.T) {
-	var capturedBodies [][]byte
-	call := 0
-	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		body, errRead := io.ReadAll(req.Body)
-		if errRead != nil {
-			t.Fatal(errRead)
-		}
-		capturedBodies = append(capturedBodies, body)
-		call++
-		response := fmt.Sprintf(`{"id":"msg_%d","type":"message","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":10,"output_tokens":2}}`, call)
-		header := make(http.Header)
-		header.Set("Content-Type", "application/json")
-		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     header,
-			Body:       io.NopCloser(strings.NewReader(response)),
-			Request:    req,
-		}, nil
-	})
-
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
-	auth := &cliproxyauth.Auth{
-		ID:         "test-cloaked-explicit-prompt-oauth",
-		Attributes: map[string]string{"api_key": "sk-ant-oat-test-explicit-prompt-key", "cloak_mode": "always"},
-		Metadata: map[string]any{
-			"account_uuid": "11111111-2222-4333-8444-555555555555",
-			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
-				"0000000000000000000000000000000000000000000000000000000000000001",
-			},
-		},
-	}
-	exec := NewClaudeExecutor(&config.Config{})
-	options := cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatClaude,
-		Headers:      http.Header{"Session-Id": []string{"sess-explicit-tool-1"}},
-	}
-
-	explicitUUID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-	turn1Payload := []byte(`{
-		"model": "claude-opus-5",
-		"system": [
-			{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.258.000; cc_entrypoint=cli; cch=00000; cc_prompt_id=` + explicitUUID + `;"}
-		],
-		"messages": [{"role": "user", "content": "run tool"}]
-	}`)
-
-	if _, err := exec.Execute(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: turn1Payload}, options); err != nil {
-		t.Fatalf("turn 1 failed: %v", err)
-	}
-
-	// Turn 1.1 tool result continuation (without any billing header)
-	turn1ToolPayload := []byte(`{
-		"model": "claude-opus-5",
-		"messages": [
-			{"role": "user", "content": "run tool"},
-			{"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {}}]},
-			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "output"}]}
-		]
-	}`)
-
-	if _, err := exec.Execute(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: turn1ToolPayload}, options); err != nil {
-		t.Fatalf("turn 1.1 failed: %v", err)
-	}
-
-	if len(capturedBodies) != 2 {
-		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
-	}
-
-	sysTool := gjson.GetBytes(capturedBodies[1], "system.0.text").String()
-	promptTool := extractTag(sysTool, "cc_prompt_id=")
-	if promptTool != explicitUUID {
-		t.Fatalf("tool continuation lost explicit prompt ID: got %q, want %q", promptTool, explicitUUID)
-	}
-}
-
-// TestClaudeCloakedColdStartToolContinuationUsesDeterministicPromptID verifies that when
-// a tool continuation arrives on a cold start (no prior committed session state, e.g. after a failure),
-// it deterministically resolves promptID based on the conversation anchor rather than
-// adopting an uncommitted random UUID.
-func TestClaudeCloakedColdStartToolContinuationUsesDeterministicPromptID(t *testing.T) {
-	var capturedBodies [][]byte
-	call := 0
-	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		body, errRead := io.ReadAll(req.Body)
-		if errRead != nil {
-			t.Fatal(errRead)
-		}
-		capturedBodies = append(capturedBodies, body)
-		call++
-		header := make(http.Header)
-		header.Set("Content-Type", "application/json")
-		header.Set("request-id", fmt.Sprintf("req_upstream_%d", call))
-
-		// First call fails (e.g. 500 error, uncommitted state)
-		if call == 1 {
-			return &http.Response{
-				StatusCode: http.StatusInternalServerError,
-				Header:     header,
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"api_error","message":"temporary failure"}}`)),
-				Request:    req,
-			}, nil
-		}
-
-		response := fmt.Sprintf(`{"id":"msg_%d","type":"message","model":"claude-opus-5","role":"assistant","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":10,"output_tokens":2}}`, call)
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     header,
-			Body:       io.NopCloser(strings.NewReader(response)),
-			Request:    req,
-		}, nil
-	})
-
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
-	auth := &cliproxyauth.Auth{
-		ID:         "test-cloaked-cold-start-tool-oauth",
-		Attributes: map[string]string{"api_key": "sk-ant-oat-test-cold-start-key", "cloak_mode": "always"},
-		Metadata: map[string]any{
-			"account_uuid": "11111111-2222-4333-8444-555555555555",
-			claudeauth.ClaudeDeviceIDsMetadataKey: []string{
-				"0000000000000000000000000000000000000000000000000000000000000001",
-			},
-		},
-	}
-	exec := NewClaudeExecutor(&config.Config{})
-	options := cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatClaude,
-	}
-
-	// Cold start tool continuation turn: ending in tool_result without preceding request on this instance
-	toolPayload := []byte(`{
-		"model": "claude-opus-5",
-		"messages": [
-			{"role": "user", "content": "run tool"},
-			{"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {}}]},
-			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "output"}]}
-		]
-	}`)
-
-	req1 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: toolPayload}
-	// First execution fails (uncommitted)
-	_, _ = exec.Execute(ctx, auth, req1, options)
-
-	// Repeated cold start tool continuation retry
-	req2 := cliproxyexecutor.Request{Model: "claude-opus-5", Payload: toolPayload}
-	if _, err := exec.Execute(ctx, auth, req2, options); err != nil {
-		t.Fatalf("cold start tool continuation retry failed: %v", err)
-	}
-
-	if len(capturedBodies) != 2 {
-		t.Fatalf("expected 2 captured bodies, got %d", len(capturedBodies))
-	}
-
-	sys1 := gjson.GetBytes(capturedBodies[0], "system.0.text").String()
-	sys2 := gjson.GetBytes(capturedBodies[1], "system.0.text").String()
-	p1 := extractTag(sys1, "cc_prompt_id=")
-	p2 := extractTag(sys2, "cc_prompt_id=")
-	if p1 == "" || p1 != p2 {
-		t.Fatalf("cold start tool continuation prompt IDs differ between failure and retry: %q != %q", p1, p2)
-	}
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

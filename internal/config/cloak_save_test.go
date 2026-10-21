@@ -57,9 +57,9 @@ func TestSaveConfigPreserveComments_ClaudeCloakUpdates(t *testing.T) {
 	}
 
 	// Loading the saved config must reflect the updated false/empty values, while preserving explicit Cloak.
-	loadedCfg, errLoad := LoadConfigOptional(configPath, false)
+	loadedCfg, errLoad := LoadConfig(configPath)
 	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+		t.Fatalf("LoadConfig() error = %v", errLoad)
 	}
 	if len(loadedCfg.ClaudeKey) == 0 {
 		t.Fatalf("loaded ClaudeKey is empty")
@@ -126,9 +126,9 @@ func TestSaveConfigPreserveComments_ClaudeCloakExplicitFalse(t *testing.T) {
 		t.Errorf("saved YAML missing explicit 'cache-user-id: false'; got:\n%s", savedText)
 	}
 
-	loadedCfg, errLoad := LoadConfigOptional(configPath, false)
+	loadedCfg, errLoad := LoadConfig(configPath)
 	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+		t.Fatalf("LoadConfig() error = %v", errLoad)
 	}
 	cloak := loadedCfg.ClaudeKey[0].Cloak
 	if cloak == nil {
@@ -185,9 +185,9 @@ func TestSaveConfigPreserveComments_ClaudeCloakExplicitFalseWhenFieldPreviouslyA
 		t.Errorf("saved YAML missing newly-added 'cache-user-id: false'; got:\n%s", savedText)
 	}
 
-	loadedCfg, errLoad := LoadConfigOptional(configPath, false)
+	loadedCfg, errLoad := LoadConfig(configPath)
 	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+		t.Fatalf("LoadConfig() error = %v", errLoad)
 	}
 	cloak := loadedCfg.ClaudeKey[0].Cloak
 	if cloak == nil {
@@ -235,9 +235,9 @@ func TestSaveConfigPreserveComments_ClaudeCloakRemovedWhenNil(t *testing.T) {
 		t.Errorf("saved YAML still contains 'cloak:' after nil removal; got:\n%s", savedText)
 	}
 
-	loadedCfg, errLoad := LoadConfigOptional(configPath, false)
+	loadedCfg, errLoad := LoadConfig(configPath)
 	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+		t.Fatalf("LoadConfig() error = %v", errLoad)
 	}
 	if loadedCfg.ClaudeKey[0].Cloak != nil {
 		t.Errorf("loaded Cloak = %+v, want nil", loadedCfg.ClaudeKey[0].Cloak)

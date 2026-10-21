@@ -17,13 +17,13 @@ func TestDevinOAuthRoutes(t *testing.T) {
 	server := newTestServer(t)
 
 	w := httptest.NewRecorder()
-	server.engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v0/management/devin-auth-url", nil))
+	server.engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v8/management/oauth/auth-url?provider=devin", nil))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("unprotected login route: %d", w.Code)
 	}
 	registered := false
 	for _, route := range server.engine.Routes() {
-		if route.Method == http.MethodGet && route.Path == "/v0/management/devin-auth-url" {
+		if route.Method == http.MethodGet && route.Path == "/v8/management/oauth/auth-url" {
 			registered = true
 		}
 	}

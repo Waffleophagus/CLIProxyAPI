@@ -132,8 +132,8 @@ func TestQuotaStateObserveResponseHeadersRetainsMeasuredClaudeAndCodexWatermarks
 	}
 }
 
-func TestQuotaStateObserveResponseHeadersDropsKimiGrokAndAntigravitySignals(t *testing.T) {
-	for _, provider := range []string{"kimi", "xai", "grok", "antigravity", "gemini", "vertex", "aistudio"} {
+func TestQuotaStateObserveResponseHeadersDropsKimiGrokAndAcmeSignals(t *testing.T) {
+	for _, provider := range []string{"kimi", "xai", "grok", "acme", "gemini", "vendora", "acmestudio"} {
 		quota := QuotaState{
 			ObservedAt: time.Unix(1786082736, 0),
 			Signals:    map[string]string{"old": "value"},
@@ -376,8 +376,8 @@ func TestObserveResponseHeadersTruncatesDeterministically(t *testing.T) {
 
 func TestProviderSupportsQuotaObservation(t *testing.T) {
 	for _, provider := range []string{
-		"", "kimi", "xai", "grok", "antigravity", "gemini", "gemini-interactions",
-		"vertex", "aistudio", "openai", "openai-compatibility", "third-party-plugin",
+		"", "kimi", "xai", "grok", "acme", "gemini", "gemini-interactions",
+		"vendora", "acmestudio", "openai", "openai-compatibility", "third-party-plugin",
 		"XAI", " Grok ", " Gemini ",
 	} {
 		if ProviderSupportsQuotaObservation(provider) {

@@ -5,12 +5,9 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
@@ -23,33 +20,6 @@ func TestApplyPatchTranslationError(t *testing.T) {
 	}
 	if ApplyPatchTranslationError(struct{}{}) != nil || ApplyPatchTranslationError(nil) != nil {
 		t.Fatal("unrelated translator state was rejected")
-	}
-}
-
-func TestApplyPatchFinalizeOptionalCanonicalState(t *testing.T) {
-	original := []byte(`{"tools":[{"type":"custom","name":"apply_patch"}]}`)
-	for _, source := range []sdktranslator.Format{sdktranslator.FormatOpenAI, sdktranslator.FormatClaude, sdktranslator.FormatGemini, sdktranslator.FormatInteractions} {
-		t.Run(source.String(), func(t *testing.T) {
-			var param any
-			InitializeApplyPatchStream(context.Background(), source, sdktranslator.FormatOpenAIResponse, "model", original, original, &param)
-			frames := FinalizeApplyPatchStream(param)
-			if len(frames) != 1 || ApplyPatchTranslationError(param) == nil || !bytes.Contains(frames[0], []byte(`"type":"response.failed"`)) {
-				t.Fatalf("EOF did not fail canonically: %s", frames)
-			}
-			if len(FinalizeApplyPatchStream(param)) != 0 {
-				t.Fatal("EOF failure emitted twice")
-			}
-			late := []byte(`data: {"type":"message_stop","event_type":"interaction.completed","candidates":[{"finishReason":"STOP"}],"choices":[{"delta":{},"finish_reason":"stop"}]}`)
-			if len(sdktranslator.TranslateStream(context.Background(), source, sdktranslator.FormatOpenAIResponse, "model", original, original, late, &param)) != 0 {
-				t.Fatal("EOF failure reopened into success")
-			}
-			if len(sdktranslator.TranslateStream(context.Background(), source, sdktranslator.FormatOpenAIResponse, "model", original, original, []byte("[DONE]"), &param)) != 0 {
-				t.Fatal("failure forwarded transport success")
-			}
-		})
-	}
-	if len(FinalizeApplyPatchStream(struct{}{})) != 0 || len(FinalizeApplyPatchStream(nil)) != 0 {
-		t.Fatal("unrelated states received an EOF failure")
 	}
 }
 
@@ -90,37 +60,5 @@ func TestApplyPatchInteractionsOnlyValidSourceDoneClosesTransport(t *testing.T) 
 	}
 	if len(translate("[DONE]")) != 0 || len(translate(`{"event_type":"done"}`)) != 0 {
 		t.Fatal("duplicate source sentinel was forwarded")
-	}
-}
-
-type patchCanceledEOFCapture struct{ records chan usage.Record }
-
-func (p *patchCanceledEOFCapture) HandleUsage(_ context.Context, record usage.Record) {
-	if record.Provider == "task6-canceled-eof" {
-		p.records <- record
-	}
-}
-
-func TestApplyPatchCanceledEOFStillRecordsFailure(t *testing.T) {
-	capture := &patchCanceledEOFCapture{records: make(chan usage.Record, 1)}
-	usage.RegisterNamedPlugin("task6-canceled-eof", capture)
-	var param any
-	original := []byte(`{"tools":[{"type":"custom","name":"apply_patch"}]}`)
-	InitializeApplyPatchStream(context.Background(), sdktranslator.FormatGemini, sdktranslator.FormatOpenAIResponse, "m", original, original, &param)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	reporter := NewUsageReporter(ctx, "task6-canceled-eof", "m", nil)
-	out := make(chan cliproxyexecutor.StreamChunk)
-	if !EndApplyPatchStream(ctx, param, reporter, out, errors.New("clean failure")) {
-		t.Fatal("EOF failure was discarded")
-	}
-	reporter.EnsurePublished(ctx)
-	select {
-	case record := <-capture.records:
-		if !record.Failed {
-			t.Fatal("cancellation recovered a retained EOF failure as success usage")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("canceled EOF usage was not dispatched")
 	}
 }

@@ -18,14 +18,13 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
+	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -73,7 +72,6 @@ type responsesSSEFramer struct {
 	isCodexClient        bool
 	dataFrames           int
 	writeErr             error
-	canComplete          func() bool
 }
 
 func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) {
@@ -569,13 +567,11 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context
 	if c != nil && c.Request != nil {
 		requestHeaders = c.Request.Header
 	}
-	homeEnabled := h.AuthManager != nil && h.AuthManager.HomeEnabled()
 	updated, prepared := multiagentv2.PrepareCodexMultiAgentV2Tools(
 		requestCtx,
 		requestHeaders,
 		payload,
 		cfg.Client.Codex.OptimizeMultiAgentV2,
-		homeEnabled,
 	)
 	if prepared && c != nil {
 		c.Set(multiagentv2.CodexMultiAgentV2ToolsPreparedContextKey, true)
@@ -680,7 +676,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 }
 
 // handleNonStreamingResponse handles non-streaming chat completion responses
-// for Gemini models. It selects a client from the pool, sends the request, and
+// for the requested model. It selects a client from the pool, sends the request, and
 // aggregates the response before sending it back to the client in OpenAIResponses format.
 //
 // Parameters:
@@ -705,7 +701,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	cliCancel()
 }
 
-// handleStreamingResponse handles streaming responses for Gemini models.
+// handleStreamingResponse handles streaming responses for the requested model.
 // It establishes a streaming connection with the backend service and forwards
 // the response chunks to the client in real-time using Server-Sent Events.
 //
@@ -727,13 +723,8 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 
 	// New core execution path
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-	deliveryCtx, finishDelivery := usage.WithStreamDelivery(context.Background())
-	defer finishDelivery(context.Canceled)
-	cliCtx, cancelExecution := h.GetContextWithCancel(h, c, deliveryCtx)
-	cliCancel := func(err error) {
-		finishDelivery(err)
-		cancelExecution(err)
-	}
+	cliCtx, cancelExecution := h.GetContextWithCancel(h, c, context.Background())
+	cliCancel := func(err error) { cancelExecution(err) }
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -778,7 +769,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	if isCodexClient {
 		failureEvent = "response.failed"
 	}
-	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient, canComplete: func() bool { return usage.StreamDeliverySupported(cliCtx) }}
+	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient}
 	var initialOutput bytes.Buffer
 
 	// Peek at the first complete SSE data frame.
@@ -1112,13 +1103,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 		cancel(framer.writeErr)
 		return
 	}
-	if framer.canComplete != nil && framer.canComplete() && framer.terminalEvent == "response.completed" && framer.terminalError == nil {
-		if errMsg, pending := handlers.PendingStreamError(errs); pending {
-			h.logResponsesStreamError(c, framer, sanitizeResponsesStreamErrorMessage(errMsg))
-		}
-		cancel(nil)
-		return
-	}
 	writeTerminalError := func(errMsg *interfaces.ErrorMessage) {
 		framer.Flush(c.Writer)
 		if errMsg == nil {
@@ -1154,9 +1138,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 		Flush:                  func() error { return flushResponsesSSE(c.Writer) },
 		WriteChunk: func(chunk []byte) {
 			framer.WriteChunk(c.Writer, chunk)
-		},
-		ChunkDone: func() bool {
-			return framer.canComplete != nil && framer.canComplete() && framer.terminalEvent == "response.completed" && framer.writeErr == nil
 		},
 		ChunkError: func() *interfaces.ErrorMessage {
 			if framer.writeErr != nil {

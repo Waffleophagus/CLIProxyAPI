@@ -7,7 +7,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 )
 
-// registerManagementV8Routes defines the v8 contract independently of v0.
+// registerManagementV8Routes defines the v8 management API contract.
 // Configuration paths mirror the v8 YAML tree; operational routes use its groups.
 func (s *Server) registerManagementV8Routes() {
 	const prefix = "/v8/management"
@@ -15,7 +15,7 @@ func (s *Server) registerManagementV8Routes() {
 	s.engine.POST(prefix+"/oauth/callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallbackV8)
 
 	v8 := s.engine.Group(prefix)
-	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
+	v8.Use(s.managementAvailabilityMiddleware(), s.managementAuthMiddleware(), func(c *gin.Context) {
 		c.Set(management.ConfigV8ContextKey, true)
 	})
 	v8.GET("/config", s.mgmt.ConfigV8)
@@ -27,10 +27,11 @@ func (s *Server) registerManagementV8Routes() {
 		v8.Handle(method, "/config/*path", s.mgmt.ConfigV8)
 	}
 
-	v8.GET("/server/latest-version", s.mgmt.GetLatestVersion)
 	v8.POST("/requests/api-call", s.mgmt.APICall)
 	v8.POST("/routing/cooldown/reset", s.mgmt.ResetQuota)
 	v8.GET("/routing/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
+	v8.GET("/routing/slugs", s.mgmt.GetSlugs)
+	v8.POST("/routing/slugs/refresh", s.mgmt.RefreshSlugs)
 
 	v8.GET("/observability/logs", s.mgmt.GetLogs)
 	v8.DELETE("/observability/logs", s.mgmt.DeleteLogs)
@@ -38,7 +39,9 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/observability/logs/errors/:name", s.mgmt.DownloadRequestErrorLog)
 	v8.GET("/observability/logs/requests/:id", s.mgmt.GetRequestLogByID)
 	v8.GET("/observability/usage/api-keys", s.mgmt.GetAPIKeyUsage)
-	v8.GET("/observability/usage/queue", s.mgmt.GetUsageQueue)
+	v8.GET("/observability/usage/summary", s.mgmt.GetUsageSummary)
+	v8.GET("/observability/usage/timeseries", s.mgmt.GetUsageTimeseries)
+	v8.GET("/observability/usage/requests", s.mgmt.GetUsageRequests)
 
 	v8.GET("/credentials", s.mgmt.ListAuthFiles)
 	v8.POST("/credentials", s.mgmt.UploadAuthFileV8)
@@ -48,17 +51,11 @@ func (s *Server) registerManagementV8Routes() {
 	v8.PATCH("/credentials/status", s.mgmt.PatchAuthFileStatus)
 	v8.PATCH("/credentials/fields", s.mgmt.PatchAuthFileFields)
 	v8.POST("/credentials/refresh", s.mgmt.RefreshAuthFiles)
-	v8.POST("/oauth/import", s.mgmt.ImportOAuthV8)
 	v8.GET("/oauth/auth-url", s.mgmt.StartOAuthV8)
 	v8.POST("/oauth/siwc/bind", s.mgmt.StartSIWCBind)
 	v8.GET("/oauth/status", s.mgmt.GetAuthStatus)
 	v8.DELETE("/oauth/session", s.mgmt.CancelAuthSession)
 
-	v8.GET("/plugins", s.mgmt.ListPlugins)
-	v8.DELETE("/plugins/:id", s.mgmt.DeletePlugin)
-	v8.GET("/plugins/store", s.mgmt.ListPluginStore)
-	v8.POST("/plugins/store/:id/install", s.mgmt.InstallPluginFromStore)
-	v8.GET("/plugins/:id/quota", s.mgmt.GetPluginQuota)
-	v8.POST("/plugins/:id/quota", s.mgmt.FetchPluginQuota)
-	v8.DELETE("/plugins/:id/quota", s.mgmt.ResetPluginQuota)
+	v8.GET("/tailscale/status", s.getTailscaleStatus)
+
 }

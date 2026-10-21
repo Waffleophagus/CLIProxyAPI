@@ -80,14 +80,6 @@ func NewRequestEntityTooLargeError(cause error) *AuthError {
 	return newAuthError(AuthErrorCodeRequestTooLarge, "http: request body too large", http.StatusRequestEntityTooLarge, cause)
 }
 
-func NewInternalAuthError(message string, cause error) *AuthError {
-	normalizedMessage := strings.TrimSpace(message)
-	if normalizedMessage == "" {
-		normalizedMessage = "Authentication service error"
-	}
-	return newAuthError(AuthErrorCodeInternal, normalizedMessage, http.StatusInternalServerError, cause)
-}
-
 func IsAuthErrorCode(authErr *AuthError, code AuthErrorCode) bool {
 	if authErr == nil {
 		return false

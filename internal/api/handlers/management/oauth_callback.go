@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -17,30 +16,6 @@ type oauthCallbackRequest struct {
 	Code        string `json:"code"`
 	State       string `json:"state"`
 	Error       string `json:"error"`
-}
-
-func (h *Handler) PostOAuthCallback(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "handler not initialized"})
-		return
-	}
-
-	var req oauthCallbackRequest
-	if errBindJSON := c.ShouldBindJSON(&req); errBindJSON != nil {
-		c.JSON(clienterror.HTTPStatusFromErrorOr(errBindJSON, http.StatusBadRequest), gin.H{"status": "error", "error": "invalid body"})
-		return
-	}
-	h.handleOAuthCallback(c, req)
-}
-
-func (h *Handler) GetOAuthCallback(c *gin.Context) {
-	req := oauthCallbackRequest{
-		Provider: strings.TrimSpace(c.Query("provider")),
-		Code:     strings.TrimSpace(c.Query("code")),
-		State:    strings.TrimSpace(c.Query("state")),
-		Error:    firstNonEmpty(c.Query("error"), c.Query("error_description")),
-	}
-	h.handleOAuthCallback(c, req)
 }
 
 func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) {
@@ -87,7 +62,7 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 		return
 	}
 
-	sessionProvider, sessionStatus, isPlugin, _, completed, ok := GetOAuthSessionDetails(state)
+	sessionProvider, sessionStatus, completed, ok := GetOAuthSessionDetails(state)
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state"})
 		return
@@ -100,13 +75,7 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 	if provider == "" {
 		provider = sessionProvider
 	}
-	var canonicalProvider string
-	var errNormalize error
-	if isPlugin {
-		canonicalProvider, errNormalize = NormalizePluginOAuthCallbackProvider(provider)
-	} else {
-		canonicalProvider, errNormalize = NormalizeOAuthCallbackProvider(provider)
-	}
+	canonicalProvider, errNormalize := NormalizeOAuthCallbackProvider(provider)
 	if errNormalize != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "unsupported provider"})
 		return

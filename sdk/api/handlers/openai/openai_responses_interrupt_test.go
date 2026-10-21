@@ -3,10 +3,8 @@ package openai
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,7 +20,6 @@ import (
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
@@ -175,103 +172,12 @@ func TestResponsesInterruptInFlight(t *testing.T) {
 	}
 }
 
-type homeInterruptDispatcher struct{}
-
-func (homeInterruptDispatcher) HeartbeatOK() bool { return true }
-
-func (homeInterruptDispatcher) RPopAuth(context.Context, string, string, http.Header, int) ([]byte, error) {
-	return json.Marshal(coreauth.Auth{
-		ID:       "home-interrupt-auth",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"websockets": "true",
-		},
-	})
-}
-
-func (homeInterruptDispatcher) AbortAmbiguousDispatch() {}
-
-// homeInterruptExecutor records whether an interrupt was accepted for a Home
-// session credential that is not present in the global auth map.
-type homeInterruptExecutor struct {
-	mu          sync.Mutex
-	metadata    []map[string]any
-	interrupted [][]byte
-	release     chan struct{}
-	releaseOnce sync.Once
-}
-
-func (*homeInterruptExecutor) Identifier() string { return "codex" }
-
-func (*homeInterruptExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, errors.New("not implemented")
-}
-
-func (e *homeInterruptExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	e.mu.Lock()
-	e.metadata = append(e.metadata, maps.Clone(opts.Metadata))
-	if e.release == nil {
-		e.release = make(chan struct{})
-	}
-	release := e.release
-	e.mu.Unlock()
-	if lifecycle, ok := opts.ExecutionLifecycle.(interface{ Retain() }); ok {
-		lifecycle.Retain()
-	}
-	chunks := make(chan coreexecutor.StreamChunk, 2)
-	go func() {
-		defer close(chunks)
-		chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.created","response":{"id":"r1"}}`)}
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return
-		}
-		chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
-	}()
-	return &coreexecutor.StreamResult{Chunks: chunks}, nil
-}
-
-func (*homeInterruptExecutor) Refresh(context.Context, *coreauth.Auth) (*coreauth.Auth, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (*homeInterruptExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, errors.New("not implemented")
-}
-
-func (*homeInterruptExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (e *homeInterruptExecutor) InterruptExecutionSession(ctx context.Context, sessionID string, payload []byte) error {
-	if !coreexecutor.WebsocketAuthEnabled(ctx, "home-interrupt-auth") {
-		return fmt.Errorf("websocket credential is no longer enabled")
-	}
-	e.mu.Lock()
-	var want string
-	if len(e.metadata) > 0 {
-		want, _ = e.metadata[0][coreexecutor.ExecutionSessionMetadataKey].(string)
-	}
-	e.mu.Unlock()
-	if want == "" || sessionID != want {
-		return fmt.Errorf("interrupt session = %q, want %q", sessionID, want)
-	}
-	e.mu.Lock()
-	e.interrupted = append(e.interrupted, bytes.Clone(payload))
-	e.mu.Unlock()
-	e.releaseOnce.Do(func() {
-		if e.release != nil {
-			close(e.release)
-		}
-	})
-	return nil
-}
-
 type blockingHTTPInterruptExecutor struct {
-	calls    atomic.Int32
-	canceled atomic.Bool
+	calls atomic.Int32
+	// canceled is closed once the first (blocking) stream observes its context
+	// being canceled. Cancellation reaches the stream goroutine asynchronously,
+	// so tests must wait on this channel rather than sample a flag.
+	canceled chan struct{}
 }
 
 func (*blockingHTTPInterruptExecutor) Identifier() string { return "codex" }
@@ -292,7 +198,7 @@ func (e *blockingHTTPInterruptExecutor) ExecuteStream(ctx context.Context, _ *co
 		}
 		chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.created","response":{"id":"r-http"}}`)}
 		<-ctx.Done()
-		e.canceled.Store(true)
+		close(e.canceled)
 	}()
 	return &coreexecutor.StreamResult{Chunks: chunks}, nil
 }
@@ -317,7 +223,7 @@ func (*blockingHTTPInterruptExecutor) InterruptExecutionSession(context.Context,
 // cancels an HTTP upstream turn and lets the same socket continue.
 func TestResponsesInterruptStopsHTTPUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	executor := &blockingHTTPInterruptExecutor{}
+	executor := &blockingHTTPInterruptExecutor{canceled: make(chan struct{})}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.SetConfig(&config.Config{})
 	manager.RegisterExecutor(executor)
@@ -372,7 +278,9 @@ func TestResponsesInterruptStopsHTTPUpstream(t *testing.T) {
 	if got := gjson.GetBytes(interrupted, "response.incomplete_details.reason").String(); got != "interrupted" {
 		t.Fatalf("interrupt reason = %q, payload %s", got, interrupted)
 	}
-	if !executor.canceled.Load() {
+	select {
+	case <-executor.canceled:
+	case <-time.After(5 * time.Second):
 		t.Fatal("http upstream was not canceled")
 	}
 	if errSend := client.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"previous_response_id":"r-http","input":[]}`, model))); errSend != nil {
@@ -394,88 +302,45 @@ func TestResponsesInterruptStopsHTTPUpstream(t *testing.T) {
 	}
 }
 
-// TestResponsesInterruptUsesHomeSessionAuth verifies that a credential staged only
-// on the Home execution session can still authorize response.interrupt.
-func TestResponsesInterruptUsesHomeSessionAuth(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
-	manager.PublishHomeDispatch(homeInterruptDispatcher{}, executionregistry.New(), 1)
-	executor := &homeInterruptExecutor{}
-	manager.RegisterExecutor(executor)
-	const authID = "home-interrupt-auth"
-	const model = "home-interrupt-model"
-	registry.GetGlobalRegistry().RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}})
-	defer registry.GetGlobalRegistry().UnregisterClient(authID)
-
-	handler := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&config.SDKConfig{}, manager))
-	router := gin.New()
-	router.GET("/v1/responses", handler.ResponsesWebsocket)
-	downstream := httptest.NewServer(router)
-	defer downstream.Close()
-
-	client, _, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(downstream.URL, "http")+"/v1/responses", nil)
-	if errDial != nil {
-		t.Fatal(errDial)
-	}
-	defer func() { _ = client.Close() }()
-	_ = client.SetReadDeadline(time.Now().Add(8 * time.Second))
-	if errSend := client.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[]}`, model))); errSend != nil {
-		t.Fatal(errSend)
-	}
-	_, payload, errRead := client.ReadMessage()
-	if errRead != nil {
-		t.Fatal(errRead)
-	}
-	if got := gjson.GetBytes(payload, "type").String(); got != "response.created" {
-		t.Fatalf("expected response.created, got %s", payload)
-	}
-	if _, ok := manager.GetByID(authID); ok {
-		t.Fatal("home credential leaked into the global auth map")
-	}
-	executor.mu.Lock()
-	if len(executor.metadata) != 1 {
-		executor.mu.Unlock()
-		t.Fatalf("executor calls = %d, want 1", len(executor.metadata))
-	}
-	sessionID, _ := executor.metadata[0][coreexecutor.ExecutionSessionMetadataKey].(string)
-	executor.mu.Unlock()
-	if _, ok := manager.GetExecutionSessionAuthByID(sessionID, authID); !ok {
-		t.Fatal("home session auth was not staged")
+// TestResponsesLocalInterruptHandOff verifies that a local interrupt is either
+// received by the active forward loop or rejected, never silently dropped.
+func TestResponsesLocalInterruptHandOff(t *testing.T) {
+	local := newResponsesLocalInterrupt()
+	if local.deliver([]byte(`{"response_id":"idle"}`)) {
+		t.Fatal("inactive local interrupt accepted a frame")
 	}
 
-	interrupt := []byte(`{"type":"response.interrupt","response_id":"r1","mode":"discard_partial_items","extension":"keep"}`)
-	if errSend := client.WriteMessage(websocket.TextMessage, interrupt); errSend != nil {
-		t.Fatal(errSend)
+	local.begin()
+	received := make(chan []byte, 1)
+	go func() { received <- <-local.framesChan() }()
+	if !local.deliver([]byte(`{"response_id":"r1"}`)) {
+		t.Fatal("active local interrupt rejected a frame the forward loop received")
 	}
-	_, completed, errCompleted := client.ReadMessage()
-	if errCompleted != nil {
-		t.Fatal(errCompleted)
+	if got := gjson.GetBytes(<-received, "response_id").String(); got != "r1" {
+		t.Fatalf("received response_id = %q, want r1", got)
 	}
-	if got := gjson.GetBytes(completed, "type").String(); got != "response.completed" {
-		t.Fatalf("expected response.completed after interrupt, got %s", completed)
+
+	// A frame the forward loop never receives must be rejected once it stops,
+	// whether deliver starts before or after end.
+	result := make(chan bool, 1)
+	go func() { result <- local.deliver([]byte(`{"response_id":"late"}`)) }()
+	local.end()
+	select {
+	case ok := <-result:
+		if ok {
+			t.Fatal("local interrupt reported delivery after the forward loop stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deliver stayed blocked after the forward loop stopped")
 	}
-	executor.mu.Lock()
-	gotInterrupt := append([][]byte(nil), executor.interrupted...)
-	executor.mu.Unlock()
-	if len(gotInterrupt) != 1 || !bytes.Equal(gotInterrupt[0], interrupt) {
-		t.Fatalf("interrupt payload = %#v, want %s", gotInterrupt, interrupt)
+	local.end()
+
+	// A later response re-arms delivery.
+	local.begin()
+	go func() { received <- <-local.framesChan() }()
+	if !local.deliver([]byte(`{"response_id":"r2"}`)) {
+		t.Fatal("re-armed local interrupt rejected a received frame")
 	}
-	if errSend := client.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[]}`, model))); errSend != nil {
-		t.Fatal(errSend)
-	}
-	_, followCreated, errFollow := client.ReadMessage()
-	if errFollow != nil {
-		t.Fatal(errFollow)
-	}
-	if got := gjson.GetBytes(followCreated, "type").String(); got != "response.created" {
-		t.Fatalf("expected follow-up response.created, got %s", followCreated)
-	}
-	_, followDone, errDone := client.ReadMessage()
-	if errDone != nil {
-		t.Fatal(errDone)
-	}
-	if got := gjson.GetBytes(followDone, "type").String(); got != "response.completed" {
-		t.Fatalf("expected follow-up response.completed, got %s", followDone)
-	}
+	<-received
+	local.end()
 }

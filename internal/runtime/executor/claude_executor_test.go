@@ -2686,66 +2686,6 @@ func TestClaudeExecutor_CountTokensConfirmedNativePreservesMeasuredOAuthBody(t *
 	}
 }
 
-func TestClaudeExecutor_CountTokensCountsLocallyWithoutUpstreamRequest(t *testing.T) {
-	payload := []byte(`{
-		"system":"client system instructions",
-		"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]
-	}`)
-	const expectedCount int64 = 7
-
-	testCases := []struct {
-		name   string
-		apiKey string
-	}{
-		{name: "custom API key", apiKey: "key-123"},
-		{name: "custom OAuth", apiKey: "sk-ant-oat-custom"},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				t.Errorf("unexpected upstream count_tokens request: %s", r.URL.Path)
-				w.WriteHeader(http.StatusInternalServerError)
-			}))
-			defer server.Close()
-
-			executor := NewClaudeExecutor(&config.Config{})
-			auth := &cliproxyauth.Auth{Attributes: map[string]string{
-				"api_key":  testCase.apiKey,
-				"base_url": server.URL,
-			}}
-			resp, errCount := executor.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
-				Model:   "claude-sonnet-4-5",
-				Payload: payload,
-			}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
-			if errCount != nil {
-				t.Fatalf("CountTokens() error = %v", errCount)
-			}
-			if got := gjson.GetBytes(resp.Payload, "input_tokens").Int(); got != expectedCount {
-				t.Fatalf("input_tokens = %d, want %d; payload = %s", got, expectedCount, resp.Payload)
-			}
-		})
-	}
-
-	executor := NewClaudeExecutor(&config.Config{})
-	resp, err := executor.CountTokens(context.Background(), nil, cliproxyexecutor.Request{
-		Model:   "claude-sonnet-4-5",
-		Payload: payload,
-	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatClaude,
-		ResponseFormat: sdktranslator.FormatGemini,
-	})
-	if err != nil {
-		t.Fatalf("CountTokens() Gemini response error = %v", err)
-	}
-	if got := gjson.GetBytes(resp.Payload, "totalTokens").Int(); got != expectedCount {
-		t.Fatalf("Gemini totalTokens = %d, want %d; payload = %s", got, expectedCount, resp.Payload)
-	}
-	if got := gjson.GetBytes(resp.Payload, "promptTokensDetails.0.tokenCount").Int(); got != expectedCount {
-		t.Fatalf("Gemini prompt token detail = %d, want %d; payload = %s", got, expectedCount, resp.Payload)
-	}
-}
-
 func TestClaudeExecutor_CountTokensRejectsInvalidRequests(t *testing.T) {
 	testCases := []struct {
 		name    string
@@ -9911,146 +9851,6 @@ func TestClaudeExecutor_CloakModePrefersStoredPrevReqOverCallerFake(t *testing.T
 	}
 }
 
-func TestClaudeExecutor_ChatCompletionsDefaultMaxTokensAndPayloadDefaultRule(t *testing.T) {
-	var seenBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
-	}))
-	defer server.Close()
-
-	auth := &cliproxyauth.Auth{
-		Attributes: map[string]string{
-			"api_key":  "sk-ant-api-test",
-			"base_url": server.URL,
-		},
-	}
-
-	t.Run("omitted max_tokens uses registry 128k limit", func(t *testing.T) {
-		executor := NewClaudeExecutor(&config.Config{})
-		payload := []byte(`{"model":"claude-opus-5-5","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
-		_, errExec := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-			Model:   "claude-opus-5-5",
-			Payload: payload,
-		}, cliproxyexecutor.Options{
-			SourceFormat:    sdktranslator.FormatOpenAI,
-			ResponseFormat:  sdktranslator.FormatOpenAI,
-			OriginalRequest: payload,
-		})
-		if errExec != nil {
-			t.Fatalf("Execute() error = %v", errExec)
-		}
-		if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != 128000 {
-			t.Fatalf("Execute max_tokens = %d, want 128000; body=%s", got, seenBody)
-		}
-	})
-
-	t.Run("payload.default applies when chat completions omits max_tokens and preserves explicit client limit", func(t *testing.T) {
-		executor := NewClaudeExecutor(&config.Config{
-			Payload: config.PayloadConfig{
-				Default: []config.PayloadRule{{
-					Models: []config.PayloadModelRule{{Name: "claude-opus-5-5", Protocol: "claude"}},
-					Params: map[string]any{"max_tokens": 16384},
-				}},
-			},
-		})
-
-		omittedPayload := []byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`)
-		_, errExec := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-			Model:   "claude-opus-5-5",
-			Payload: omittedPayload,
-		}, cliproxyexecutor.Options{
-			SourceFormat:    sdktranslator.FormatOpenAI,
-			ResponseFormat:  sdktranslator.FormatOpenAI,
-			OriginalRequest: omittedPayload,
-		})
-		if errExec != nil {
-			t.Fatalf("Execute() omitted error = %v", errExec)
-		}
-		if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != 16384 {
-			t.Fatalf("Execute omitted max_tokens = %d, want payload.default 16384; body=%s", got, seenBody)
-		}
-
-		streamResult, errStream := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
-			Model:   "claude-opus-5-5",
-			Payload: omittedPayload,
-		}, cliproxyexecutor.Options{
-			SourceFormat:    sdktranslator.FormatOpenAI,
-			ResponseFormat:  sdktranslator.FormatOpenAI,
-			OriginalRequest: omittedPayload,
-			Stream:          true,
-		})
-		if errStream != nil {
-			t.Fatalf("ExecuteStream() omitted error = %v", errStream)
-		}
-		for chunk := range streamResult.Chunks {
-			if chunk.Err != nil {
-				t.Fatalf("ExecuteStream() chunk error = %v", chunk.Err)
-			}
-		}
-		if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != 16384 {
-			t.Fatalf("ExecuteStream omitted max_tokens = %d, want payload.default 16384; body=%s", got, seenBody)
-		}
-
-		protocolCases := []struct {
-			name      string
-			format    sdktranslator.Format
-			payload   string
-			wantLimit int64
-		}{
-			{
-				name:      "chat completions explicit max_completion_tokens preserved",
-				format:    sdktranslator.FormatOpenAI,
-				payload:   `{"model":"claude-opus-5-5","max_completion_tokens":4096,"messages":[{"role":"user","content":"hi"}]}`,
-				wantLimit: 4096,
-			},
-			{
-				name:      "responses omitted max_output_tokens uses payload.default",
-				format:    sdktranslator.FormatOpenAIResponse,
-				payload:   `{"model":"claude-opus-5-5","input":"hi"}`,
-				wantLimit: 16384,
-			},
-			{
-				name:      "responses explicit max_output_tokens preserved",
-				format:    sdktranslator.FormatOpenAIResponse,
-				payload:   `{"model":"claude-opus-5-5","max_output_tokens":4096,"input":"hi"}`,
-				wantLimit: 4096,
-			},
-			{
-				name:      "gemini omitted maxOutputTokens uses payload.default",
-				format:    sdktranslator.FormatGemini,
-				payload:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
-				wantLimit: 16384,
-			},
-			{
-				name:      "gemini explicit maxOutputTokens preserved",
-				format:    sdktranslator.FormatGemini,
-				payload:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":4096}}`,
-				wantLimit: 4096,
-			},
-		}
-
-		for _, pc := range protocolCases {
-			raw := []byte(pc.payload)
-			_, errCase := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-				Model:   "claude-opus-5-5",
-				Payload: raw,
-			}, cliproxyexecutor.Options{
-				SourceFormat:    pc.format,
-				ResponseFormat:  pc.format,
-				OriginalRequest: raw,
-			})
-			if errCase != nil {
-				t.Fatalf("%s: Execute() error = %v", pc.name, errCase)
-			}
-			if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != pc.wantLimit {
-				t.Fatalf("%s: max_tokens = %d, want %d; body=%s", pc.name, got, pc.wantLimit, seenBody)
-			}
-		}
-	})
-}
-
 // preservedThinkingTestSignature is a syntactically valid Claude thinking
 // signature sample that survives signature sanitization, so executor-level
 // tests can exercise replayed-history handling without a real upstream.
@@ -10307,4 +10107,175 @@ func TestClaudeExecutor_PayloadFilterRemovesPreservedThinkingInjection(t *testin
 	if gjson.GetBytes(seenBody, "thinking.block_binding").Exists() {
 		t.Fatalf("payload filter must remove injected block_binding: %s", seenBody)
 	}
+}
+
+func TestClaudeExecutor_CountTokensCountsLocallyWithoutUpstreamRequest(t *testing.T) {
+	payload := []byte(`{
+		"system":"client system instructions",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`)
+	const expectedCount int64 = 7
+
+	testCases := []struct {
+		name   string
+		apiKey string
+	}{
+		{name: "custom API key", apiKey: "key-123"},
+		{name: "custom OAuth", apiKey: "sk-ant-oat-custom"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("unexpected upstream count_tokens request: %s", r.URL.Path)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			executor := NewClaudeExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: map[string]string{
+				"api_key":  testCase.apiKey,
+				"base_url": server.URL,
+			}}
+			resp, errCount := executor.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
+				Model:   "claude-sonnet-4-5",
+				Payload: payload,
+			}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+			if errCount != nil {
+				t.Fatalf("CountTokens() error = %v", errCount)
+			}
+			if got := gjson.GetBytes(resp.Payload, "input_tokens").Int(); got != expectedCount {
+				t.Fatalf("input_tokens = %d, want %d; payload = %s", got, expectedCount, resp.Payload)
+			}
+		})
+	}
+
+}
+
+func TestClaudeExecutor_ChatCompletionsDefaultMaxTokensAndPayloadDefaultRule(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			"api_key":  "sk-ant-api-test",
+			"base_url": server.URL,
+		},
+	}
+
+	t.Run("omitted max_tokens uses registry 128k limit", func(t *testing.T) {
+		executor := NewClaudeExecutor(&config.Config{})
+		payload := []byte(`{"model":"claude-opus-5-5","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
+		_, errExec := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+			Model:   "claude-opus-5-5",
+			Payload: payload,
+		}, cliproxyexecutor.Options{
+			SourceFormat:    sdktranslator.FormatOpenAI,
+			ResponseFormat:  sdktranslator.FormatOpenAI,
+			OriginalRequest: payload,
+		})
+		if errExec != nil {
+			t.Fatalf("Execute() error = %v", errExec)
+		}
+		if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != 128000 {
+			t.Fatalf("Execute max_tokens = %d, want 128000; body=%s", got, seenBody)
+		}
+	})
+
+	t.Run("payload.default applies when chat completions omits max_tokens and preserves explicit client limit", func(t *testing.T) {
+		executor := NewClaudeExecutor(&config.Config{
+			Payload: config.PayloadConfig{
+				Default: []config.PayloadRule{{
+					Models: []config.PayloadModelRule{{Name: "claude-opus-5-5", Protocol: "claude"}},
+					Params: map[string]any{"max_tokens": 16384},
+				}},
+			},
+		})
+
+		omittedPayload := []byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`)
+		_, errExec := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+			Model:   "claude-opus-5-5",
+			Payload: omittedPayload,
+		}, cliproxyexecutor.Options{
+			SourceFormat:    sdktranslator.FormatOpenAI,
+			ResponseFormat:  sdktranslator.FormatOpenAI,
+			OriginalRequest: omittedPayload,
+		})
+		if errExec != nil {
+			t.Fatalf("Execute() omitted error = %v", errExec)
+		}
+		if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != 16384 {
+			t.Fatalf("Execute omitted max_tokens = %d, want payload.default 16384; body=%s", got, seenBody)
+		}
+
+		streamResult, errStream := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+			Model:   "claude-opus-5-5",
+			Payload: omittedPayload,
+		}, cliproxyexecutor.Options{
+			SourceFormat:    sdktranslator.FormatOpenAI,
+			ResponseFormat:  sdktranslator.FormatOpenAI,
+			OriginalRequest: omittedPayload,
+			Stream:          true,
+		})
+		if errStream != nil {
+			t.Fatalf("ExecuteStream() omitted error = %v", errStream)
+		}
+		for chunk := range streamResult.Chunks {
+			if chunk.Err != nil {
+				t.Fatalf("ExecuteStream() chunk error = %v", chunk.Err)
+			}
+		}
+		if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != 16384 {
+			t.Fatalf("ExecuteStream omitted max_tokens = %d, want payload.default 16384; body=%s", got, seenBody)
+		}
+
+		protocolCases := []struct {
+			name      string
+			format    sdktranslator.Format
+			payload   string
+			wantLimit int64
+		}{
+			{
+				name:      "chat completions explicit max_completion_tokens preserved",
+				format:    sdktranslator.FormatOpenAI,
+				payload:   `{"model":"claude-opus-5-5","max_completion_tokens":4096,"messages":[{"role":"user","content":"hi"}]}`,
+				wantLimit: 4096,
+			},
+			{
+				name:      "responses omitted max_output_tokens uses payload.default",
+				format:    sdktranslator.FormatOpenAIResponse,
+				payload:   `{"model":"claude-opus-5-5","input":"hi"}`,
+				wantLimit: 16384,
+			},
+			{
+				name:      "responses explicit max_output_tokens preserved",
+				format:    sdktranslator.FormatOpenAIResponse,
+				payload:   `{"model":"claude-opus-5-5","max_output_tokens":4096,"input":"hi"}`,
+				wantLimit: 4096,
+			},
+		}
+
+		for _, pc := range protocolCases {
+			raw := []byte(pc.payload)
+			_, errCase := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+				Model:   "claude-opus-5-5",
+				Payload: raw,
+			}, cliproxyexecutor.Options{
+				SourceFormat:    pc.format,
+				ResponseFormat:  pc.format,
+				OriginalRequest: raw,
+			})
+			if errCase != nil {
+				t.Fatalf("%s: Execute() error = %v", pc.name, errCase)
+			}
+			if got := gjson.GetBytes(seenBody, "max_tokens").Int(); got != pc.wantLimit {
+				t.Fatalf("%s: max_tokens = %d, want %d; body=%s", pc.name, got, pc.wantLimit, seenBody)
+			}
+		}
+	})
 }

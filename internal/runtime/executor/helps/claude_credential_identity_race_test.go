@@ -53,7 +53,7 @@ func TestApplyClaudeCredentialMetadataConcurrentSharedAuth(t *testing.T) {
 }
 
 // TestEnsureClaudeCredentialDevicePoolConcurrentSharedAuth covers the local
-// (non Home KV) branch of the pool bootstrap on a shared credential.
+// branch of the pool bootstrap on a shared credential.
 func TestEnsureClaudeCredentialDevicePoolConcurrentSharedAuth(t *testing.T) {
 	auth := &cliproxyauth.Auth{ID: "shared-credential"}
 

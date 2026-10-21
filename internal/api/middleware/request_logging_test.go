@@ -591,7 +591,7 @@ func TestCaptureRequestInfo_HeadersDeepCopy(t *testing.T) {
 }
 
 func TestManagementV8RequestsAreNotLogged(t *testing.T) {
-	for _, path := range []string{"/v8/management/config", "/v8/management/config.yaml", "/v8/management/config/api-keys/codex", "/v8/management/oauth/auth-url"} {
+	for _, path := range []string{"/v0/management/config.yaml", "/v0/management/api-keys", "/v8/management/config", "/v8/management/config.yaml", "/v8/management/config/api-keys/codex", "/v8/management/oauth/auth-url"} {
 		if shouldLogRequest(path) {
 			t.Errorf("management config request would be logged: %s", path)
 		}
@@ -712,5 +712,20 @@ func TestRequestLoggingMiddleware_StreamingPreservesFullUUIDForLogger(t *testing
 	}
 	if parsed.Version() != 7 {
 		t.Fatalf("streaming request ID version = %d, want 7", parsed.Version())
+	}
+}
+
+func TestShouldLogRequestSkipsWebUI(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/ui":                     false,
+		"/ui/":                    false,
+		"/ui/assets/index-abc.js": false,
+		"/v8/management/config":   false,
+		"/v1/chat/completions":    true,
+		"/uix":                    true,
+	} {
+		if got := shouldLogRequest(path); got != want {
+			t.Fatalf("shouldLogRequest(%q) = %v, want %v", path, got, want)
+		}
 	}
 }

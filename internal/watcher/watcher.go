@@ -4,30 +4,16 @@ package watcher
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	"gopkg.in/yaml.v3"
 
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
 )
-
-// storePersister captures persistence-capable token store methods used by the watcher.
-type storePersister interface {
-	PersistConfig(ctx context.Context) error
-	PersistAuthFiles(ctx context.Context, message string, paths ...string) error
-}
-
-type authDirProvider interface {
-	AuthDir() string
-}
 
 // Watcher manages file watching for configuration and authentication files
 type Watcher struct {
@@ -63,9 +49,6 @@ type Watcher struct {
 	pendingUpdates             map[string]AuthUpdate
 	pendingOrder               []string
 	dispatchCancel             context.CancelFunc
-	storePersister             storePersister
-	pluginAuthParser           synthesizer.PluginAuthParser
-	mirroredAuthDir            string
 	oldConfigYaml              []byte
 }
 
@@ -135,18 +118,6 @@ func NewWatcher(configPath, authDir string, reloadCallback func(*config.Config))
 		fileAuthsByPath: make(map[string]map[string]*coreauth.Auth),
 	}
 	w.dispatchCond = sync.NewCond(&w.dispatchMu)
-	if store := sdkAuth.GetTokenStore(); store != nil {
-		if persister, ok := store.(storePersister); ok {
-			w.storePersister = persister
-			log.Debug("persistence-capable token store detected; watcher will propagate persisted changes")
-		}
-		if provider, ok := store.(authDirProvider); ok {
-			if fixed := strings.TrimSpace(provider.AuthDir()); fixed != "" {
-				w.mirroredAuthDir = fixed
-				log.Debugf("mirrored auth directory locked to %s", fixed)
-			}
-		}
-	}
 	return w, nil
 }
 
@@ -171,13 +142,6 @@ func (w *Watcher) SetConfig(cfg *config.Config) {
 	defer w.clientsMutex.Unlock()
 	w.config = cloned
 	w.oldConfigYaml, _ = yaml.Marshal(cloned)
-}
-
-// SetPluginAuthParser updates the plugin auth parser used for file auth synthesis.
-func (w *Watcher) SetPluginAuthParser(parser synthesizer.PluginAuthParser) {
-	w.clientsMutex.Lock()
-	defer w.clientsMutex.Unlock()
-	w.pluginAuthParser = parser
 }
 
 // SetAuthUpdateQueue sets the queue used to emit auth updates.
@@ -209,7 +173,6 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 	w.clientsMutex.RLock()
 	cfg := w.config
 	authDir := w.authDir
-	parser := w.pluginAuthParser
 	w.clientsMutex.RUnlock()
-	return snapshotCoreAuths(cfg, authDir, parser)
+	return snapshotCoreAuths(cfg, authDir)
 }

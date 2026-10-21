@@ -114,9 +114,9 @@ func TestSaveConfigPreserveComments_SessionDatePinDaysExplicitZeroWhenAbsent(t *
 	if !strings.Contains(string(savedBytes), "session-date-pin-days: 0") {
 		t.Fatalf("saved YAML missing explicit 'session-date-pin-days: 0':\n%s", savedBytes)
 	}
-	loaded, errLoad := LoadConfigOptional(configPath, false)
+	loaded, errLoad := LoadConfig(configPath)
 	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+		t.Fatalf("LoadConfig() error = %v", errLoad)
 	}
 	if loaded.Claude.SessionDatePinDays == nil || *loaded.Claude.SessionDatePinDays != 0 {
 		t.Fatalf("loaded SessionDatePinDays = %v, want explicit 0", loaded.Claude.SessionDatePinDays)
@@ -129,9 +129,9 @@ func TestSaveConfigPreserveComments_SessionDatePinDaysDefaultNotPersisted(t *tes
 		t.Fatalf("os.WriteFile() error = %v", errWrite)
 	}
 
-	cfg, errLoad := LoadConfigOptional(configPath, false)
+	cfg, errLoad := LoadConfig(configPath)
 	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+		t.Fatalf("LoadConfig() error = %v", errLoad)
 	}
 	if errSave := SaveConfigPreserveComments(configPath, cfg); errSave != nil {
 		t.Fatalf("SaveConfigPreserveComments() error = %v", errSave)

@@ -22,7 +22,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type UsageReporter struct {
@@ -43,6 +42,7 @@ type UsageReporter struct {
 	isNativeKey         bool
 	sessionID           string
 	parentSessionID     string
+	endpoint            string
 	source              string
 	reasoning           string
 	serviceTier         string
@@ -135,6 +135,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		isNativeKey:     isNativeKey,
 		sessionID:       sessionID,
 		parentSessionID: parentSessionID,
+		endpoint:        usage.EndpointFromContext(ctx),
 		source:          resolveUsageSource(auth, apiKey),
 		authType:        resolveUsageAuthType(auth),
 		reasoning:       usage.ReasoningEffortFromContext(ctx),
@@ -145,7 +146,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
-		reporter.accessTokenHash = authAccessTokenSHA256(auth)
+		reporter.accessTokenHash = cliproxyauth.AccessTokenSHA256(auth)
 	}
 	return reporter
 }
@@ -195,7 +196,7 @@ func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
 		return
 	}
 	r.authMu.Lock()
-	r.accessTokenHash = authAccessTokenSHA256(auth)
+	r.accessTokenHash = cliproxyauth.AccessTokenSHA256(auth)
 	r.authMu.Unlock()
 }
 
@@ -650,6 +651,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AccessProvider:      r.accessProvider,
 		SessionID:           r.sessionID,
 		ParentSessionID:     r.parentSessionID,
+		Endpoint:            r.endpoint,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
 		AccessTokenSHA256:   r.accessTokenFingerprint(),
@@ -822,21 +824,6 @@ func AccessProviderFromContext(ctx context.Context) string {
 
 func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 	if auth != nil {
-		provider := strings.TrimSpace(auth.Provider)
-		if strings.EqualFold(provider, "vertex") {
-			if auth.Metadata != nil {
-				if projectID, ok := auth.Metadata["project_id"].(string); ok {
-					if trimmed := strings.TrimSpace(projectID); trimmed != "" {
-						return trimmed
-					}
-				}
-				if project, ok := auth.Metadata["project"].(string); ok {
-					if trimmed := strings.TrimSpace(project); trimmed != "" {
-						return trimmed
-					}
-				}
-			}
-		}
 		if _, value := auth.AccountInfo(); value != "" {
 			return strings.TrimSpace(value)
 		}
@@ -1348,37 +1335,6 @@ func ParseInteractionsStreamUsage(line []byte) (usage.Detail, bool) {
 	return detail, true
 }
 
-func ParseGeminiUsage(data []byte) usage.Detail {
-	usageNode := gjson.ParseBytes(data)
-	node := usageNode.Get("usageMetadata")
-	if !node.Exists() {
-		node = usageNode.Get("usage_metadata")
-	}
-	if !node.Exists() {
-		return usage.Detail{}
-	}
-	return parseGeminiFamilyUsageDetail(node)
-}
-
-func ParseGeminiStreamUsage(line []byte) (usage.Detail, bool) {
-	payload := jsonPayload(line)
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return usage.Detail{}, false
-	}
-	node := gjson.GetBytes(payload, "usageMetadata")
-	if !node.Exists() {
-		node = gjson.GetBytes(payload, "usage_metadata")
-	}
-	if !node.Exists() {
-		return usage.Detail{}, false
-	}
-	detail := parseGeminiFamilyUsageDetail(node)
-	if !hasNonZeroTokenUsage(detail) {
-		return usage.Detail{}, false
-	}
-	return detail, true
-}
-
 func firstExistingUsageNode(root gjson.Result, paths ...string) gjson.Result {
 	for _, path := range paths {
 		node := root.Get(path)
@@ -1410,190 +1366,6 @@ func invalidUsageTokenBreakdown(total int64) usage.TokenBreakdown {
 		TotalTokens:        total,
 		UnclassifiedTokens: total,
 	}
-}
-
-func ParseAntigravityUsage(data []byte) usage.Detail {
-	usageNode := gjson.ParseBytes(data)
-	node := usageNode.Get("response.usageMetadata")
-	if !node.Exists() {
-		node = usageNode.Get("usageMetadata")
-	}
-	if !node.Exists() {
-		node = usageNode.Get("usage_metadata")
-	}
-	if !node.Exists() {
-		return usage.Detail{}
-	}
-	return parseGeminiFamilyUsageDetail(node)
-}
-
-func ParseAntigravityStreamUsage(line []byte) (usage.Detail, bool) {
-	payload := jsonPayload(line)
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return usage.Detail{}, false
-	}
-	node := gjson.GetBytes(payload, "response.usageMetadata")
-	if !node.Exists() {
-		node = gjson.GetBytes(payload, "usageMetadata")
-	}
-	if !node.Exists() {
-		node = gjson.GetBytes(payload, "usage_metadata")
-	}
-	if !node.Exists() {
-		return usage.Detail{}, false
-	}
-	return parseGeminiFamilyUsageDetail(node), true
-}
-
-var stopChunkWithoutUsage sync.Map
-
-func rememberStopWithoutUsage(traceID string) {
-	stopChunkWithoutUsage.Store(traceID, struct{}{})
-	time.AfterFunc(10*time.Minute, func() { stopChunkWithoutUsage.Delete(traceID) })
-}
-
-// FilterSSEUsageMetadata removes usageMetadata from SSE events that are not
-// terminal (finishReason != "stop"). Stop chunks are left untouched. This
-// function is shared between aistudio and antigravity executors.
-func FilterSSEUsageMetadata(payload []byte) []byte {
-	if len(payload) == 0 {
-		return payload
-	}
-
-	lines := bytes.Split(payload, []byte("\n"))
-	modified := false
-	foundData := false
-	for idx, line := range lines {
-		trimmed := bytes.TrimSpace(line)
-		if len(trimmed) == 0 || !bytes.HasPrefix(trimmed, []byte("data:")) {
-			continue
-		}
-		foundData = true
-		dataIdx := bytes.Index(line, []byte("data:"))
-		if dataIdx < 0 {
-			continue
-		}
-		rawJSON := bytes.TrimSpace(line[dataIdx+5:])
-		traceID := gjson.GetBytes(rawJSON, "traceId").String()
-		if isStopChunkWithoutUsage(rawJSON) && traceID != "" {
-			rememberStopWithoutUsage(traceID)
-			continue
-		}
-		if traceID != "" {
-			if _, ok := stopChunkWithoutUsage.Load(traceID); ok && hasUsageMetadata(rawJSON) {
-				stopChunkWithoutUsage.Delete(traceID)
-				continue
-			}
-		}
-
-		cleaned, changed := StripUsageMetadataFromJSON(rawJSON)
-		if !changed {
-			continue
-		}
-		var rebuilt []byte
-		rebuilt = append(rebuilt, line[:dataIdx]...)
-		rebuilt = append(rebuilt, []byte("data:")...)
-		if len(cleaned) > 0 {
-			rebuilt = append(rebuilt, ' ')
-			rebuilt = append(rebuilt, cleaned...)
-		}
-		lines[idx] = rebuilt
-		modified = true
-	}
-	if !modified {
-		if !foundData {
-			// Handle payloads that are raw JSON without SSE data: prefix.
-			trimmed := bytes.TrimSpace(payload)
-			cleaned, changed := StripUsageMetadataFromJSON(trimmed)
-			if !changed {
-				return payload
-			}
-			return cleaned
-		}
-		return payload
-	}
-	return bytes.Join(lines, []byte("\n"))
-}
-
-// StripUsageMetadataFromJSON drops usageMetadata unless finishReason is present (terminal).
-// It handles both formats:
-// - Aistudio: candidates.0.finishReason
-// - Antigravity: response.candidates.0.finishReason
-func StripUsageMetadataFromJSON(rawJSON []byte) ([]byte, bool) {
-	jsonBytes := bytes.TrimSpace(rawJSON)
-	if len(jsonBytes) == 0 || !gjson.ValidBytes(jsonBytes) {
-		return rawJSON, false
-	}
-
-	// Check for finishReason in both aistudio and antigravity formats
-	finishReason := gjson.GetBytes(jsonBytes, "candidates.0.finishReason")
-	if !finishReason.Exists() {
-		finishReason = gjson.GetBytes(jsonBytes, "response.candidates.0.finishReason")
-	}
-	terminalReason := finishReason.Exists() && strings.TrimSpace(finishReason.String()) != ""
-
-	usageMetadata := gjson.GetBytes(jsonBytes, "usageMetadata")
-	if !usageMetadata.Exists() {
-		usageMetadata = gjson.GetBytes(jsonBytes, "response.usageMetadata")
-	}
-
-	// Terminal chunk: keep as-is.
-	if terminalReason {
-		return rawJSON, false
-	}
-
-	// Nothing to strip
-	if !usageMetadata.Exists() {
-		return rawJSON, false
-	}
-
-	// Remove usageMetadata from both possible locations
-	cleaned := jsonBytes
-	var changed bool
-
-	if usageMetadata = gjson.GetBytes(cleaned, "usageMetadata"); usageMetadata.Exists() {
-		// Rename usageMetadata to cpaUsageMetadata
-		cleaned, _ = sjson.SetRawBytes(cleaned, "cpaUsageMetadata", []byte(usageMetadata.Raw))
-		cleaned, _ = sjson.DeleteBytes(cleaned, "usageMetadata")
-		changed = true
-	}
-
-	if usageMetadata = gjson.GetBytes(cleaned, "response.usageMetadata"); usageMetadata.Exists() {
-		// Rename usageMetadata to cpaUsageMetadata
-		cleaned, _ = sjson.SetRawBytes(cleaned, "response.cpaUsageMetadata", []byte(usageMetadata.Raw))
-		cleaned, _ = sjson.DeleteBytes(cleaned, "response.usageMetadata")
-		changed = true
-	}
-
-	return cleaned, changed
-}
-
-func hasUsageMetadata(jsonBytes []byte) bool {
-	if len(jsonBytes) == 0 || !gjson.ValidBytes(jsonBytes) {
-		return false
-	}
-	if gjson.GetBytes(jsonBytes, "usageMetadata").Exists() {
-		return true
-	}
-	if gjson.GetBytes(jsonBytes, "response.usageMetadata").Exists() {
-		return true
-	}
-	return false
-}
-
-func isStopChunkWithoutUsage(jsonBytes []byte) bool {
-	if len(jsonBytes) == 0 || !gjson.ValidBytes(jsonBytes) {
-		return false
-	}
-	finishReason := gjson.GetBytes(jsonBytes, "candidates.0.finishReason")
-	if !finishReason.Exists() {
-		finishReason = gjson.GetBytes(jsonBytes, "response.candidates.0.finishReason")
-	}
-	trimmed := strings.TrimSpace(finishReason.String())
-	if !finishReason.Exists() || trimmed == "" {
-		return false
-	}
-	return !hasUsageMetadata(jsonBytes)
 }
 
 func JSONPayload(line []byte) []byte {

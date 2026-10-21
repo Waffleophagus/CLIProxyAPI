@@ -10,7 +10,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -23,7 +22,6 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 		sdkAuth.GetTokenStore(),
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
-		sdkAuth.NewAntigravityAuthenticator(),
 		sdkAuth.NewKimiAuthenticator(),
 		sdkAuth.NewKimiAIAuthenticator(),
 		sdkAuth.NewKimiAIDotAuthenticator(),
@@ -73,27 +71,6 @@ func (s *Service) consumeAuthUpdates(ctx context.Context) {
 	}
 }
 
-func (s *Service) emitAuthUpdate(ctx context.Context, update watcher.AuthUpdate) {
-	if s == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if watcher := s.currentWatcher(); watcher != nil && watcher.DispatchRuntimeAuthUpdate(update) {
-		return
-	}
-	if s.authUpdates != nil {
-		select {
-		case s.authUpdates <- update:
-			return
-		default:
-			log.Debugf("auth update queue saturated, applying inline action=%v id=%s", update.Action, update.ID)
-		}
-	}
-	s.handleAuthUpdate(ctx, update)
-}
-
 func (s *Service) handleAuthUpdate(ctx context.Context, update watcher.AuthUpdate) {
 	s.handleAuthUpdates(ctx, []watcher.AuthUpdate{update})
 }
@@ -102,9 +79,8 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	if s == nil {
 		return
 	}
-	// Keep this path limited to the targeted auths. Global plugin rebuilds and
-	// in-flight Antigravity probes can hold authUpdateMu for minutes and stall
-	// Management API PATCH responses.
+	// Keep this path limited to the targeted auths. Global rebuilds can hold
+	// authUpdateMu for a long time and stall Management API PATCH responses.
 	s.authUpdateMu.Lock()
 	locked := true
 	defer func() {
@@ -186,6 +162,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			authID := authForRegistration.ID
 			wait := startedWaitByID[authID]
 			tasks = append(tasks, modelRegistrationTask{
+				authID:   authID,
 				phase:    modelRegistrationPhase(authForRegistration),
 				category: modelRegistrationCategory(authForRegistration),
 				run: func(compatCache *openAICompatibilityRegistrationCache) {
@@ -214,8 +191,8 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 					continue
 				}
 				// Whole-file deletes can outlive a persisted re-create whose inline
-				// sync did not carry a revision. Recheck local files, including remote
-				// store mirrors, but do not suppress per-ID content/config deletes.
+				// sync did not carry a revision. Recheck local files, but do not
+				// suppress per-ID content/config deletes.
 				if update.Auth == nil && update.IsFileRemoval() {
 					path := existing.Attributes[coreauth.AttributePath]
 					switch existing.AuthSourceKind() {
@@ -223,8 +200,6 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 						if path == "" {
 							path = existing.Attributes[coreauth.AttributeSource]
 						}
-					case coreauth.AuthSourceGit, coreauth.AuthSourcePostgres, coreauth.AuthSourceObjectStore:
-						// Remote stores are file-backed only when they provide a local path.
 					default:
 						path = ""
 					}
@@ -261,7 +236,7 @@ func (s *Service) shouldSkipFileAuthDelete(path, id string) bool {
 		log.Debugf("skipping auth delete for %s: backing file is not confirmed missing", id)
 		return true
 	}
-	// A file can return with only a subset of its previous plugin auth IDs.
+	// A file can return with only a subset of its previous auth IDs.
 	// Read just this file so another file with the same ID cannot retain the auth.
 	auths, errSnapshotAuthFile := s.currentWatcher().SnapshotAuthFile(path)
 	if errSnapshotAuthFile != nil || len(auths) == 0 {
@@ -275,7 +250,7 @@ func (s *Service) shouldSkipFileAuthDelete(path, id string) bool {
 		}
 		hasAuth = true
 		// Store IDs retain case, but the file synthesizer lowercases IDs on Windows.
-		// Other platforms keep exact matching for case-sensitive plugin auth IDs.
+		// Other platforms keep exact matching for case-sensitive auth IDs.
 		if authIDMatches(auth.ID, id, runtime.GOOS == "windows") {
 			log.Debugf("skipping auth delete for %s: auth ID is present in the re-created file", id)
 			return true
@@ -333,77 +308,6 @@ func authUpdateID(update watcher.AuthUpdate) string {
 	return ""
 }
 
-func (s *Service) ensureWebsocketGateway() {
-	if s == nil {
-		return
-	}
-	if s.wsGateway != nil {
-		return
-	}
-	opts := wsrelay.Options{
-		Path:           "/v1/ws",
-		OnConnected:    s.wsOnConnected,
-		OnDisconnected: s.wsOnDisconnected,
-		LogDebugf:      log.Debugf,
-		LogInfof:       log.Infof,
-		LogWarnf:       log.Warnf,
-	}
-	s.wsGateway = wsrelay.NewManager(opts)
-}
-
-func (s *Service) wsOnConnected(channelID string) {
-	if s == nil || channelID == "" {
-		return
-	}
-	if !strings.HasPrefix(strings.ToLower(channelID), "aistudio-") {
-		return
-	}
-	if s.coreManager != nil {
-		if existing, ok := s.coreManager.GetByID(channelID); ok && existing != nil {
-			if !existing.Disabled && existing.Status == coreauth.StatusActive {
-				return
-			}
-		}
-	}
-	now := time.Now().UTC()
-	auth := &coreauth.Auth{
-		ID:         channelID,  // keep channel identifier as ID
-		Provider:   "aistudio", // logical provider for switch routing
-		Label:      channelID,  // display original channel id
-		Status:     coreauth.StatusActive,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		Attributes: map[string]string{"runtime_only": "true"},
-		Metadata:   map[string]any{"email": channelID}, // metadata drives logging and usage tracking
-	}
-	log.Infof("websocket provider connected: %s", channelID)
-	s.emitAuthUpdate(context.Background(), watcher.AuthUpdate{
-		Action: watcher.AuthUpdateActionAdd,
-		ID:     auth.ID,
-		Auth:   auth,
-	})
-}
-
-func (s *Service) wsOnDisconnected(channelID string, reason error) {
-	if s == nil || channelID == "" {
-		return
-	}
-	if reason != nil {
-		if strings.Contains(reason.Error(), "replaced by new connection") {
-			log.Infof("websocket provider replaced: %s", channelID)
-			return
-		}
-		log.Warnf("websocket provider disconnected: %s (%v)", channelID, reason)
-	} else {
-		log.Infof("websocket provider disconnected: %s", channelID)
-	}
-	ctx := context.Background()
-	s.emitAuthUpdate(ctx, watcher.AuthUpdate{
-		Action: watcher.AuthUpdateActionDelete,
-		ID:     channelID,
-	})
-}
-
 func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.Auth) {
 	auth = s.prepareCoreAuthForModelRegistration(ctx, auth)
 	if auth == nil {
@@ -430,14 +334,6 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 			return existing
 		}
 		auth.CreatedAt = existing.CreatedAt
-		if existing.Metadata != nil {
-			if persistedHints, hasHints := existing.Metadata[antigravityPersistedHintsMetaKey]; hasHints {
-				if auth.Metadata == nil {
-					auth.Metadata = make(map[string]any)
-				}
-				auth.Metadata[antigravityPersistedHintsMetaKey] = persistedHints
-			}
-		}
 		if !existing.Disabled && existing.Status != coreauth.StatusDisabled && !auth.Disabled && auth.Status != coreauth.StatusDisabled {
 			auth.LastRefreshedAt = existing.LastRefreshedAt
 			auth.NextRefreshAfter = existing.NextRefreshAfter
@@ -471,7 +367,6 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 		}
 		auth = current
 	}
-	s.cancelStaleAntigravityProbes(auth.ID)
 	return auth
 }
 
@@ -597,9 +492,8 @@ func (s *Service) completeModelRegistrationForAuthWithCache(ctx context.Context,
 	}
 	if !published {
 		// The registration was fenced out because its registration inputs
-		// or the registry epoch changed mid-computation (e.g. a plugin
-		// persisting its model snapshot through host.auth.save during
-		// ModelsForAuth, issue #6718). The intervening change may not have
+		// or the registry epoch changed mid-computation (issue #6718).
+		// The intervening change may not have
 		// left this client's models behind, so reconcile the latest auth
 		// once instead of risking an empty model list. The retry
 		// recomputes from the latest snapshot;
@@ -648,7 +542,6 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	// republish its cached models after the registry has been cleared.
 	s.coreManager.Remove(ctx, id)
 	GlobalModelRegistry().UnregisterClient(id)
-	s.cancelStaleAntigravityProbes(id)
 	if strings.EqualFold(provider, "codex") {
 		executor.CloseCodexWebsocketSessionsForAuthID(id, "auth_removed")
 	}
@@ -684,7 +577,7 @@ func (s *Service) configureCooldownStateStoreContext(ctx context.Context, cfg *c
 }
 
 func (s *Service) resolveCooldownStateStore(cfg *config.Config) coreauth.CooldownStateStore {
-	if cfg == nil || !cfg.SaveCooldownStatus || cfg.Home.Enabled {
+	if cfg == nil || !cfg.SaveCooldownStatus {
 		return nil
 	}
 	if s != nil && s.cooldownStateStore != nil {

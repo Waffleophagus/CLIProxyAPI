@@ -89,9 +89,6 @@ type StreamForwardOptions struct {
 	// The failure is passed to cancel without writing another terminal payload.
 	ChunkError func() *interfaces.ErrorMessage
 
-	// ChunkDone reports successful terminal delivery after WriteChunk and Flush.
-	ChunkDone func() bool
-
 	// Flush optionally exposes transport flush errors hidden by http.Flusher.
 	Flush func() error
 
@@ -211,10 +208,6 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 					}
 					return
 				}
-			}
-			if opts.ChunkDone != nil && opts.ChunkDone() {
-				cancel(nil)
-				return
 			}
 		case errMsg, ok := <-errs:
 			if !ok {

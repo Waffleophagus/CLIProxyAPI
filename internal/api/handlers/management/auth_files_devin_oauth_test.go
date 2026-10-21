@@ -67,7 +67,7 @@ func TestDevinRemoteOAuthFlow(t *testing.T) {
 
 	router := gin.New()
 	router.GET("/devin-auth-url", h.RequestDevinToken)
-	router.POST("/oauth-callback", h.PostOAuthCallback)
+	router.POST("/oauth-callback", h.PostOAuthCallbackV8)
 	router.GET("/get-auth-status", h.GetAuthStatus)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	defer cancelRequest()

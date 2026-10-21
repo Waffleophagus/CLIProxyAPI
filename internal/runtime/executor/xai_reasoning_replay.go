@@ -296,8 +296,6 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 		if errDelete := internalcache.DeleteXAIReasoningReplayItemRequired(ctx, scope.modelName, scope.sessionKey); errDelete != nil {
 			log.Warnf("xai reasoning replay cache delete failed after non-replayable completed output: %v", errDelete)
 		}
-	case internalcache.XAIReasoningReplayStoreBackendError:
-		log.Debug("xai reasoning replay cache store backend error; retaining previous entry")
 	default:
 		// Invalid args: nothing to store or clear.
 	}

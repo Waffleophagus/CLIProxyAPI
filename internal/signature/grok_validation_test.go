@@ -120,18 +120,18 @@ func TestInspectGrokEncryptedContent_RejectsClaudeThinkingSignature(t *testing.T
 	}
 }
 
-func TestInspectGrokEncryptedContent_RejectsAntigravityClaudeThinkingSignature(t *testing.T) {
-	sample := testUnpaddedAntigravityClaudeThinkingSignature()
+func TestInspectGrokEncryptedContent_RejectsAcmeClaudeThinkingSignature(t *testing.T) {
+	sample := testUnpaddedAcmeClaudeThinkingSignature()
 	if !strings.HasPrefix(sample, "R") || strings.Contains(sample, "=") {
 		t.Fatalf("fixture should be an unpadded R-form Claude signature, got prefix=%q has_padding=%t", sample[:1], strings.Contains(sample, "="))
 	}
 	if !IsValidClaudeThinkingSignature(sample, ClaudeSignatureValidationOptions{Strict: true}) {
-		t.Fatal("fixture should be a strict Antigravity Claude thinking signature")
+		t.Fatal("fixture should be a strict Acme Claude thinking signature")
 	}
 
 	_, err := InspectGrokEncryptedContent(sample)
 	if err == nil {
-		t.Fatal("expected Antigravity Claude thinking signature to be rejected")
+		t.Fatal("expected Acme Claude thinking signature to be rejected")
 	}
 	if !strings.Contains(err.Error(), "Claude") {
 		t.Fatalf("error = %q, want Claude fast-reject detail", err.Error())
@@ -316,7 +316,7 @@ func testUnpaddedClaudeCAISSignature() string {
 	panic("could not build an unpadded Claude CAIS fixture")
 }
 
-func testUnpaddedAntigravityClaudeThinkingSignature() string {
+func testUnpaddedAcmeClaudeThinkingSignature() string {
 	return base64.StdEncoding.EncodeToString([]byte(testClaudeThinkingSignatureWithOpaqueLen(41)))
 }
 

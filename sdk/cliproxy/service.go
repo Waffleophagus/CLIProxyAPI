@@ -6,33 +6,46 @@ package cliproxy
 import (
 	"context"
 	"sync"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/homeplugins"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/slugs"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/tailnet"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
 )
 
 // Service wraps the proxy server lifecycle so external programs can embed the CLI proxy.
 // It manages the complete lifecycle including authentication, file watching, HTTP server,
 // and integration with various AI service providers.
 type Service struct {
-	// cfg holds the current application configuration.
+	// cfg holds the effective runtime configuration: the loaded configuration with
+	// follow-mode slugs resolved (see internal/slugs). Runtime components read it.
 	cfg *config.Config
+
+	// sourceCfg holds the configuration as loaded from disk. It is handed to the
+	// HTTP server and watcher so resolved slugs are never persisted. Nil means cfg.
+	sourceCfg *config.Config
+
+	// slugs resolves follow-mode OpenAI-compatible model aliases.
+	slugs *slugs.Manager
+
+	// usageRuntime persists usage records to SQLite (see internal/usagestore).
+	usageRuntime *usagestore.Runtime
+
+	// tailnet is the embedded tailscale node; nil when tailscale is disabled.
+	tailnet *tailnet.Node
+	// tailscaleRestartNoted is the pending tailscale config already reported as
+	// needing a restart (guarded by configRuntimeMu).
+	tailscaleRestartNoted *tailnet.Settings
 
 	// cfgMu protects concurrent access to the configuration.
 	cfgMu sync.RWMutex
 
-	// configUpdateMu serializes config updates across watcher + home.
+	// configUpdateMu serializes config updates.
 	configUpdateMu sync.Mutex
 
 	// configRuntimeMu orders side-effecting runtime application after config commits.
@@ -43,7 +56,13 @@ type Service struct {
 	authRegWaitMu          sync.Mutex
 	authRegWaiters         map[string]chan struct{}
 	configSequence         uint64
-	appliedRoutingState    *routingRuntimeState
+	// sourceGeneration counts commits of a newly loaded config (guarded by
+	// configUpdateMu); slug-only commits keep it. appliedSourceGeneration is the
+	// generation last pushed to the HTTP server and pprof (guarded by
+	// configRuntimeMu). Generation 0 is the config the service was built with.
+	sourceGeneration        uint64
+	appliedSourceGeneration uint64
+	appliedRoutingState     *routingRuntimeState
 
 	// configPath is the path to the configuration file.
 	configPath string
@@ -68,9 +87,6 @@ type Service struct {
 
 	// pprofServer manages the optional pprof HTTP debug server.
 	pprofServer *pprofServer
-
-	// discoveryManager manages local network mDNS / DNS-SD service advertising.
-	discoveryManager *discoveryAdvertiserManager
 
 	// serverErr channel for server startup/shutdown errors.
 	serverErr chan error
@@ -99,50 +115,13 @@ type Service struct {
 	// cooldownStateStore persists runtime cooldown state when enabled.
 	cooldownStateStore coreauth.CooldownStateStore
 
-	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
-	pluginHost *pluginhost.Host
-
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
 
-	// wsGateway manages websocket Gemini providers.
-	wsGateway *wsrelay.Manager
-
-	homeLifecycleMu              sync.Mutex
-	homeOwnershipMu              sync.Mutex
-	homeConfigCommitMu           sync.Mutex
-	homeConfigStageHook          func()
-	homeConfigCommitHook         func()
-	homeConfigRuntimeHook        func()
 	applyPprofConfigContextFn    func(context.Context, *config.Config) bool
 	updateServerClientsContextFn func(context.Context, *config.Config) bool
-	homeSupervisor               *homeSubscriberSupervisor
-	homeMu                       sync.Mutex
-	homeGeneration               uint64
-	homeClient                   *home.Client
-	homeRegistry                 *executionregistry.Registry
-	homeDispatchBundle           *coreauth.HomeDispatchBundle
-	homeDrainBound               time.Duration
-	homeCancel                   context.CancelFunc
+	runMu                        sync.Mutex
 	runCancel                    context.CancelFunc
-	homeLogForwarder             homeLogForwarder
-	homeLogForwarderClient       *home.Client
-	homePluginSyncMu             sync.Mutex
-	homePluginSyncKey            string
-	homePluginSyncFetch          func(context.Context, sdkpluginstore.PluginSyncRequest) (sdkpluginstore.PluginSyncResponse, error)
-	homePluginDeleteTask         func(context.Context, *config.Config, home.PluginTask) homeplugins.SyncReport
-	antigravityProbeWg           sync.WaitGroup
-	// antigravityContext is protected by cfgMu and owns background model probes.
-	antigravityContext       context.Context
-	antigravityProbeMu       sync.Mutex
-	antigravityAccountProbes map[string]map[*antigravityAccountProbe]struct{}
-	antigravityRefreshWake   chan struct{}
-	// antigravityRefreshPending is protected by antigravityProbeMu. Each entry
-	// owns one worker and at most one queued snapshot shared by all probe entry
-	// points. A nil value means the worker is running without a queued successor.
-	antigravityRefreshPending map[string]*antigravityModelRefreshRequest
-	antigravityPersistPending map[string]*antigravityHintPersistRequest
-	antigravityPersistActive  map[string]*antigravityHintPersistRequest
 }
 
 // SetResultPolicy sets an execution result policy on the underlying core auth manager.

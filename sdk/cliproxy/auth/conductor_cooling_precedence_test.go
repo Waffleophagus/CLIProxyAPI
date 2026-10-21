@@ -17,7 +17,6 @@ func TestManagerMarkResultUsesCredentialCoolingPrecedence(t *testing.T) {
 	enabled := false
 	tests := []struct {
 		name             string
-		homeEnabled      bool
 		globalDisable    bool
 		credential       *bool
 		providerOverride *bool
@@ -30,7 +29,6 @@ func TestManagerMarkResultUsesCredentialCoolingPrecedence(t *testing.T) {
 		{name: "provider false overrides global true", globalDisable: true, providerOverride: &enabled, wantCooldown: true},
 		{name: "provider true overrides global false", providerOverride: &disabled},
 		{name: "credential false overrides provider true", credential: &enabled, providerOverride: &disabled, wantCooldown: true},
-		{name: "home mode disables local cooling despite credential false", homeEnabled: true, credential: &enabled},
 	}
 
 	for _, tc := range tests {
@@ -38,7 +36,6 @@ func TestManagerMarkResultUsesCredentialCoolingPrecedence(t *testing.T) {
 			manager := NewManager(nil, nil, nil)
 			cfg := &internalconfig.Config{
 				DisableCooling: tc.globalDisable,
-				Home:           internalconfig.HomeConfig{Enabled: tc.homeEnabled},
 			}
 			auth := &Auth{ID: tc.name, Provider: "claude", Status: StatusActive}
 			if tc.credential != nil {

@@ -1,41 +1,35 @@
-# Git and GitHub folders
+# VCS and CI
 .git
 .github
 
-# Docker and CI/CD related files
+# Container and repo metadata
 docker-compose.yml
 .dockerignore
 .gitignore
-.goreleaser.yml
 Dockerfile
 
 # Documentation and license
 docs
 README.md
-README_CN.md
 LICENSE
 
-# Runtime data folders (should be mounted as volumes)
+# Runtime data (mounted as volumes)
 auths
 logs
+data
 conv
 config.yaml
+.env
 
 # Development/editor
 bin
 .vscode
+.idea
 .claude
 .codex
-.codex-worktrees
-.gemini
-.serena
-.agent
-.agents
-.antigravitycli
-.opencode
-.idea
-.junie
 .worktrees
-.bmad
-_bmad
-_bmad-output
+
+# Web UI: dependencies are installed and the UI is built inside the image
+web/node_modules
+internal/webui/dist/*
+!internal/webui/dist/.keep

@@ -30,9 +30,6 @@ type SessionInfo struct {
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
-// SessionTreeInfo is an alias for SessionInfo for backward compatibility.
-type SessionTreeInfo = SessionInfo
-
 // sessionObject indexes top-level fields once so missing session keys do not
 // rescan large message arrays for every candidate path.
 type sessionObject struct {
@@ -84,15 +81,13 @@ func (object sessionObject) Get(path string) gjson.Result {
 //  1. X-Claude-Code-Session-Id
 //  2. Claude Code metadata.user_id session
 //  3. Session-Id / Session_id (Codex and compatible clients)
-//  4. X-Http-Session-Id (Antigravity CLI)
-//  5. X-Session-ID / X-Session-Affinity / X-Slot-Session-Id
-//  6. X-Conversation-Id / X-Thread-Id / X-Client-Request-Id
-//  7. Gemini cachedContent
-//  8. OpenAI thread_id
-//  9. session_id / sessionId
-//  10. prompt_cache_key (pck:), conversation.id (conv:), metadata.user_id (user:)
-//  11. conversation_id / chat_id
-//  12. execution_session_id metadata
+//  4. X-Session-ID / X-Session-Affinity / X-Slot-Session-Id
+//  5. X-Conversation-Id / X-Thread-Id / X-Client-Request-Id
+//  6. OpenAI thread_id
+//  7. session_id / sessionId
+//  8. prompt_cache_key (pck:), conversation.id (conv:), metadata.user_id (user:)
+//  9. conversation_id / chat_id
+//  10. execution_session_id metadata
 func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string]any) (SessionInfo, bool) {
 	var info SessionInfo
 	if metadata != nil {
@@ -102,18 +97,10 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 	}
 
 	var root sessionObject
-	var reqRoot sessionObject
-	var hasNestedReq bool
 	var parentCandidate string
 
 	if len(payload) > 0 {
 		root = newSessionObject(util.ParseGJSONBytesNoCopy(payload))
-		reqRoot = root
-		req := root.Get("request")
-		hasNestedReq = req.Exists() && !root.Get("contents").Exists()
-		if hasNestedReq {
-			reqRoot = newSessionObject(req)
-		}
 		for _, p := range []string{
 			// Standard session / thread parent keys
 			"parent_session_id", "parentSessionId", "parentSessionID",
@@ -158,12 +145,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 				parentCandidate = val
 				break
 			}
-			if hasNestedReq {
-				if val := normalizedSessionCandidate(reqRoot.Get(p).String()); val != "" {
-					parentCandidate = val
-					break
-				}
-			}
 		}
 		if parentCandidate == "" {
 			parentCandidate = ClaudeMetadataParentSessionID(payload)
@@ -179,12 +160,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			if agentID == "" {
 				agentID = normalizedSessionCandidate(root.Get("metadata.subagent_id").String())
 			}
-			if agentID == "" && hasNestedReq {
-				agentID = normalizedSessionCandidate(reqRoot.Get("metadata.agent_id").String())
-				if agentID == "" {
-					agentID = normalizedSessionCandidate(reqRoot.Get("metadata.subagent_id").String())
-				}
-			}
 		}
 		if agentID == "" {
 			_, _, agentID = ClaudeMetadataIdentities(payload)
@@ -194,12 +169,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			parentAgentID = normalizedSessionCandidate(root.Get("metadata.parent_agent_id").String())
 			if parentAgentID == "" {
 				parentAgentID = normalizedSessionCandidate(root.Get("metadata.parentAgentId").String())
-			}
-			if parentAgentID == "" && hasNestedReq {
-				parentAgentID = normalizedSessionCandidate(reqRoot.Get("metadata.parent_agent_id").String())
-				if parentAgentID == "" {
-					parentAgentID = normalizedSessionCandidate(reqRoot.Get("metadata.parentAgentId").String())
-				}
 			}
 		}
 		if agentID != "" && agentID != "main" {
@@ -234,24 +203,12 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 				if agentID == "" {
 					agentID = normalizedSessionCandidate(root.Get("metadata.subagent_id").String())
 				}
-				if agentID == "" && hasNestedReq {
-					agentID = normalizedSessionCandidate(reqRoot.Get("metadata.agent_id").String())
-					if agentID == "" {
-						agentID = normalizedSessionCandidate(reqRoot.Get("metadata.subagent_id").String())
-					}
-				}
 			}
 			parentAgentID := sessionHeaderValue(headers, "X-Claude-Code-Parent-Agent-Id")
 			if parentAgentID == "" && root.Exists() {
 				parentAgentID = normalizedSessionCandidate(root.Get("metadata.parent_agent_id").String())
 				if parentAgentID == "" {
 					parentAgentID = normalizedSessionCandidate(root.Get("metadata.parentAgentId").String())
-				}
-				if parentAgentID == "" && hasNestedReq {
-					parentAgentID = normalizedSessionCandidate(reqRoot.Get("metadata.parent_agent_id").String())
-					if parentAgentID == "" {
-						parentAgentID = normalizedSessionCandidate(reqRoot.Get("metadata.parentAgentId").String())
-					}
 				}
 			}
 			if agentID != "" && agentID != "main" {
@@ -314,11 +271,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			if tid = normalizedSessionCandidate(root.Get(path).String()); tid != "" {
 				break
 			}
-			if hasNestedReq {
-				if tid = normalizedSessionCandidate(reqRoot.Get(path).String()); tid != "" {
-					break
-				}
-			}
 		}
 	}
 
@@ -347,11 +299,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			} {
 				if forkedFrom = normalizedSessionCandidate(root.Get(forkPath).String()); forkedFrom != "" {
 					break
-				}
-				if hasNestedReq {
-					if forkedFrom = normalizedSessionCandidate(reqRoot.Get(forkPath).String()); forkedFrom != "" {
-						break
-					}
 				}
 			}
 		}
@@ -440,32 +387,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			info.ParentSessionID = "codex:" + parentCandidate
 			info.AgentName = "subagent"
 			info.IsSubagent = true
-		} else {
-			info.AgentName = "main"
-		}
-		return finalizeSessionInfo(info)
-	}
-
-	// 4. Antigravity CLI (agy) Headers
-	if sid := sessionHeaderValue(headers, "X-Http-Session-Id"); sid != "" {
-		info.ClientType = "agy"
-		info.SessionID = "agy:" + sid
-		parentSID := sessionHeaderValue(headers, "X-Parent-Session-ID")
-		if parentSID == "" {
-			parentSID = sessionHeaderValue(headers, "X-Parent-Session-Id")
-		}
-		if parentSID == "" {
-			parentSID = sessionHeaderValue(headers, "X-Parent-ID")
-		}
-		if parentSID == "" {
-			parentSID = sessionHeaderValue(headers, "X-Parent-Id")
-		}
-		if parentSID != "" && parentSID != sid {
-			info.ParentSessionID = "agy:" + parentSID
-			info.AgentName = "subagent"
-		} else if parentCandidate != "" && parentCandidate != sid {
-			info.ParentSessionID = "agy:" + parentCandidate
-			info.AgentName = "subagent"
 		} else {
 			info.AgentName = "main"
 		}
@@ -645,37 +566,15 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 
 	// 6. Payload inspection
 	if len(payload) > 0 && root.Exists() {
-		// Gemini context caching
-		for _, cachePath := range []string{"cachedContent", "cached_content"} {
-			cacheID := normalizedSessionCandidate(root.Get(cachePath).String())
-			if cacheID == "" && hasNestedReq {
-				cacheID = normalizedSessionCandidate(reqRoot.Get(cachePath).String())
-			}
-			if cacheID != "" {
-				info.ClientType = "gemini"
-				info.SessionID = "geminicache:" + cacheID
-				if parentCandidate != "" && parentCandidate != cacheID {
-					info.ParentSessionID = "geminicache:" + parentCandidate
-					info.AgentName = "subagent"
-				} else {
-					info.AgentName = "main"
-				}
-				return finalizeSessionInfo(info)
-			}
-		}
-
 		// OpenAI thread in payload
 		for _, threadPath := range []string{"thread_id", "threadId", "metadata.thread_id"} {
 			tid := normalizedSessionCandidate(root.Get(threadPath).String())
-			if tid == "" && hasNestedReq {
-				tid = normalizedSessionCandidate(reqRoot.Get(threadPath).String())
-			}
 			if tid != "" {
 				info.ClientType = "openai-thread"
 				info.SessionID = "thread:" + tid
 				if parentCandidate != "" && parentCandidate != tid {
 					info.ParentSessionID = "thread:" + parentCandidate
-					if isBodyForkCandidate(root, reqRoot, hasNestedReq) {
+					if isBodyForkCandidate(root) {
 						info.IsFork = true
 						info.IsSubagent = false
 						info.AgentName = "main"
@@ -701,12 +600,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 		if agentID == "" {
 			agentID = sessionHeaderValue(headers, "x-agent-id")
 		}
-		if agentID == "" && hasNestedReq {
-			agentID = normalizedSessionCandidate(reqRoot.Get("metadata.agent_id").String())
-			if agentID == "" {
-				agentID = normalizedSessionCandidate(reqRoot.Get("metadata.subagent_id").String())
-			}
-		}
 
 		for _, path := range []string{
 			"session_id", "sessionId", "sessionID",
@@ -716,9 +609,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			"extra_body.session_id", "extra_body.sessionId", "extra_body.sessionID",
 		} {
 			sid := normalizedSessionCandidate(root.Get(path).String())
-			if sid == "" && hasNestedReq {
-				sid = normalizedSessionCandidate(reqRoot.Get(path).String())
-			}
 			if sid != "" {
 				info.ClientType = "generic"
 				if agentID != "" && agentID != "main" {
@@ -732,7 +622,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 					info.SessionID = "session:" + sid
 					if parentCandidate != "" && parentCandidate != sid {
 						info.ParentSessionID = "session:" + parentCandidate
-						if isBodyForkCandidate(root, reqRoot, hasNestedReq) {
+						if isBodyForkCandidate(root) {
 							info.IsFork = true
 							info.IsSubagent = false
 							info.AgentName = "main"
@@ -757,15 +647,12 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			"extra_body.task_id", "extra_body.taskId", "extra_body.taskID",
 		} {
 			tid := normalizedSessionCandidate(root.Get(path).String())
-			if tid == "" && hasNestedReq {
-				tid = normalizedSessionCandidate(reqRoot.Get(path).String())
-			}
 			if tid != "" {
 				info.ClientType = "task"
 				info.SessionID = "task:" + tid
 				if parentCandidate != "" && parentCandidate != tid {
 					info.ParentSessionID = "task:" + parentCandidate
-					if isBodyForkCandidate(root, reqRoot, hasNestedReq) {
+					if isBodyForkCandidate(root) {
 						info.IsFork = true
 						info.IsSubagent = false
 						info.AgentName = "main"
@@ -783,9 +670,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 		// Prompt cache key & Conversation object
 		var conversationID string
 		conversation := root.Get("conversation")
-		if !conversation.Exists() && hasNestedReq {
-			conversation = reqRoot.Get("conversation")
-		}
 		if sid := normalizedSessionCandidate(conversation.Get("id").String()); sid != "" {
 			conversationID = "conv:" + sid
 		} else if conversation.Type == gjson.String {
@@ -796,12 +680,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 		pck := normalizedSessionCandidate(root.Get("prompt_cache_key").String())
 		if pck == "" {
 			pck = normalizedSessionCandidate(root.Get("promptCacheKey").String())
-		}
-		if pck == "" && hasNestedReq {
-			pck = normalizedSessionCandidate(reqRoot.Get("prompt_cache_key").String())
-			if pck == "" {
-				pck = normalizedSessionCandidate(reqRoot.Get("promptCacheKey").String())
-			}
 		}
 		if pck != "" {
 			info.ClientType = "generic"
@@ -828,9 +706,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 
 		// Plain metadata.user_id
 		userID := normalizedSessionCandidate(root.Get("metadata.user_id").String())
-		if userID == "" && hasNestedReq {
-			userID = normalizedSessionCandidate(reqRoot.Get("metadata.user_id").String())
-		}
 		if userID != "" {
 			info.ClientType = "generic"
 			info.SessionID = "user:" + userID
@@ -841,9 +716,6 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 		// Legacy conversation string paths
 		for _, convPath := range []string{"conversation_id", "conversationId", "chat_id", "chatId", "metadata.conversation_id", "extra_body.conversation_id"} {
 			cid := normalizedSessionCandidate(root.Get(convPath).String())
-			if cid == "" && hasNestedReq {
-				cid = normalizedSessionCandidate(reqRoot.Get(convPath).String())
-			}
 			if cid != "" {
 				info.ClientType = "conv"
 				info.SessionID = "conv:" + cid
@@ -899,7 +771,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 	return SessionInfo{}, false
 }
 
-func isBodyForkCandidate(root, reqRoot sessionObject, hasNestedReq bool) bool {
+func isBodyForkCandidate(root sessionObject) bool {
 	if !root.Exists() {
 		return false
 	}
@@ -914,11 +786,6 @@ func isBodyForkCandidate(root, reqRoot sessionObject, hasNestedReq bool) bool {
 	} {
 		if val := normalizedSessionCandidate(root.Get(k).String()); val != "" {
 			return true
-		}
-		if hasNestedReq {
-			if val := normalizedSessionCandidate(reqRoot.Get(k).String()); val != "" {
-				return true
-			}
 		}
 	}
 	return false
@@ -962,11 +829,6 @@ func finalizeSessionInfo(info SessionInfo) (SessionInfo, bool) {
 		info.ParentSessionID = ""
 	}
 	return info, true
-}
-
-// ExtractTreeInfo is an alias for ExtractSessionInfo for backward compatibility.
-func ExtractTreeInfo(headers http.Header, payload []byte, metadata map[string]any) (SessionInfo, bool) {
-	return ExtractSessionInfo(headers, payload, metadata)
 }
 
 func sessionHeaderValue(headers http.Header, name string) string {

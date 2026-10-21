@@ -10,10 +10,10 @@ import (
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
-// TestConfigV8ETagExposedForCORS covers issue #6666 through the real server:
-// a cross-origin management page must be able to read the ETag that the v8
-// config endpoints return, otherwise the GET -> If-Match flow cannot run.
-func TestConfigV8ETagExposedForCORS(t *testing.T) {
+// TestConfigV8ETagFlowWithoutCORS covers the GET -> If-Match flow through the
+// real server. The management API is same-origin only, so even requests that
+// carry an Origin header get no CORS headers.
+func TestConfigV8ETagFlowWithoutCORS(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
 	server := newTestServer(t)
@@ -41,19 +41,15 @@ func TestConfigV8ETagExposedForCORS(t *testing.T) {
 		server.engine.ServeHTTP(recorder, req)
 		return recorder
 	}
-	wantETagExposed := func(recorder *httptest.ResponseRecorder, status int) string {
+	wantETag := func(recorder *httptest.ResponseRecorder, status int) string {
 		t.Helper()
 		if recorder.Code != status {
 			t.Fatalf("status = %d, want %d body=%s", recorder.Code, status, recorder.Body.String())
 		}
-		exposed := false
-		for _, name := range strings.Split(recorder.Header().Get("Access-Control-Expose-Headers"), ",") {
-			if strings.EqualFold(strings.TrimSpace(name), "ETag") {
-				exposed = true
+		for name := range recorder.Header() {
+			if strings.HasPrefix(strings.ToLower(name), "access-control-") {
+				t.Fatalf("management response has CORS header %s", name)
 			}
-		}
-		if !exposed {
-			t.Fatalf("Access-Control-Expose-Headers missing ETag: %q", recorder.Header().Get("Access-Control-Expose-Headers"))
 		}
 		etag := recorder.Header().Get("ETag")
 		if etag == "" {
@@ -62,9 +58,9 @@ func TestConfigV8ETagExposedForCORS(t *testing.T) {
 		return etag
 	}
 
-	etag := wantETagExposed(do(http.MethodGet, "", ""), http.StatusOK)
-	// A stale precondition reports the current version, still CORS-readable.
-	wantETagExposed(do(http.MethodPut, "config-version: 8\n", `"stale"`), http.StatusPreconditionFailed)
-	// A successful conditional write chains through its exposed new ETag.
-	wantETagExposed(do(http.MethodPut, "config-version: 8\nserver: {port: 8318}\n", etag), http.StatusOK)
+	etag := wantETag(do(http.MethodGet, "", ""), http.StatusOK)
+	// A stale precondition reports the current version.
+	wantETag(do(http.MethodPut, "config-version: 8\n", `"stale"`), http.StatusPreconditionFailed)
+	// A successful conditional write chains through its new ETag.
+	wantETag(do(http.MethodPut, "config-version: 8\nserver: {port: 8318}\n", etag), http.StatusOK)
 }

@@ -22,6 +22,20 @@ func (s *Service) currentConfig() *config.Config {
 	return cfg
 }
 
+// currentSourceConfig returns the configuration as loaded, without resolved slugs.
+func (s *Service) currentSourceConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	s.cfgMu.RLock()
+	cfg := s.sourceCfg
+	if cfg == nil {
+		cfg = s.cfg
+	}
+	s.cfgMu.RUnlock()
+	return cfg
+}
+
 func (s *Service) currentWatcher() *WatcherWrapper {
 	if s == nil {
 		return nil
@@ -41,17 +55,19 @@ func (s *Service) setWatcher(w *WatcherWrapper) {
 	s.cfgMu.Unlock()
 }
 
-func (s *Service) applyConfigUpdate(newCfg *config.Config) {
-	s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, true)
-}
-
 func (s *Service) applyWatcherConfigUpdate(newCfg *config.Config) {
 	s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, false)
 }
 
 type configCommit struct {
+	// cfg is the effective runtime config; source is the config as loaded.
 	cfg      *config.Config
+	source   *config.Config
 	sequence uint64
+	// sourceGeneration identifies source. A slug resolution change re-commits
+	// the current source under the same generation, so server and pprof updates
+	// are skipped only once that generation has been fully applied.
+	sourceGeneration uint64
 }
 
 type routingRuntimeState struct {
@@ -128,7 +144,7 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(ctx context.Context, newCfg
 }
 
 // commitConfigUpdate applies only in-memory configuration state. Runtime work that
-// may block on plugins, storage, or networking is deliberately deferred. Catalog
+// may block on storage or networking is deliberately deferred. Catalog
 // source generations change here so an older commit cannot restart stale readers.
 func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	if s == nil {
@@ -138,10 +154,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	s.configUpdateMu.Lock()
 	defer s.configUpdateMu.Unlock()
 
-	if newCfg == nil {
-		s.cfgMu.RLock()
-		newCfg = s.cfg
-		s.cfgMu.RUnlock()
+	// A nil config re-commits the current source, e.g. after a slug resolution.
+	newSource := newCfg != nil
+	if !newSource {
+		newCfg = s.currentSourceConfig()
 	}
 	if newCfg == nil {
 		return configCommit{}
@@ -155,13 +171,41 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		log.WithError(errValidate).Warn("rejected invalid model catalog sources")
 		return configCommit{}
 	}
+	if errValidate := newCfg.ValidateOpenAICompatibilityFollow(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid follow-mode models")
+		return configCommit{}
+	}
+	if errValidate := newCfg.ValidateTailscale(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid tailscale settings")
+		return configCommit{}
+	}
+	// Pollers never take service locks, so reconfiguring them here cannot deadlock.
+	s.slugs.Reconfigure(newCfg)
+	effective := s.slugs.Effective(newCfg)
 	s.cfgMu.Lock()
-	s.cfg = newCfg
+	s.cfg = effective
+	s.sourceCfg = newCfg
 	s.cfgMu.Unlock()
-	s.cancelStaleAntigravityProbes("")
 	s.configSequence++
-	registry.UpdateModelCatalogSources(newCfg.Models, newCfg.Home.Enabled)
-	return configCommit{cfg: newCfg, sequence: s.configSequence}
+	if newSource {
+		s.sourceGeneration++
+	}
+	registry.UpdateModelCatalogSources(newCfg.Models)
+	return configCommit{cfg: effective, source: newCfg, sequence: s.configSequence, sourceGeneration: s.sourceGeneration}
+}
+
+// applySlugResolution re-runs the config runtime path after a follow-mode slug
+// resolved to a new upstream model, so routing, model registration and alias
+// tables pick it up without a config edit or restart.
+func (s *Service) applySlugResolution(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	commit := s.commitConfigUpdate(nil)
+	if commit.cfg == nil {
+		return
+	}
+	s.applyConfigRuntime(ctx, commit, true)
 }
 
 func (s *Service) configCommitCurrent(commit configCommit) bool {
@@ -197,31 +241,37 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-	if !s.applyPprofConfigContext(ctx, cfg) {
-		return false
-	}
-	s.applyDiscoveryConfigContext(ctx, cfg)
-	if errContext := ctx.Err(); errContext != nil {
-		return false
-	}
-	if !s.updateServerClientsContext(ctx, cfg) {
-		return false
-	}
-	if errContext := ctx.Err(); errContext != nil {
-		return false
+	// A current commit always carries the latest source generation. Push it to
+	// the server unless it already got there: a slug commit can supersede a
+	// reload commit before that reload's own apply runs, and must not drop it.
+	if commit.sourceGeneration != s.appliedSourceGeneration {
+		source := commit.source
+		if source == nil {
+			source = cfg
+		}
+		if !s.applyPprofConfigContext(ctx, source) {
+			return false
+		}
+		s.applyUsageConfig(source)
+		s.noteTailscaleConfig(source)
+		if errContext := ctx.Err(); errContext != nil {
+			return false
+		}
+		if !s.updateServerClientsContext(ctx, source) {
+			return false
+		}
+		if errContext := ctx.Err(); errContext != nil {
+			return false
+		}
+		s.appliedSourceGeneration = commit.sourceGeneration
 	}
 
 	registrationCtx := coreauth.WithSkipPersist(ctx)
-	s.syncPluginRuntimeConfigForConfig(registrationCtx, cfg)
-	if errContext := ctx.Err(); errContext != nil {
-		return false
-	}
 	var auths []*coreauth.Auth
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
 	}
 	s.registerAvailableExecutors(registrationCtx, executorRegistrationOptions{
-		includeBaseline:   cfg.Home.Enabled,
 		forceReplaceAuths: true,
 		auths:             auths,
 	})
@@ -234,7 +284,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-	if s.coreManager != nil && !cfg.Home.Enabled && cfg.SaveCooldownStatus {
+	if s.coreManager != nil && cfg.SaveCooldownStatus {
 		if errRestoreCooldown := s.coreManager.RestoreCooldownStates(registrationCtx); errRestoreCooldown != nil && ctx.Err() == nil {
 			log.Warnf("failed to restore cooldown state after config update: %v", errRestoreCooldown)
 		}
@@ -242,7 +292,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
-	s.syncPluginModelRuntime(registrationCtx)
+	s.syncModelRuntime(registrationCtx)
 	return ctx.Err() == nil
 }
 
@@ -323,6 +373,7 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		needsAliasRebuild = true
 		authForRegistration := prepared
 		tasks = append(tasks, modelRegistrationTask{
+			authID:   authForRegistration.ID,
 			phase:    modelRegistrationPhaseConfigAPIKey,
 			category: modelRegistrationCategory(authForRegistration),
 			run: func(compatCache *openAICompatibilityRegistrationCache) {
@@ -334,18 +385,4 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		s.coreManager.RefreshAPIKeyModelAlias()
 	}
 	s.runModelRegistrationTasks(registrationCtx, tasks)
-}
-
-func forceHomeRuntimeConfig(cfg *config.Config) {
-	if cfg == nil {
-		return
-	}
-	cfg.APIKeys = nil
-	cfg.UsageStatisticsEnabled = true
-	cfg.DisableCooling = true
-	cfg.SaveCooldownStatus = false
-	cfg.WebsocketAuth = false
-	cfg.RemoteManagement.AllowRemote = false
-	cfg.RemoteManagement.DisableControlPanel = true
-	cfg.Plugins.StoreAuth = nil
 }

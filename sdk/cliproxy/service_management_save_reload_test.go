@@ -137,7 +137,12 @@ func newIssue6631Harness(t *testing.T) *issue6631Harness {
 func (h *issue6631Harness) put(path, value string) {
 	h.t.Helper()
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/v0/management/"+path, strings.NewReader(`{"value":`+value+`}`))
+	v8Paths := map[string]string{
+		"debug":                 "observability/logs/debug",
+		"request-retry":         "routing/retry/request-retry",
+		"max-retry-credentials": "routing/retry/max-retry-credentials",
+	}
+	request := httptest.NewRequest(http.MethodPut, "/v8/management/config/"+v8Paths[path], strings.NewReader(value))
 	request.Header.Set("Authorization", "Bearer "+issue6631ManagementKey)
 	request.Header.Set("Content-Type", "application/json")
 	h.handler.ServeHTTP(recorder, request)

@@ -3,77 +3,8 @@ package cache
 import (
 	"bytes"
 	"context"
-	"sync"
 	"testing"
-	"time"
-
-	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 )
-
-type fakeKimiThinkingReplayKVClient struct {
-	mu     sync.Mutex
-	values map[string][]byte
-}
-
-func newFakeKimiThinkingReplayKVClient() *fakeKimiThinkingReplayKVClient {
-	return &fakeKimiThinkingReplayKVClient{values: make(map[string][]byte)}
-}
-
-func (c *fakeKimiThinkingReplayKVClient) KVGet(_ context.Context, key string) ([]byte, bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	value, found := c.values[key]
-	return append([]byte(nil), value...), found, nil
-}
-
-func (c *fakeKimiThinkingReplayKVClient) KVSet(_ context.Context, key string, value []byte, _ homekv.KVSetOptions) (bool, error) {
-	c.mu.Lock()
-	c.values[key] = append([]byte(nil), value...)
-	c.mu.Unlock()
-	return true, nil
-}
-
-func (c *fakeKimiThinkingReplayKVClient) KVDel(_ context.Context, keys ...string) (int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var deleted int64
-	for _, key := range keys {
-		if _, found := c.values[key]; found {
-			delete(c.values, key)
-			deleted++
-		}
-	}
-	return deleted, nil
-}
-
-func (c *fakeKimiThinkingReplayKVClient) KVCompareAndSwap(_ context.Context, key string, expected []byte, expectedExists bool, value []byte, _ time.Duration) (bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	current, found := c.values[key]
-	if found != expectedExists || (found && !bytes.Equal(current, expected)) {
-		return false, nil
-	}
-	c.values[key] = append([]byte(nil), value...)
-	return true, nil
-}
-
-func (c *fakeKimiThinkingReplayKVClient) KVExpire(_ context.Context, key string, _ time.Duration) (bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, found := c.values[key]
-	return found, nil
-}
-
-func useFakeKimiThinkingReplayKVClient(t *testing.T, client *fakeKimiThinkingReplayKVClient) {
-	t.Helper()
-	previous := currentKimiThinkingReplayKVClient
-	currentKimiThinkingReplayKVClient = func() (kimiThinkingReplayKVClient, bool, error) {
-		return client, true, nil
-	}
-	t.Cleanup(func() {
-		currentKimiThinkingReplayKVClient = previous
-	})
-}
 
 func TestKimiThinkingReplayConditionalDeleteKeepsNewerContent(t *testing.T) {
 	ClearKimiThinkingReplayCache()
@@ -161,38 +92,6 @@ func TestKimiThinkingReplayTombstoneFencesConcurrentMiss(t *testing.T) {
 	}
 	if replaced {
 		t.Fatal("stale miss snapshot crossed a newer tombstone")
-	}
-}
-
-func TestKimiThinkingReplayHomeGenerationPreventsABADelete(t *testing.T) {
-	client := newFakeKimiThinkingReplayKVClient()
-	useFakeKimiThinkingReplayKVClient(t, client)
-
-	const modelFamily = "k3"
-	const sessionKey = "execution:home-aba"
-	contentA := []byte(`[{"type":"thinking","signature":"A"}]`)
-	contentB := []byte(`[{"type":"thinking","signature":"B"}]`)
-	if !CacheKimiThinkingReplayBestEffort(context.Background(), modelFamily, sessionKey, contentA) {
-		t.Fatal("failed to seed Home content A")
-	}
-	_, snapshotA, found, errGet := GetKimiThinkingReplayWithSnapshotRequired(context.Background(), modelFamily, sessionKey)
-	if errGet != nil || !found {
-		t.Fatalf("Home snapshot A = found %v, error %v", found, errGet)
-	}
-	if !CacheKimiThinkingReplayBestEffort(context.Background(), modelFamily, sessionKey, contentB) ||
-		!CacheKimiThinkingReplayBestEffort(context.Background(), modelFamily, sessionKey, contentA) {
-		t.Fatal("failed to complete Home A-B-A sequence")
-	}
-	deleted, errDelete := DeleteKimiThinkingReplayIfUnchanged(context.Background(), modelFamily, sessionKey, snapshotA)
-	if errDelete != nil {
-		t.Fatalf("Home stale delete error = %v", errDelete)
-	}
-	if deleted {
-		t.Fatal("Home stale snapshot deleted a newer generation with repeated content")
-	}
-	got, found, errGet := GetKimiThinkingReplayRequired(context.Background(), modelFamily, sessionKey)
-	if errGet != nil || !found || !bytes.Equal(got, contentA) {
-		t.Fatalf("Home cached content = %s, found %v, error %v; want latest A", got, found, errGet)
 	}
 }
 

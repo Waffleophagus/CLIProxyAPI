@@ -17,7 +17,7 @@ func TestOAuthRequestScopedErrors_AppliesToOAuthAuth(t *testing.T) {
 
 	cfg := &internalconfig.Config{
 		OAuthRequestScopedErrors: map[string][]internalconfig.RequestScopedErrorRule{
-			"vertex": {
+			"vendora": {
 				{
 					Status: 400,
 					Match: []string{
@@ -38,21 +38,21 @@ func TestOAuthRequestScopedErrors_AppliesToOAuthAuth(t *testing.T) {
 	m.SetConfig(cfg)
 
 	auth1 := &Auth{
-		ID:         "auth-vertex-oauth",
-		Provider:   "vertex",
+		ID:         "auth-vendora-oauth",
+		Provider:   "vendora",
 		Status:     StatusActive,
 		Attributes: map[string]string{"auth_kind": "oauth", "priority": "10"},
 	}
 	auth2 := &Auth{
-		ID:         "auth-vertex-oauth-2",
-		Provider:   "vertex",
+		ID:         "auth-vendora-oauth-2",
+		Provider:   "vendora",
 		Status:     StatusActive,
 		Attributes: map[string]string{"auth_kind": "oauth", "priority": "5"},
 	}
 
 	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth1.ID, "vertex", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
-	reg.RegisterClient(auth2.ID, "vertex", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
+	reg.RegisterClient(auth1.ID, "vendora", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
+	reg.RegisterClient(auth2.ID, "vendora", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
 	t.Cleanup(func() {
 		reg.UnregisterClient(auth1.ID)
 		reg.UnregisterClient(auth2.ID)
@@ -67,7 +67,7 @@ func TestOAuthRequestScopedErrors_AppliesToOAuthAuth(t *testing.T) {
 
 	execCount := 0
 	exec := &mockCustomErrorExecutor{
-		identifier: "vertex",
+		identifier: "vendora",
 		executeFn: func(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 			execCount++
 			return cliproxyexecutor.Response{}, customStatusError{
@@ -81,7 +81,7 @@ func TestOAuthRequestScopedErrors_AppliesToOAuthAuth(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "claude-3-5-sonnet"}
 	opts := cliproxyexecutor.Options{}
 
-	_, errExec := m.Execute(context.Background(), []string{"vertex"}, req, opts)
+	_, errExec := m.Execute(context.Background(), []string{"vendora"}, req, opts)
 	if errExec == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -92,7 +92,7 @@ func TestOAuthRequestScopedErrors_AppliesToOAuthAuth(t *testing.T) {
 	}
 
 	// Action: stop without cooldown should leave auth1 active
-	auth1State, ok := m.GetByID("auth-vertex-oauth")
+	auth1State, ok := m.GetByID("auth-vendora-oauth")
 	if !ok || auth1State.Status != StatusActive || auth1State.Unavailable {
 		t.Fatalf("expected auth1 to remain active, got status=%v unavailable=%v", auth1State.Status, auth1State.Unavailable)
 	}
@@ -105,7 +105,7 @@ func TestOAuthRequestScopedErrors_DoesNotApplyToAPIKey(t *testing.T) {
 
 	cfg := &internalconfig.Config{
 		OAuthRequestScopedErrors: map[string][]internalconfig.RequestScopedErrorRule{
-			"vertex": {
+			"vendora": {
 				{
 					Status: 500,
 					Match:  []string{"internal_server_error"},
@@ -120,21 +120,21 @@ func TestOAuthRequestScopedErrors_DoesNotApplyToAPIKey(t *testing.T) {
 
 	// API key auth must not use oauth-request-scoped-errors
 	auth1 := &Auth{
-		ID:         "auth-vertex-apikey",
-		Provider:   "vertex",
+		ID:         "auth-vendora-apikey",
+		Provider:   "vendora",
 		Status:     StatusActive,
 		Attributes: map[string]string{"auth_kind": "apikey", "api_key": "test-key", "priority": "10"},
 	}
 	auth2 := &Auth{
-		ID:         "auth-vertex-apikey-2",
-		Provider:   "vertex",
+		ID:         "auth-vendora-apikey-2",
+		Provider:   "vendora",
 		Status:     StatusActive,
 		Attributes: map[string]string{"auth_kind": "apikey", "api_key": "test-key-2", "priority": "5"},
 	}
 
 	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth1.ID, "vertex", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
-	reg.RegisterClient(auth2.ID, "vertex", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
+	reg.RegisterClient(auth1.ID, "vendora", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
+	reg.RegisterClient(auth2.ID, "vendora", []*registry.ModelInfo{{ID: "claude-3-5-sonnet"}})
 	t.Cleanup(func() {
 		reg.UnregisterClient(auth1.ID)
 		reg.UnregisterClient(auth2.ID)
@@ -149,7 +149,7 @@ func TestOAuthRequestScopedErrors_DoesNotApplyToAPIKey(t *testing.T) {
 
 	execCount := 0
 	exec := &mockCustomErrorExecutor{
-		identifier: "vertex",
+		identifier: "vendora",
 		executeFn: func(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 			execCount++
 			if execCount == 1 {
@@ -166,7 +166,7 @@ func TestOAuthRequestScopedErrors_DoesNotApplyToAPIKey(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "claude-3-5-sonnet"}
 	opts := cliproxyexecutor.Options{}
 
-	resp, errExec := m.Execute(context.Background(), []string{"vertex"}, req, opts)
+	resp, errExec := m.Execute(context.Background(), []string{"vendora"}, req, opts)
 	if errExec != nil {
 		t.Fatalf("unexpected Execute error: %v", errExec)
 	}

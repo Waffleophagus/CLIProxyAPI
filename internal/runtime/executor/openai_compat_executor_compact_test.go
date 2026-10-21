@@ -199,11 +199,11 @@ func TestOpenAICompatExecutorApplyPromptCacheKey(t *testing.T) {
 			wantPresent: true,
 		},
 		{
-			name:        "Antigravity",
+			name:        "Acme",
 			support:     true,
-			from:        "antigravity",
+			from:        "acme",
 			payload:     `{"model":"gpt-5.6","input":"hello"}`,
-			metadata:    map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:antigravity"},
+			metadata:    map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:acme"},
 			wantPresent: true,
 		},
 	}

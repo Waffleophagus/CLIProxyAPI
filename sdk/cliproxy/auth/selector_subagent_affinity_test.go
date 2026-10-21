@@ -9,10 +9,10 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// TestSessionAffinityAntigravitySubagentInheritsParentByDefault reproduces issue #5417:
-// Subagents across all providers (including Antigravity and Gemini) should inherit
+// TestSessionAffinityAcmeSubagentInheritsParentByDefault reproduces issue #5417:
+// Subagents across all providers (including Acme and Gemini) should inherit
 // the parent session's credential by default to maximize prompt and KV cache reuse.
-func TestSessionAffinityAntigravitySubagentInheritsParentByDefault(t *testing.T) {
+func TestSessionAffinityAcmeSubagentInheritsParentByDefault(t *testing.T) {
 	t.Parallel()
 
 	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
@@ -22,8 +22,8 @@ func TestSessionAffinityAntigravitySubagentInheritsParentByDefault(t *testing.T)
 	defer selector.Stop()
 
 	auths := []*Auth{
-		{ID: "auth-ag-1", Provider: "antigravity"},
-		{ID: "auth-ag-2", Provider: "antigravity"},
+		{ID: "auth-ag-1", Provider: "acme"},
+		{ID: "auth-ag-2", Provider: "acme"},
 	}
 
 	// 1. Parent request binds to auth-ag-1.
@@ -32,7 +32,7 @@ func TestSessionAffinityAntigravitySubagentInheritsParentByDefault(t *testing.T)
 		OriginalRequest: []byte(`{"messages":[{"role":"user","content":"parent task"}]}`),
 		Metadata:        map[string]any{},
 	}
-	parentAuth, errParent := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", parentOpts, auths)
+	parentAuth, errParent := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", parentOpts, auths)
 	if errParent != nil {
 		t.Fatalf("parent Pick() error = %v", errParent)
 	}
@@ -49,7 +49,7 @@ func TestSessionAffinityAntigravitySubagentInheritsParentByDefault(t *testing.T)
 		OriginalRequest: []byte(`{"messages":[{"role":"user","content":"subagent task"}]}`),
 		Metadata:        map[string]any{},
 	}
-	subagentAuth, errSub := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", subagentOpts, auths)
+	subagentAuth, errSub := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", subagentOpts, auths)
 	if errSub != nil {
 		t.Fatalf("subagent Pick() error = %v", errSub)
 	}
@@ -58,7 +58,7 @@ func TestSessionAffinityAntigravitySubagentInheritsParentByDefault(t *testing.T)
 	}
 
 	// 3. Subsequent turn of subagent must stay sticky to the inherited auth.
-	subagentTurn2Auth, errSub2 := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", subagentOpts, auths)
+	subagentTurn2Auth, errSub2 := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", subagentOpts, auths)
 	if errSub2 != nil {
 		t.Fatalf("subagent turn 2 Pick() error = %v", errSub2)
 	}
@@ -182,8 +182,8 @@ func TestSessionAffinitySubagentFailureIsolation(t *testing.T) {
 	defer selector.Stop()
 
 	auths := []*Auth{
-		{ID: "auth-1", Provider: "antigravity"},
-		{ID: "auth-2", Provider: "antigravity"},
+		{ID: "auth-1", Provider: "acme"},
+		{ID: "auth-2", Provider: "acme"},
 	}
 
 	// 1. Parent request binds to auth-1.
@@ -192,7 +192,7 @@ func TestSessionAffinitySubagentFailureIsolation(t *testing.T) {
 		OriginalRequest: []byte(`{"messages":[{"role":"user","content":"parent task"}]}`),
 		Metadata:        map[string]any{},
 	}
-	parentAuth, errParent := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", parentOpts, auths)
+	parentAuth, errParent := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", parentOpts, auths)
 	if errParent != nil {
 		t.Fatalf("parent Pick() error = %v", errParent)
 	}
@@ -201,7 +201,7 @@ func TestSessionAffinitySubagentFailureIsolation(t *testing.T) {
 	}
 
 	// Parent cache key must be bound to auth-1.
-	parentCacheKey := "antigravity::claude:sess-fail-400::gemini-3.7-flash-high"
+	parentCacheKey := "acme::claude:sess-fail-400::gemini-3.7-flash-high"
 	if bound, ok := selector.cache.Get(parentCacheKey); !ok || bound != "auth-1" {
 		t.Fatalf("parent cache binding = (%q, %v), want (auth-1, true)", bound, ok)
 	}
@@ -215,7 +215,7 @@ func TestSessionAffinitySubagentFailureIsolation(t *testing.T) {
 		OriginalRequest: []byte(`{"messages":[{"role":"user","content":"subagent task"}]}`),
 		Metadata:        map[string]any{},
 	}
-	subagentAuth, errSub := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", subagentOpts, auths)
+	subagentAuth, errSub := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", subagentOpts, auths)
 	if errSub != nil {
 		t.Fatalf("subagent Pick() error = %v", errSub)
 	}
@@ -223,7 +223,7 @@ func TestSessionAffinitySubagentFailureIsolation(t *testing.T) {
 		t.Fatalf("subagent auth = %q, want auth-1", subagentAuth.ID)
 	}
 
-	subagentCacheKey := "antigravity::claude:sess-fail-400:agent:sub-fail-001::gemini-3.7-flash-high"
+	subagentCacheKey := "acme::claude:sess-fail-400:agent:sub-fail-001::gemini-3.7-flash-high"
 	if bound, ok := selector.cache.Get(subagentCacheKey); !ok || bound != "auth-1" {
 		t.Fatalf("subagent cache binding = (%q, %v), want (auth-1, true)", bound, ok)
 	}
@@ -246,7 +246,7 @@ func TestSessionAffinitySubagentFailureIsolation(t *testing.T) {
 	}
 
 	// 6. Parent request turn 2 must still hit auth-1.
-	parentTurn2Auth, errParent2 := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", parentOpts, auths)
+	parentTurn2Auth, errParent2 := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", parentOpts, auths)
 	if errParent2 != nil {
 		t.Fatalf("parent turn 2 Pick() error = %v", errParent2)
 	}
@@ -267,8 +267,8 @@ func TestSessionAffinitySubagentAliasIsolation(t *testing.T) {
 	defer selector.Stop()
 
 	auths := []*Auth{
-		{ID: "auth-1", Provider: "antigravity"},
-		{ID: "auth-2", Provider: "antigravity"},
+		{ID: "auth-1", Provider: "acme"},
+		{ID: "auth-2", Provider: "acme"},
 	}
 
 	// 1. Parent binds auth-1.
@@ -277,7 +277,7 @@ func TestSessionAffinitySubagentAliasIsolation(t *testing.T) {
 		OriginalRequest: []byte(`{"messages":[{"role":"user","content":"parent task"}]}`),
 		Metadata:        map[string]any{},
 	}
-	_, errParent := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", parentOpts, auths)
+	_, errParent := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", parentOpts, auths)
 	if errParent != nil {
 		t.Fatalf("parent Pick() error = %v", errParent)
 	}
@@ -291,7 +291,7 @@ func TestSessionAffinitySubagentAliasIsolation(t *testing.T) {
 		OriginalRequest: []byte(`{"messages":[{"role":"user","content":"sub task"}]}`),
 		Metadata:        map[string]any{},
 	}
-	_, errSub := selector.Pick(context.Background(), "antigravity", "gemini-3.7-flash-high", subagentOpts, auths)
+	_, errSub := selector.Pick(context.Background(), "acme", "gemini-3.7-flash-high", subagentOpts, auths)
 	if errSub != nil {
 		t.Fatalf("subagent Pick() error = %v", errSub)
 	}
@@ -304,7 +304,7 @@ func TestSessionAffinitySubagentAliasIsolation(t *testing.T) {
 	})
 
 	// Parent fallbackKey in cache MUST still resolve to auth-1, proving subagent did not alias it.
-	parentCacheKey := "antigravity::claude:sess-alias-500::gemini-3.7-flash-high"
+	parentCacheKey := "acme::claude:sess-alias-500::gemini-3.7-flash-high"
 	val, ok := selector.cache.Get(parentCacheKey)
 	if !ok || val != "auth-1" {
 		t.Fatalf("parent cache key %s = (%q, %v), want (auth-1, true)", parentCacheKey, val, ok)

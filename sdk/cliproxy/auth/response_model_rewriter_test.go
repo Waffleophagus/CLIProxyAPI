@@ -3,9 +3,10 @@ package auth
 import (
 	"bytes"
 
-	"github.com/tidwall/gjson"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -123,7 +124,7 @@ func TestRewriteForceMappedStreamChunk_CodexLineChunksDoNotDuplicateBufferedEven
 	}
 }
 
-func TestRewriteModelInResponse_AntigravityModelVersion(t *testing.T) {
+func TestRewriteModelInResponse_AcmeModelVersion(t *testing.T) {
 	payload := []byte(`{"response":{"modelVersion":"gemini-3-flash","candidates":[{"content":{"role":"model","parts":[{"text":"AGYMSG"}]}}]}}`)
 	got := string(rewriteModelInResponse(payload, "claude-haiku-4-5-20251001"))
 	if !strings.Contains(got, `"modelVersion":"claude-haiku-4-5-20251001"`) {

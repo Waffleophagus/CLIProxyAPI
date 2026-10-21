@@ -1,16 +1,14 @@
 # @sdk/access SDK Reference
 
-The `github.com/router-for-me/CLIProxyAPI/v6/sdk/access` package centralizes inbound request authentication for the proxy. It offers a lightweight manager that chains credential providers, so servers can reuse the same access control logic inside or outside the CLI runtime.
+The `github.com/router-for-me/CLIProxyAPI/v8/sdk/access` package centralizes inbound request authentication for the proxy. It offers a lightweight manager that chains credential providers, so servers can reuse the same access control logic inside or outside the CLI runtime.
 
 ## Importing
 
 ```go
 import (
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 ```
-
-Add the module with `go get github.com/router-for-me/CLIProxyAPI/v6/sdk/access`.
 
 ## Provider Registry
 
@@ -57,16 +55,17 @@ Each `Result` includes the provider identifier, the resolved principal, and opti
 
 The proxy includes one built-in access provider:
 
-- `config-api-key`: Validates API keys declared under top-level `api-keys`.
-  - Credential sources: `Authorization: Bearer`, `X-Goog-Api-Key`, `X-Api-Key`, `?key=`, `?auth_token=`
+- `config-api-key`: Validates the client keys declared under `access.api-keys`.
+  - Credential sources: `Authorization: Bearer`, `X-Api-Key`, `?key=`, `?auth_token=`
   - Metadata: `Result.Metadata["source"]` is set to the matched source label.
 
 In the CLI server and `sdk/cliproxy`, this provider is registered automatically based on the loaded configuration.
 
 ```yaml
-api-keys:
-  - sk-test-123
-  - sk-prod-456
+access:
+  api-keys:
+    - sk-test-123
+    - sk-prod-456
 ```
 
 ## Loading Providers from External Go Modules
@@ -76,7 +75,7 @@ To consume a provider shipped in another Go module, import it for its registrati
 ```go
 import (
     _ "github.com/acme/xplatform/sdk/access/providers/partner" // registers partner-token
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 ```
 
@@ -84,7 +83,7 @@ The blank identifier import ensures `init` runs so `sdkaccess.RegisterProvider` 
 
 ### Metadata and auditing
 
-`Result.Metadata` carries provider-specific context. The built-in `config-api-key` provider, for example, stores the credential source (`authorization`, `x-goog-api-key`, `x-api-key`, `query-key`, `query-auth-token`). Populate this map in custom providers to enrich logs and downstream auditing.
+`Result.Metadata` carries provider-specific context. The built-in `config-api-key` provider, for example, stores the credential source (`authorization`, `x-api-key`, `query-key`, `query-auth-token`). Populate this map in custom providers to enrich logs and downstream auditing.
 
 ## Writing Custom Providers
 
@@ -120,7 +119,8 @@ A provider must implement `Identifier()` and `Authenticate()`. To make it availa
 - `NewNoCredentialsError()` (`AuthErrorCodeNoCredentials`): no credentials were present or recognized. (HTTP 401)
 - `NewInvalidCredentialError()` (`AuthErrorCodeInvalidCredential`): credentials were present but rejected. (HTTP 401)
 - `NewNotHandledError()` (`AuthErrorCodeNotHandled`): fall through to the next provider.
-- `NewInternalAuthError(message, cause)` (`AuthErrorCodeInternal`): transport/system failure. (HTTP 500)
+- `NewRequestEntityTooLargeError(cause)` (`AuthErrorCodeRequestTooLarge`): the request body exceeded `server.max-request-body-bytes`. (HTTP 413)
+- `AuthErrorCodeInternal`: transport/system failure reported by a provider. (HTTP 500)
 
 Errors propagate immediately to the caller unless they are classified as `not_handled` / `no_credentials` / `invalid_credential` and can be aggregated by the manager.
 
@@ -146,7 +146,7 @@ Register any custom providers (typically via blank imports) before calling `Buil
 When configuration changes, refresh any config-backed providers and then reset the manager's provider chain:
 
 ```go
-// configaccess is github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access
+// configaccess is github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access
 configaccess.Register(&newCfg.SDKConfig)
 accessManager.SetProviders(sdkaccess.RegisteredProviders())
 ```

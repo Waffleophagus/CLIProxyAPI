@@ -689,18 +689,18 @@ func TestManager_RefreshAuth_PreservesConcurrentProxyURLAndMetadata(t *testing.T
 	mockStore := newMemoryAuthTestStore()
 	manager := NewManager(mockStore, &RoundRobinSelector{}, nil)
 	executor := &blockingSuccessRefreshExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
 	manager.RegisterExecutor(executor)
 
 	auth := &Auth{
-		ID:       "test-antigravity",
-		Provider: "antigravity",
+		ID:       "test-acme",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "old-access-token",
 			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
 		},
@@ -796,7 +796,7 @@ func TestManager_RefreshAuth_InPlaceMutatingExecutorNonTokenMetadataAndConcurren
 	mockStore := newMemoryAuthTestStore()
 	manager := NewManager(mockStore, &RoundRobinSelector{}, nil)
 	executor := &inPlaceMutatingRefreshExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -804,10 +804,10 @@ func TestManager_RefreshAuth_InPlaceMutatingExecutorNonTokenMetadataAndConcurren
 
 	auth := &Auth{
 		ID:       "inplace-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "old-token",
 			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
 		},
@@ -867,7 +867,7 @@ func TestManager_RefreshAuth_ConcurrentlyClearedProxyNotResurrected(t *testing.T
 	mockStore := newMemoryAuthTestStore()
 	manager := NewManager(mockStore, &RoundRobinSelector{}, nil)
 	executor := &blockingSuccessRefreshExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -875,11 +875,11 @@ func TestManager_RefreshAuth_ConcurrentlyClearedProxyNotResurrected(t *testing.T
 
 	auth := &Auth{
 		ID:       "clear-proxy-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		ProxyURL: "http://initial-proxy.local:8080",
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "old-token",
 			"proxy_url":    "http://initial-proxy.local:8080",
 			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
@@ -934,7 +934,7 @@ func TestManager_RefreshAuth_StaleRegistrationEpochDiscarded(t *testing.T) {
 	mockStore := newMemoryAuthTestStore()
 	manager := NewManager(mockStore, &RoundRobinSelector{}, nil)
 	executor := &blockingSuccessRefreshExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -942,10 +942,10 @@ func TestManager_RefreshAuth_StaleRegistrationEpochDiscarded(t *testing.T) {
 
 	auth := &Auth{
 		ID:       "re-register-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "original-token",
 			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
 		},
@@ -966,10 +966,10 @@ func TestManager_RefreshAuth_StaleRegistrationEpochDiscarded(t *testing.T) {
 	manager.Remove(ctx, auth.ID)
 	newAuth := &Auth{
 		ID:       "re-register-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "freshly-registered-different-token",
 			"expired":      time.Now().Add(48 * time.Hour).Format(time.RFC3339),
 		},
@@ -995,7 +995,7 @@ func TestManager_RefreshAuth_RestoresStatusFromErrorToActive(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	executor := &blockingSuccessRefreshExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -1004,13 +1004,13 @@ func TestManager_RefreshAuth_RestoresStatusFromErrorToActive(t *testing.T) {
 	// Auth is currently in StatusError and Unavailable due to a previous 401/failure
 	auth := &Auth{
 		ID:            "error-status-auth",
-		Provider:      "antigravity",
+		Provider:      "acme",
 		Status:        StatusError,
 		StatusMessage: "token expired",
 		Unavailable:   true,
 		LastError:     &Error{Message: "token expired"},
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "expired-token",
 			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
 		},
@@ -1074,7 +1074,7 @@ func TestManager_PrepareRequestAuth_DoesNotRollbackConcurrentlyRefreshedToken(t 
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	executor := &testPrepareExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -1082,10 +1082,10 @@ func TestManager_PrepareRequestAuth_DoesNotRollbackConcurrentlyRefreshedToken(t 
 
 	auth := &Auth{
 		ID:       "prepare-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "original-token",
 			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
 		},
@@ -1136,10 +1136,10 @@ func TestManager_Persist_SkipPersistAdvancesWatermarkAndBlocksOlderGeneration(t 
 
 	auth := &Auth{
 		ID:       "watermark-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "gen1-token",
 			"proxy_url":    "http://initial.proxy",
 		},
@@ -1217,7 +1217,7 @@ func TestManager_RefreshAuth_BothModifyProxy_UserTakesPrecedenceAndConsistent(t 
 	mockStore := newMemoryAuthTestStore()
 	manager := NewManager(mockStore, &RoundRobinSelector{}, nil)
 	executor := &proxyMutatingExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -1225,11 +1225,11 @@ func TestManager_RefreshAuth_BothModifyProxy_UserTakesPrecedenceAndConsistent(t 
 
 	auth := &Auth{
 		ID:       "conflict-proxy-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusError, // Starts in error
 		ProxyURL: "http://base.proxy:8080",
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "old-token",
 			"proxy_url":    "http://base.proxy:8080",
 			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
@@ -1287,7 +1287,7 @@ func TestManager_RefreshAuth_PreservesConcurrentModelCooldown(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	executor := &blockingSuccessRefreshExecutor{
-		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "antigravity"},
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "acme"},
 		started:                       make(chan struct{}),
 		release:                       make(chan struct{}),
 	}
@@ -1295,10 +1295,10 @@ func TestManager_RefreshAuth_PreservesConcurrentModelCooldown(t *testing.T) {
 
 	auth := &Auth{
 		ID:       "model-cooldown-auth",
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 		Metadata: map[string]any{
-			"type":         "antigravity",
+			"type":         "acme",
 			"access_token": "old-token",
 			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
 		},

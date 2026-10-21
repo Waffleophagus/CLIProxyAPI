@@ -199,11 +199,3 @@ func appendCodexWebSearchNonStreamBlocks(contentBlocks [][]byte, item gjson.Resu
 	seen[id] = struct{}{}
 	return contentBlocks
 }
-
-func appendCodexWebSearchNonStreamContent(out []byte, item gjson.Result, seen map[string]struct{}) []byte {
-	blocks := appendCodexWebSearchNonStreamBlocks(nil, item, seen)
-	for _, block := range blocks {
-		out, _ = sjson.SetRawBytes(out, "content.-1", block)
-	}
-	return out
-}

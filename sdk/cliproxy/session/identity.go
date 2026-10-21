@@ -46,8 +46,8 @@ var CandidateSessionPrefixes = []string{
 	"lcp:v1:", "lcp:",
 	"codex:", "claude:", "header:", "session:",
 	"affinity:", "slot:", "task:", "conv:",
-	"thread:", "clientreq:", "geminicache:",
-	"pck:", "user:", "execution:", "agy:", "derived:",
+	"thread:", "clientreq:",
+	"pck:", "user:", "execution:", "derived:",
 }
 
 // knownSessionPrefixes tracks legacy protocol-specific session prefixes that need to be
@@ -59,8 +59,8 @@ var knownSessionPrefixes = []string{
 	"ctx:v1:", "ctx:",
 	"codex:", "claude:", "header:", "session:",
 	"affinity:", "slot:", "task:", "conv:",
-	"thread:", "clientreq:", "geminicache:",
-	"pck:", "user:", "execution:", "agy:", "derived:",
+	"thread:", "clientreq:",
+	"pck:", "user:", "execution:", "derived:",
 }
 
 // NormalizeToCanonicalUUID deterministically normalizes any session identifier to a
@@ -149,12 +149,6 @@ func ClaudeMetadataIdentities(payload []byte) (sessionID, parentSessionID, agent
 	}
 	root := util.ParseGJSONBytesNoCopy(payload)
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
-	if userID == "" {
-		req := root.Get("request")
-		if req.Exists() && !root.Get("contents").Exists() {
-			userID = strings.TrimSpace(req.Get("metadata.user_id").String())
-		}
-	}
 	if userID == "" {
 		return "", "", ""
 	}
@@ -353,7 +347,6 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 		"X-Codex-Parent-Thread-Id",
 		"X-Codex-Turn-Metadata",
 		"X-Openai-Subagent",
-		"X-Http-Session-Id",
 		"X-Session-ID",
 		"X-Session-Affinity",
 		"X-Parent-Session-ID",
@@ -388,12 +381,6 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 	// Parsing without copying matters here: this runs on every request and the
 	// payload can be multiple megabytes.
 	root := newSessionObject(util.ParseGJSONBytesNoCopy(payload))
-	reqRoot := root
-	req := root.Get("request")
-	hasNestedReq := req.Exists() && !root.Get("contents").Exists()
-	if hasNestedReq {
-		reqRoot = newSessionObject(req)
-	}
 	for _, path := range []string{
 		"session_id",
 		"sessionId",
@@ -405,8 +392,6 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 		"taskID",
 		"action_id",
 		"actionId",
-		"cachedContent",
-		"cached_content",
 		"thread_id",
 		"threadId",
 		"conversation_id",
@@ -450,24 +435,15 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 		if NormalizeExplicitID(root.Get(path).String()) != "" {
 			return true
 		}
-		if hasNestedReq && NormalizeExplicitID(reqRoot.Get(path).String()) != "" {
-			return true
-		}
 	}
 	if ClaudeMetadataSessionID(payload) != "" {
 		return true
 	}
 	userID := strings.TrimSpace(root.Get("metadata.user_id").String())
-	if userID == "" && hasNestedReq {
-		userID = strings.TrimSpace(reqRoot.Get("metadata.user_id").String())
-	}
 	if NormalizeExplicitID(userID) != "" {
 		return true
 	}
 	conversation := root.Get("conversation")
-	if !conversation.Exists() && hasNestedReq {
-		conversation = reqRoot.Get("conversation")
-	}
 	if NormalizeExplicitID(conversation.Get("id").String()) != "" {
 		return true
 	}
@@ -503,17 +479,8 @@ func DeriveID(format sdktranslator.Format, payload []byte, callerScope string) s
 		Format:      format.String(),
 		CallerScope: strings.TrimSpace(callerScope),
 	}
-	if sourceFormatEqual(format, sdktranslator.FormatGemini) || sourceFormatEqual(format, sdktranslator.FormatAntigravity) {
-		reqBody := body
-		if req, ok := body["request"].(map[string]any); ok {
-			reqBody = req
-		}
-		root.Resource = stringField(reqBody, "cachedContent", "cached_content")
-	}
 
 	switch {
-	case sourceFormatEqual(format, sdktranslator.FormatGemini), sourceFormatEqual(format, sdktranslator.FormatAntigravity):
-		root.Instructions, root.User = geminiRoot(body)
 	case sourceFormatEqual(format, sdktranslator.FormatInteractions):
 		root.Instructions, root.User = interactionsRoot(body)
 	case sourceFormatEqual(format, sdktranslator.FormatOpenAIResponse), sourceFormatEqual(format, sdktranslator.FormatCodex):
@@ -583,28 +550,6 @@ func responsesRoot(body map[string]any) ([]string, []canonicalPart) {
 			if len(parts) > 0 {
 				return instructions, parts
 			}
-		}
-	}
-	return instructions, nil
-}
-
-func geminiRoot(body map[string]any) ([]string, []canonicalPart) {
-	if req, ok := body["request"].(map[string]any); ok {
-		body = req
-	}
-	instructions := make([]string, 0)
-	if value, ok := firstField(body, "systemInstruction", "system_instruction"); ok {
-		instructions = appendInstruction(instructions, contentValue(value))
-	}
-	contents, _ := body["contents"].([]any)
-	for _, rawContent := range contents {
-		content, okContent := rawContent.(map[string]any)
-		if !okContent || normalizedString(content["role"]) != "user" {
-			continue
-		}
-		parts := canonicalParts(contentValue(content))
-		if len(parts) > 0 {
-			return instructions, parts
 		}
 	}
 	return instructions, nil
@@ -866,15 +811,6 @@ func firstNormalizedMetadataID(key string, metadataSets ...map[string]any) strin
 		}
 		if normalized := NormalizeExplicitID(raw); normalized != "" {
 			return normalized
-		}
-	}
-	return ""
-}
-
-func firstMetadataString(key string, metadataSets ...map[string]any) string {
-	for _, metadata := range metadataSets {
-		if value := metadataString(metadata, key); value != "" {
-			return value
 		}
 	}
 	return ""

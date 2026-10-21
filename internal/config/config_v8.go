@@ -12,7 +12,7 @@ import (
 )
 
 // Config remains the effective runtime/wire representation. Layout translation is
-// confined to YAML boundaries so older SDK and Home consumers keep their contract.
+// confined to YAML boundaries so older SDK consumers keep their contract.
 type legacyConfig Config
 
 type configPath struct{ old, current string }
@@ -62,8 +62,7 @@ var v8SharedStructPaths = []configPath{
 }
 
 var v8KeyFamilies = []configPath{
-	{"gemini-api-key", "gemini"}, {"interactions-api-key", "interactions"},
-	{"vertex-api-key", "vertex"}, {"codex-api-key", "codex"},
+	{"codex-api-key", "codex"},
 	{"claude-api-key", "claude"}, {"xai-api-key", "xai"}, {"meta-api-key", "meta"},
 	{"openai-compatibility", "openai-compatibility"},
 }
@@ -71,10 +70,8 @@ var v8KeyFamilies = []configPath{
 func buildV8Paths() []configPath {
 	prefixes := []configPath{
 		{"host", "server.host"}, {"port", "server.port"}, {"max-request-body-bytes", "server.max-request-body-bytes"}, {"trusted-proxies", "server.trusted-proxies"},
-		{"github-token", "server.github-token"},
-		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"},
+		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"},
-		{"credential-concurrency", "credentials.concurrency"}, {"credential-in-flight", "credentials.in-flight"},
 		{"force-model-prefix", "routing.force-model-prefix"},
 		{"request-retry", "routing.retry.request-retry"}, {"max-retry-credentials", "routing.retry.max-retry-credentials"},
 		{"max-retry-interval", "routing.retry.max-retry-interval"},
@@ -84,7 +81,7 @@ func buildV8Paths() []configPath {
 		{"nonstream-keepalive-interval", "requests.nonstream-keepalive-interval"}, {"streaming", "requests.streaming"}, {"payload", "requests.payload"},
 		{"auth-dir", "oauth.auth-dir"}, {"auth-auto-refresh-workers", "oauth.auth-auto-refresh-workers"},
 		{"oauth-model-alias", "oauth.model-alias"}, {"oauth-excluded-models", "oauth.excluded-models"},
-		{"oauth-request-scoped-errors", "oauth.request-scoped-errors"}, {"oauth-settings", "oauth.settings"}, {"ws-auth", "oauth.providers.aistudio.ws-auth"},
+		{"oauth-request-scoped-errors", "oauth.request-scoped-errors"}, {"oauth-settings", "oauth.settings"},
 		{"codex.disable-codex-cloaking", "upstream.codex.disable-codex-cloaking"},
 		{"codex.stream-bootstrap-buffering", "upstream.codex.stream-bootstrap-buffering"},
 		{"codex.stream-bootstrap-timeout", "upstream.codex.stream-bootstrap-timeout"},
@@ -95,18 +92,13 @@ func buildV8Paths() []configPath {
 		{"claude", "upstream.claude"}, {"claude-code", "upstream.claude"},
 		{"disable-claude-cloak-mode", "upstream.claude.disable-claude-cloak-mode"},
 		{"claude-header-defaults", "upstream.claude.header-defaults"},
-		{"antigravity", "oauth.providers.antigravity"},
-		{"antigravity-signature-cache-enabled", "oauth.providers.antigravity.signature-cache-enabled"},
-		{"antigravity-signature-bypass-strict", "oauth.providers.antigravity.signature-bypass-strict"},
-		{"quota-exceeded.antigravity-credits", "oauth.providers.antigravity.antigravity-credits"},
 		{"xai", "upstream.xai"}, {"devin", "oauth.providers.devin"},
 		{"disable-image-generation", "multimedia.disable-image-generation"}, {"gpt-image-2-base-model", "multimedia.gpt-image-2-base-model"},
 		{"video-result-auth-cache-ttl", "multimedia.video-result-auth-cache-ttl"},
 		{"debug", "observability.logs.debug"}, {"logging-to-file", "observability.logs.logging-to-file"},
 		{"logs-max-total-size-mb", "observability.logs.logs-max-total-size-mb"}, {"request-log", "observability.logs.request-log"},
 		{"error-logs-max-files", "observability.logs.error-logs-max-files"},
-		{"usage-statistics-enabled", "observability.usage.usage-statistics-enabled"},
-		{"redis-usage-queue-retention-seconds", "observability.usage.redis-usage-queue-retention-seconds"}, {"pprof", "observability.pprof"},
+		{"pprof", "observability.pprof"}, {"usage-tracking", "observability.usage"},
 	}
 	var out []configPath
 	var walk func(reflect.Type, string, []int)
@@ -544,7 +536,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 	}
 	root = expandConfigAliases(root)
 	sections := v8AllowedRoots()
-	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client"} {
+	for _, shared := range []string{"api-keys", "routing", "client", "tailscale"} {
 		delete(sections, shared)
 	}
 	for i := 0; i < len(root.Content); i += 2 {
@@ -574,7 +566,8 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 }
 
 func v8AllowedRoots() map[string]bool {
-	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true}
+	// "tailscale" postdates the legacy layout and lives at the same path in both.
+	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "client": true, "tailscale": true}
 	for _, path := range v8Paths {
 		section, _, _ := strings.Cut(path.current, ".")
 		allowed[section] = true
@@ -621,6 +614,12 @@ func commentUnknownV8Sections(root *yaml.Node) error {
 			}
 			children[parent][parts[i]] = true
 		}
+	}
+	// Provider groups under api-keys are not struct paths. Archive groups for
+	// removed providers so they cannot fail validation of later v8 writes.
+	children["api-keys"] = make(map[string]bool)
+	for _, family := range v8KeyFamilies {
+		children["api-keys"][family.current] = true
 	}
 	// Some structs already live at their v8 path and therefore have no remap entry.
 	allowedRoots := v8AllowedRoots()
@@ -852,7 +851,6 @@ func expandConfigAliases(node *yaml.Node) *yaml.Node {
 }
 
 // ValidateV8Config accepts only the v8 layout in management writes.
-// Plugin-owned configuration remains extensible through its existing decoder.
 func ValidateV8Config(data []byte) error {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
@@ -894,7 +892,7 @@ func ValidateV8Config(data []byte) error {
 	}
 	deleteYAMLPath(flat, "config-version")
 	// Empty struct containers are valid replacements. Only strip known structural
-	// paths; empty user maps (headers, aliases, plugin options) carry real values.
+	// paths; empty user maps (headers, aliases) carry real values.
 	for _, path := range v8Paths {
 		parts := strings.Split(path.current, ".")
 		for end := len(parts) - 1; end > 0; end-- {
@@ -913,6 +911,12 @@ func ValidateV8Config(data []byte) error {
 	var cfg legacyConfig
 	if errDecode := decoder.Decode(&cfg); errDecode != nil {
 		return errDecode
+	}
+	if errValidate := (*Config)(&cfg).ValidateOpenAICompatibilityFollow(); errValidate != nil {
+		return errValidate
+	}
+	if errValidate := (*Config)(&cfg).ValidateTailscale(); errValidate != nil {
+		return errValidate
 	}
 	return cfg.Models.Validate()
 }

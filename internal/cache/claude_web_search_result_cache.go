@@ -9,9 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -33,16 +30,6 @@ var (
 	claudeWebSearchResultNow   = time.Now
 )
 
-type claudeWebSearchResultKVClient interface {
-	KVGet(ctx context.Context, key string) ([]byte, bool, error)
-	KVSet(ctx context.Context, key string, value []byte, opts homekv.KVSetOptions) (bool, error)
-	KVExpire(ctx context.Context, key string, ttl time.Duration) (bool, error)
-}
-
-var currentClaudeWebSearchResultKVClient = func() (claudeWebSearchResultKVClient, bool, error) {
-	return homekv.CurrentKVClient()
-}
-
 func claudeWebSearchResultKey(sessionKey, toolUseID string) (string, bool) {
 	sessionKey = strings.TrimSpace(sessionKey)
 	toolUseID = strings.TrimSpace(toolUseID)
@@ -51,14 +38,6 @@ func claudeWebSearchResultKey(sessionKey, toolUseID string) (string, bool) {
 	}
 	sum := sha256.Sum256([]byte(sessionKey + "\x00" + toolUseID))
 	return hex.EncodeToString(sum[:]), true
-}
-
-func claudeWebSearchResultKVKey(sessionKey, toolUseID string) string {
-	key, ok := claudeWebSearchResultKey(sessionKey, toolUseID)
-	if !ok {
-		return ""
-	}
-	return "cpa:claude:web-search-result:" + key
 }
 
 // CacheClaudeWebSearchResult stores the raw content of one web_search_tool_result
@@ -80,18 +59,6 @@ func CacheClaudeWebSearchResultBestEffort(ctx context.Context, sessionKey, toolU
 	}
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if client, homeMode, errClient := currentClaudeWebSearchResultKVClient(); homeMode {
-		if errClient != nil {
-			log.Errorf("home kv best-effort claude web search result set failed prefix=cpa:claude:*: %v", errClient)
-			return false
-		}
-		written, errSet := client.KVSet(ctx, "cpa:claude:web-search-result:"+key, bytes.Clone(content), homekv.KVSetOptions{EX: ttl})
-		if errSet != nil {
-			log.Errorf("home kv best-effort claude web search result set failed prefix=cpa:claude:*: %v", errSet)
-			return false
-		}
-		return written
 	}
 	if limit <= 0 {
 		limit = defaultClaudeWebSearchResultLimit
@@ -144,24 +111,6 @@ func GetClaudeWebSearchResultRequired(ctx context.Context, sessionKey, toolUseID
 	}
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if client, homeMode, errClient := currentClaudeWebSearchResultKVClient(); homeMode {
-		if errClient != nil {
-			return nil, false, errClient
-		}
-		kvKey := "cpa:claude:web-search-result:" + key
-		raw, found, errGet := client.KVGet(ctx, kvKey)
-		if errGet != nil || !found || len(raw) == 0 {
-			return nil, false, errGet
-		}
-		effectiveTTL := defaultClaudeWebSearchResultTTL
-		if len(ttl) > 0 && ttl[0] > 0 {
-			effectiveTTL = ttl[0]
-		}
-		if _, errExpire := client.KVExpire(ctx, kvKey, effectiveTTL); errExpire != nil {
-			log.Warnf("home kv claude web search result expire failed prefix=cpa:claude:*: %v", errExpire)
-		}
-		return bytes.Clone(raw), true, nil
 	}
 	claudeWebSearchResultMu.Lock()
 	defer claudeWebSearchResultMu.Unlock()

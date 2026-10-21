@@ -413,69 +413,6 @@ func TestParseClaudeUsageFallsBackToTopLevelThinkingTokens(t *testing.T) {
 	}
 }
 
-func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
-	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":4,"totalTokenCount":12}}`))
-	if detail.CachedTokens != 4 {
-		t.Fatalf("cached tokens = %d, want 4", detail.CachedTokens)
-	}
-	if detail.CacheReadTokens != 4 {
-		t.Fatalf("cache read tokens = %d, want 4", detail.CacheReadTokens)
-	}
-	if detail.TokenBreakdown.Input.UncachedTokens != 6 || detail.TokenBreakdown.TotalTokens != 12 {
-		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
-	}
-}
-
-func TestParseGeminiUsageIncludesToolUsePromptTokens(t *testing.T) {
-	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":3,"toolUsePromptTokenCount":5,"totalTokenCount":20}}`))
-	if detail.InputTokens != 15 || detail.TotalTokens != 20 {
-		t.Fatalf("detail = %+v", detail)
-	}
-	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete ||
-		detail.TokenBreakdown.Input.UncachedTokens != 15 || detail.TokenBreakdown.Output.ReasoningTokens != 3 {
-		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
-	}
-}
-
-func TestParseGeminiStreamUsageSkipsZeroPlaceholder(t *testing.T) {
-	lines := [][]byte{
-		[]byte(`data: {"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0,"thoughtsTokenCount":0,"totalTokenCount":0}}`),
-		[]byte(`data: {"usageMetadata":{"promptTokenCount":17984,"candidatesTokenCount":2668,"thoughtsTokenCount":1028,"totalTokenCount":21680}}`),
-	}
-
-	accepted := make([]usage.Detail, 0, len(lines))
-	for _, line := range lines {
-		detail, ok := ParseGeminiStreamUsage(line)
-		if ok {
-			accepted = append(accepted, detail)
-		}
-	}
-
-	if len(accepted) != 1 {
-		t.Fatalf("accepted usage count = %d, want 1", len(accepted))
-	}
-	detail := accepted[0]
-	if detail.InputTokens != 17984 || detail.OutputTokens != 2668 || detail.ReasoningTokens != 1028 || detail.TotalTokens != 21680 {
-		t.Fatalf("accepted usage detail = %+v", detail)
-	}
-}
-
-func TestParseGeminiUsageRejectsInvalidToolUseSums(t *testing.T) {
-	tests := map[string]string{
-		"negative": `{"usageMetadata":{"promptTokenCount":10,"toolUsePromptTokenCount":-1,"totalTokenCount":10}}`,
-		"overflow": `{"usageMetadata":{"promptTokenCount":9223372036854775807,"toolUsePromptTokenCount":1,"totalTokenCount":9223372036854775807}}`,
-	}
-	for name, payload := range tests {
-		t.Run(name, func(t *testing.T) {
-			detail := ParseGeminiUsage([]byte(payload))
-			if detail.InputTokens < 0 || !detail.TokenBreakdown.Valid() ||
-				detail.TokenBreakdown.Quality != usage.TokenAccountingQualityInconsistent {
-				t.Fatalf("detail = %+v", detail)
-			}
-		})
-	}
-}
-
 func TestParseInteractionsUsage(t *testing.T) {
 	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"output_tokens":4,"reasoning_tokens":5,"cached_tokens":2}}`))
 	if detail.InputTokens != 3 {

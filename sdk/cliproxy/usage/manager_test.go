@@ -186,3 +186,105 @@ func TestManagerPublishBackfillsContextAuthFields(t *testing.T) {
 		t.Fatal("timed out waiting for usage record")
 	}
 }
+
+func TestManagerStopDrainsAndOnlyExplicitStartRestarts(t *testing.T) {
+	mgr := NewManager(10)
+	plugin := &captureUsagePlugin{records: make(chan Record, 4)}
+	mgr.Register(plugin)
+	mgr.Publish(context.Background(), Record{Model: "first"})
+	mgr.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if errWait := mgr.Wait(ctx); errWait != nil {
+		t.Fatalf("Wait: %v", errWait)
+	}
+	// Records queued before Stop are delivered before Wait returns.
+	select {
+	case got := <-plugin.records:
+		if got.Model != "first" {
+			t.Fatalf("got.Model = %q", got.Model)
+		}
+	default:
+		t.Fatal("queued record was not delivered before Wait returned")
+	}
+
+	// A late publication (e.g. from a request goroutine that outlived the HTTP
+	// server) is dropped and does not restart the dispatcher.
+	mgr.Publish(context.Background(), Record{Model: "late"})
+	mgr.mu.Lock()
+	running, queued := mgr.running, len(mgr.queue)
+	mgr.mu.Unlock()
+	if running || queued != 0 || mgr.Dropped() != 1 {
+		t.Fatalf("after late publish: running=%v queued=%d dropped=%d, want stopped and 1 dropped", running, queued, mgr.Dropped())
+	}
+	if errWait := mgr.Wait(ctx); errWait != nil {
+		t.Fatalf("Wait after late publish: %v", errWait)
+	}
+
+	// An explicit Start (e.g. a second service run) reopens the manager.
+	mgr.Start(context.Background())
+	mgr.Publish(context.Background(), Record{Model: "second"})
+	select {
+	case got := <-plugin.records:
+		if got.Model != "second" {
+			t.Fatalf("got.Model = %q", got.Model)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("restarted dispatcher did not deliver")
+	}
+	mgr.Stop()
+	if errWait := mgr.Wait(ctx); errWait != nil {
+		t.Fatalf("Wait after restart: %v", errWait)
+	}
+}
+
+func TestManagerStopBeforeStartDropsPublications(t *testing.T) {
+	mgr := NewManager(10)
+	mgr.Stop()
+	mgr.Publish(context.Background(), Record{Model: "m"})
+	mgr.mu.Lock()
+	running := mgr.running
+	mgr.mu.Unlock()
+	if running || mgr.Dropped() != 1 {
+		t.Fatalf("running=%v dropped=%d, want a stopped manager to stay stopped", running, mgr.Dropped())
+	}
+}
+
+// ginPathStub fails the test if the pooled gin context is read at publish time.
+type ginPathStub struct {
+	t    *testing.T
+	path string
+}
+
+func (g ginPathStub) FullPath() string {
+	g.t.Errorf("Publish read gin.Context.FullPath; the gin context may already be recycled")
+	return g.path
+}
+
+func (g ginPathStub) Get(string) (any, bool) {
+	g.t.Errorf("Publish read gin.Context.Get; the gin context may already be recycled")
+	return "sk-from-recycled-gin-context", true
+}
+
+func TestManagerPublishUsesCapturedEndpointNotGinContext(t *testing.T) {
+	mgr := NewManager(10)
+	t.Cleanup(mgr.Stop)
+	plugin := &captureUsagePlugin{records: make(chan Record, 1)}
+	mgr.Register(plugin)
+	// The handler captured the route on the request goroutine; by publish time
+	// the gin context belongs to a different request.
+	ctx := WithEndpoint(context.Background(), "/v1/messages")
+	ctx = context.WithValue(ctx, "gin", ginPathStub{t: t, path: "/v1/other-request"})
+	mgr.Publish(ctx, Record{Model: "m"})
+	select {
+	case got := <-plugin.records:
+		if got.Endpoint != "/v1/messages" {
+			t.Fatalf("got.Endpoint = %q, want /v1/messages", got.Endpoint)
+		}
+		if got.APIKey != "" {
+			t.Fatalf("got.APIKey = %q, read from the gin context", got.APIKey)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for usage record")
+	}
+}

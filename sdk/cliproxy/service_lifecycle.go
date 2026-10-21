@@ -8,16 +8,12 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,33 +34,22 @@ func (s *Service) Run(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	ctx, runCancel := context.WithCancel(ctx)
-	s.cfgMu.Lock()
-	s.antigravityContext = ctx
-	s.cfgMu.Unlock()
-	s.homeMu.Lock()
+	s.runMu.Lock()
 	s.runCancel = runCancel
-	s.homeMu.Unlock()
+	s.runMu.Unlock()
 	defer func() {
 		runCancel()
-		s.homeMu.Lock()
+		s.runMu.Lock()
 		if s.runCancel != nil {
 			s.runCancel = nil
 		}
-		s.homeMu.Unlock()
+		s.runMu.Unlock()
 	}()
 
 	s.startModelCatalogUpdaters(ctx)
 
 	usage.StartDefault(ctx)
 	cfg := s.currentConfig()
-	homeEnabled := cfg != nil && cfg.Home.Enabled
-	if homeEnabled {
-		s.cfgMu.Lock()
-		forceHomeRuntimeConfig(s.cfg)
-		cfg = s.cfg
-		s.cfgMu.Unlock()
-		redisqueue.SetUsageStatisticsEnabled(true)
-	}
 
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -74,17 +59,15 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
-	if !homeEnabled {
-		if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
-			return errEnsureAuthDir
-		}
+	if errEnsureAuthDir := s.ensureAuthDir(); errEnsureAuthDir != nil {
+		return errEnsureAuthDir
 	}
 
 	s.applyRetryConfig(cfg)
 	s.configureCooldownStateStore(cfg)
+	s.applyUsageConfig(s.currentSourceConfig())
 
-	s.registerPluginAuthParser()
-	if s.coreManager != nil && !homeEnabled {
+	if s.coreManager != nil {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
@@ -103,70 +86,35 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
 
-	if !homeEnabled {
-		tokenResult, err := s.tokenProvider.Load(ctx, cfg)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-		if tokenResult == nil {
-			tokenResult = &TokenClientResult{}
-		}
+	tokenResult, err := s.tokenProvider.Load(ctx, cfg)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	if tokenResult == nil {
+		tokenResult = &TokenClientResult{}
+	}
 
-		apiKeyResult, err := s.apiKeyProvider.Load(ctx, cfg)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-		if apiKeyResult == nil {
-			apiKeyResult = &APIKeyClientResult{}
-		}
+	apiKeyResult, err := s.apiKeyProvider.Load(ctx, cfg)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	if apiKeyResult == nil {
+		apiKeyResult = &APIKeyClientResult{}
 	}
 
 	// legacy clients removed; no caches to refresh
 
-	s.ensureWebsocketGateway()
-	if homeEnabled {
-		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
-			includeBaseline: true,
-		})
-		// Home mode does not expose in-process Redis RESP usage output; usage is forwarded to home instead.
-		redisqueue.SetEnabled(true)
-	}
-
 	// handlers no longer depend on legacy clients; pass nil slice initially
-	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
-	s.syncPluginRuntimeConfig(ctx)
-	if homeEnabled {
-		s.configRuntimeMu.Lock()
-		s.syncPluginModelRuntime(ctx)
-		s.configRuntimeMu.Unlock()
+	// The server persists management edits, so it gets the config as loaded.
+	serverOptions := s.serverOptions
+	s.tailnet = s.newTailnetNode()
+	if s.tailnet != nil {
+		serverOptions = append(append([]api.ServerOption(nil), s.serverOptions...), api.WithTailnet(s.tailnet))
 	}
+	s.server = api.NewServer(s.currentSourceConfig(), s.coreManager, s.accessManager, s.configPath, serverOptions...)
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
-	}
-
-	if homeEnabled {
-		s.startHomeSubscriber(ctx)
-	}
-
-	if s.server != nil && s.wsGateway != nil {
-		s.server.AttachWebsocketRoute(s.wsGateway.Path(), s.wsGateway.Handler())
-		s.server.SetWebsocketAuthChangeHandler(func(oldEnabled, newEnabled bool) {
-			if oldEnabled == newEnabled {
-				return
-			}
-			if !oldEnabled && newEnabled {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if errStop := s.wsGateway.Stop(ctx); errStop != nil {
-					log.Warnf("failed to reset websocket connections after ws-auth change %t -> %t: %v", oldEnabled, newEnabled, errStop)
-					return
-				}
-				log.Debugf("ws-auth enabled; existing websocket sessions terminated to enforce authentication")
-				return
-			}
-			log.Debugf("ws-auth disabled; existing websocket sessions remain connected")
-		})
 	}
 
 	if s.hooks.OnBeforeStart != nil {
@@ -186,54 +134,49 @@ func (s *Service) Run(ctx context.Context) error {
 	if currentCfg := s.currentConfig(); currentCfg != nil {
 		fmt.Printf("API server started successfully on: %s:%d\n", currentCfg.Host, currentCfg.Port)
 	}
+	s.startTailnet(ctx)
 
 	s.configRuntimeMu.Lock()
 	currentCfg := s.currentConfig()
 	s.applyPprofConfig(currentCfg)
-	s.applyDiscoveryConfig(currentCfg)
 	s.configRuntimeMu.Unlock()
 
 	if s.hooks.OnAfterStart != nil {
 		s.hooks.OnAfterStart(s)
 	}
 
-	if !homeEnabled {
-		var watcherWrapper *WatcherWrapper
-		reloadCallback := func(newCfg *config.Config) { s.applyWatcherConfigUpdate(newCfg) }
+	reloadCallback := func(newCfg *config.Config) { s.applyWatcherConfigUpdate(newCfg) }
 
-		authDir := ""
-		if currentCfg := s.currentConfig(); currentCfg != nil {
-			authDir = currentCfg.AuthDir
-		}
-		watcherWrapper, errCreate := s.watcherFactory(s.configPath, authDir, reloadCallback)
-		if errCreate != nil {
-			return fmt.Errorf("cliproxy: failed to create watcher: %w", errCreate)
-		}
-		s.setWatcher(watcherWrapper)
-		s.ensureAuthUpdateQueue(ctx)
-		if s.authUpdates != nil {
-			watcherWrapper.SetAuthUpdateQueue(s.authUpdates)
-		}
-		watcherWrapper.SetConfig(s.currentConfig())
-		s.registerPluginAuthParser()
-
-		watcherCtx, watcherCancel := context.WithCancel(context.Background())
-		s.cfgMu.Lock()
-		s.watcherCancel = watcherCancel
-		s.cfgMu.Unlock()
-		if errStart := watcherWrapper.Start(watcherCtx); errStart != nil {
-			return fmt.Errorf("cliproxy: failed to start watcher: %w", errStart)
-		}
-		log.Info("file watcher started for config and auth directory changes")
-		s.configRuntimeMu.Lock()
-		s.syncPluginModelRuntime(ctx)
-		s.configRuntimeMu.Unlock()
+	authDir := ""
+	if currentCfg := s.currentConfig(); currentCfg != nil {
+		authDir = currentCfg.AuthDir
 	}
+	watcherWrapper, errCreate := s.watcherFactory(s.configPath, authDir, reloadCallback)
+	if errCreate != nil {
+		return fmt.Errorf("cliproxy: failed to create watcher: %w", errCreate)
+	}
+	s.setWatcher(watcherWrapper)
+	s.ensureAuthUpdateQueue(ctx)
+	if s.authUpdates != nil {
+		watcherWrapper.SetAuthUpdateQueue(s.authUpdates)
+	}
+	watcherWrapper.SetConfig(s.currentSourceConfig())
+
+	watcherCtx, watcherCancel := context.WithCancel(context.Background())
+	s.cfgMu.Lock()
+	s.watcherCancel = watcherCancel
+	s.cfgMu.Unlock()
+	if errStart := watcherWrapper.Start(watcherCtx); errStart != nil {
+		return fmt.Errorf("cliproxy: failed to start watcher: %w", errStart)
+	}
+	log.Info("file watcher started for config and auth directory changes")
+	s.configRuntimeMu.Lock()
+	s.syncModelRuntime(ctx)
+	s.configRuntimeMu.Unlock()
 
 	s.registerModelRefreshCallback()
-	if !homeEnabled {
-		go s.runAntigravityModelRefresh(ctx)
-	}
+	// Follow-mode slugs resolve immediately, then on their poll interval.
+	s.slugs.Start(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -263,58 +206,12 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			ctx = context.Background()
 		}
 
-		s.homeMu.Lock()
+		s.runMu.Lock()
 		runCancel := s.runCancel
-		s.homeMu.Unlock()
+		s.runMu.Unlock()
 		if runCancel != nil {
 			runCancel()
 		}
-
-		s.homeLifecycleMu.Lock()
-		if supervisor := s.homeSupervisor; supervisor != nil {
-			s.homeConfigCommitMu.Lock()
-			supervisor.cancel()
-			s.homeConfigCommitMu.Unlock()
-			<-supervisor.done
-		}
-		s.homeMu.Lock()
-		homeCancel := s.homeCancel
-		homeClient := s.homeClient
-		homeRegistry := s.homeRegistry
-		homeDispatchBundle := s.homeDispatchBundle
-		homeForwarder := s.homeLogForwarder
-		homeForwarderClient := s.homeLogForwarderClient
-		s.homeGeneration++
-		s.homeCancel = nil
-		s.homeClient = nil
-		s.homeRegistry = nil
-		s.homeDispatchBundle = nil
-		s.homeDrainBound = 0
-		s.homeLogForwarder = nil
-		s.homeLogForwarderClient = nil
-		s.homeMu.Unlock()
-		if s.coreManager != nil {
-			s.coreManager.ClearHomeDispatchBundle(homeDispatchBundle)
-		}
-		home.ClearCurrentIf(homeClient)
-		if homeCancel != nil {
-			homeCancel()
-		}
-		if homeRegistry != nil {
-			if errClose := homeRegistry.Close(); errClose != nil {
-				log.WithError(errClose).Warn("failed to close Home execution registry during shutdown")
-			}
-		}
-		if homeClient != nil {
-			homeClient.Close()
-		}
-		if homeForwarder != nil {
-			if homeForwarderClient == homeClient {
-				homeForwarder.Deactivate(homeClient)
-			}
-			homeForwarder.Stop()
-		}
-		s.homeLifecycleMu.Unlock()
 
 		// legacy refresh loop removed; only stopping core auth manager below
 
@@ -324,6 +221,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if watcherCancel != nil {
 			watcherCancel()
 		}
+		s.slugs.Stop()
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
 		}
@@ -331,14 +229,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			if err := watcher.Stop(); err != nil {
 				log.Errorf("failed to stop file watcher: %v", err)
 				shutdownErr = err
-			}
-		}
-		if s.wsGateway != nil {
-			if err := s.wsGateway.Stop(ctx); err != nil {
-				log.Errorf("failed to stop websocket gateway: %v", err)
-				if shutdownErr == nil {
-					shutdownErr = err
-				}
 			}
 		}
 		if s.authQueueStop != nil {
@@ -353,13 +243,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
-		if errShutdownDiscovery := s.shutdownDiscovery(); errShutdownDiscovery != nil {
-			log.Errorf("failed to stop discovery advertiser: %v", errShutdownDiscovery)
-			if shutdownErr == nil {
-				shutdownErr = errShutdownDiscovery
-			}
-		}
-
 		// no legacy clients to persist
 
 		if s.server != nil {
@@ -370,28 +253,34 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 		}
-
-		if s.pluginHost != nil {
-			sdktranslator.SetPluginHooks(nil)
-			sdkAuth.RegisterPluginAuthParser(nil)
-			if watcher := s.currentWatcher(); watcher != nil {
-				watcher.SetPluginAuthParser(nil)
-			}
-			s.pluginHost.ApplyConfig(ctx, &config.Config{})
-			s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry())
-			s.registerAvailableExecutors(ctx, executorRegistrationOptions{
-				includePlugins: true,
-			})
-			s.pluginHost.RegisterFrontendAuthProviders()
-			s.pluginHost.ShutdownAllContext(ctx)
-			if s.accessManager != nil {
-				s.accessManager.SetProviders(sdkaccess.RegisteredProviders())
+		if errCloseTailnet := s.tailnet.Close(ctx); errCloseTailnet != nil {
+			log.Errorf("failed to stop tailscale node: %v", errCloseTailnet)
+			if shutdownErr == nil {
+				shutdownErr = errCloseTailnet
 			}
 		}
 
+		// The HTTP server is closed above. Close the usage dispatcher so records
+		// published by request goroutines that outlive it are dropped instead of
+		// restarting dispatch, deliver what is already queued, then flush and
+		// close the usage store.
 		usage.StopDefault()
+		if errWait := usage.WaitDefault(ctx); errWait != nil {
+			log.Warnf("usage dispatcher did not drain before shutdown: %v", errWait)
+		}
+		if errCloseUsage := s.usageRuntime.Close(); errCloseUsage != nil {
+			log.Errorf("failed to close usage store: %v", errCloseUsage)
+		}
 	})
 	return shutdownErr
+}
+
+// applyUsageConfig opens, closes or reconfigures the usage store to match cfg.
+func (s *Service) applyUsageConfig(cfg *config.Config) {
+	if s == nil || s.usageRuntime == nil || cfg == nil {
+		return
+	}
+	s.usageRuntime.Apply(usagestore.ResolveSettings(cfg, s.configPath), cfg.AuthDir)
 }
 
 func (s *Service) ensureAuthDir() error {
@@ -424,7 +313,7 @@ func (s *Service) startModelCatalogUpdaters(ctx context.Context) {
 	s.cfgMu.RUnlock()
 	proxyURL := ""
 	if cfg != nil {
-		registry.StartModelCatalogUpdaters(ctx, cfg.Models, cfg.Home.Enabled)
+		registry.StartModelCatalogUpdaters(ctx, cfg.Models)
 		proxyURL = cfg.ProxyURL
 	}
 	executor.StartXAIVersionUpdater(ctx, proxyURL)

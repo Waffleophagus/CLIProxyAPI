@@ -24,7 +24,7 @@ func RecordClaudeWebSearchResults(sessionKey string, data []byte, ttl time.Durat
 }
 
 // RecordClaudeWebSearchResultsContext stores the web_search_tool_result blocks
-// of a Claude response for sessionKey using ctx for Home KV operations.
+// of a Claude response for sessionKey.
 func RecordClaudeWebSearchResultsContext(ctx context.Context, sessionKey string, data []byte, ttl time.Duration, limit int) {
 	if strings.TrimSpace(sessionKey) == "" || !bytes.Contains(data, claudeWebSearchToolResultMarker) {
 		return
@@ -69,7 +69,7 @@ func RestoreClaudeWebSearchResults(body []byte, sessionKey string, ttl ...time.D
 
 // RestoreClaudeWebSearchResultsContext fills assistant web_search_tool_result
 // blocks whose content is missing or empty with the content stored for
-// sessionKey using ctx for Home KV operations.
+// sessionKey.
 func RestoreClaudeWebSearchResultsContext(ctx context.Context, body []byte, sessionKey string, ttl ...time.Duration) []byte {
 	if strings.TrimSpace(sessionKey) == "" || !bytes.Contains(body, claudeWebSearchToolResultMarker) {
 		return body

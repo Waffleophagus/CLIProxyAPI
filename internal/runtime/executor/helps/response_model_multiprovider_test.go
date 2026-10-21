@@ -74,8 +74,8 @@ func TestExtractResponseModelMultiProvider(t *testing.T) {
 			wantTerminal: true,
 		},
 		{
-			name:         "antigravity wrapped response.modelVersion",
-			provider:     "antigravity",
+			name:         "acme wrapped response.modelVersion",
+			provider:     "acme",
 			payload:      `data: {"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]}}],"modelVersion":"gemini-3.7-flash"}}`,
 			wantModel:    "gemini-3.7-flash",
 			wantTerminal: false,

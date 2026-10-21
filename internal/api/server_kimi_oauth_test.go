@@ -10,32 +10,21 @@ func TestKimiAndKimiAIOAuthRoutes(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	server := newTestServer(t)
 
-	wKimi := httptest.NewRecorder()
-	server.engine.ServeHTTP(wKimi, httptest.NewRequest(http.MethodGet, "/v0/management/kimi-auth-url", nil))
-	if wKimi.Code != http.StatusUnauthorized {
-		t.Fatalf("unprotected kimi login route: %d", wKimi.Code)
+	for _, provider := range []string{"kimi", "kimi-ai"} {
+		w := httptest.NewRecorder()
+		server.engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v8/management/oauth/auth-url?provider="+provider, nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("unprotected %s login route: %d", provider, w.Code)
+		}
 	}
 
-	wKimiAI := httptest.NewRecorder()
-	server.engine.ServeHTTP(wKimiAI, httptest.NewRequest(http.MethodGet, "/v0/management/kimi-ai-auth-url", nil))
-	if wKimiAI.Code != http.StatusUnauthorized {
-		t.Fatalf("unprotected kimi-ai login route: %d", wKimiAI.Code)
-	}
-
-	registeredKimi := false
-	registeredKimiAI := false
+	registered := false
 	for _, route := range server.engine.Routes() {
-		if route.Method == http.MethodGet && route.Path == "/v0/management/kimi-auth-url" {
-			registeredKimi = true
-		}
-		if route.Method == http.MethodGet && route.Path == "/v0/management/kimi-ai-auth-url" {
-			registeredKimiAI = true
+		if route.Method == http.MethodGet && route.Path == "/v8/management/oauth/auth-url" {
+			registered = true
 		}
 	}
-	if !registeredKimi {
-		t.Fatal("Kimi login route not registered")
-	}
-	if !registeredKimiAI {
-		t.Fatal("Kimi.ai login route not registered")
+	if !registered {
+		t.Fatal("OAuth login route not registered")
 	}
 }

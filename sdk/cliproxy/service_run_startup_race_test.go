@@ -160,7 +160,6 @@ func TestServiceRun_WatcherReloadConcurrentWithStartupModelRegistration_Issue658
 					_ = cfg.AuthDir
 				}
 			},
-			setPluginAuthParser: func(parser PluginAuthParser) {},
 		}, nil
 	}
 
@@ -354,7 +353,7 @@ func TestRegisterModelsForAuthBatch_ConsistentConfigSnapshotAcrossConcurrentComm
 	})
 
 	var committed atomic.Bool
-	modelRegistrationTaskHook = func() {
+	modelRegistrationTaskHook = func(string) {
 		if committed.CompareAndSwap(false, true) {
 			service.commitConfigUpdate(updatedCfg.CloneForRuntime())
 		}

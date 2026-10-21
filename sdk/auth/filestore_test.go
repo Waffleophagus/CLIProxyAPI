@@ -9,7 +9,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestExtractAccessToken(t *testing.T) {
@@ -21,7 +20,7 @@ func TestExtractAccessToken(t *testing.T) {
 		expected string
 	}{
 		{
-			"antigravity top-level access_token",
+			"acme top-level access_token",
 			map[string]any{"access_token": "tok-abc"},
 			"tok-abc",
 		},
@@ -102,9 +101,9 @@ func TestFileTokenStoreSaveExistingMetadataSetsFileAttributes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			baseDir := t.TempDir()
-			fileName := "antigravity-user.json"
+			fileName := "acme-user.json"
 			path := filepath.Join(baseDir, fileName)
-			existing := []byte(`{"type":"antigravity","access_token":"` + tt.existingToken + `","disabled":false}`)
+			existing := []byte(`{"type":"acme","access_token":"` + tt.existingToken + `","disabled":false}`)
 			if errWrite := os.WriteFile(path, existing, 0o600); errWrite != nil {
 				t.Fatalf("write existing auth file: %v", errWrite)
 			}
@@ -115,7 +114,7 @@ func TestFileTokenStoreSaveExistingMetadataSetsFileAttributes(t *testing.T) {
 				ID:       fileName,
 				FileName: fileName,
 				Metadata: map[string]any{
-					"type":         "antigravity",
+					"type":         "acme",
 					"access_token": tt.savedToken,
 				},
 			}
@@ -140,7 +139,7 @@ func TestFileTokenStoreSaveExistingMetadataSetsFileAttributes(t *testing.T) {
 			if errRead != nil {
 				t.Fatalf("read saved auth file: %v", errRead)
 			}
-			expected := []byte(`{"type":"antigravity","access_token":"` + tt.savedToken + `","disabled":false}`)
+			expected := []byte(`{"type":"acme","access_token":"` + tt.savedToken + `","disabled":false}`)
 			if !jsonEqual(persisted, expected) {
 				t.Errorf("saved auth file = %s, want JSON equal to %s", persisted, expected)
 			}
@@ -227,229 +226,6 @@ func TestFileTokenStoreSaveRejectsInvalidWeight(t *testing.T) {
 	if _, errStat := os.Stat(filepath.Join(baseDir, auth.FileName)); !os.IsNotExist(errStat) {
 		t.Fatalf("invalid auth file was persisted: %v", errStat)
 	}
-}
-
-func TestFileTokenStoreListSkipsInvalidPluginSourceWeight(t *testing.T) {
-	baseDir := t.TempDir()
-	path := filepath.Join(baseDir, "plugin.json")
-	if errWrite := os.WriteFile(path, []byte(`{"type":"plugin","weight":"invalid"}`), 0o600); errWrite != nil {
-		t.Fatalf("write auth file: %v", errWrite)
-	}
-
-	parserCalled := false
-	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
-		parserCalled = true
-		return []*cliproxyauth.Auth{{ID: "plugin.json", Provider: "plugin"}}, true, nil
-	}))
-	t.Cleanup(func() {
-		RegisterPluginAuthParser(nil)
-	})
-
-	store := NewFileTokenStore()
-	store.SetBaseDir(baseDir)
-	auths, errList := store.List(context.Background())
-	if errList != nil {
-		t.Fatalf("List() error = %v", errList)
-	}
-	if parserCalled {
-		t.Fatal("plugin parser was called for an invalid persisted source")
-	}
-	if len(auths) != 0 {
-		t.Fatalf("List() returned invalid plugin auths: %#v", auths)
-	}
-}
-
-func TestFileTokenStoreListExpandsPluginMultiAuths(t *testing.T) {
-	baseDir := t.TempDir()
-	path := filepath.Join(baseDir, "geminicli.json")
-	if errWrite := os.WriteFile(path, []byte(`{"type":"gemini-cli","weight":3,"headers":{"X-Test":"value"}}`), 0o600); errWrite != nil {
-		t.Fatalf("write auth file: %v", errWrite)
-	}
-
-	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(ctx context.Context, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
-		if req.Provider != "gemini-cli" || req.Path != path || req.FileName != "geminicli.json" {
-			t.Fatalf("ParseAuths request = %#v, want file context", req)
-		}
-		return []*cliproxyauth.Auth{
-			{
-				ID:       "geminicli.json",
-				Provider: "gemini-cli",
-				Metadata: map[string]any{
-					"type": "gemini-cli",
-					"headers": map[string]any{
-						"X-Test": "value",
-					},
-				},
-			},
-			nil,
-			{
-				ID:       "geminicli-project-a.json",
-				Provider: "gemini-cli",
-				Metadata: map[string]any{
-					"type":       "gemini-cli",
-					"project_id": "project-a",
-					"headers": map[string]any{
-						"X-Test": "value",
-					},
-				},
-			},
-		}, true, nil
-	}))
-	t.Cleanup(func() {
-		RegisterPluginAuthParser(nil)
-	})
-
-	store := NewFileTokenStore()
-	store.SetBaseDir(baseDir)
-	auths, errList := store.List(context.Background())
-	if errList != nil {
-		t.Fatalf("List() error = %v", errList)
-	}
-	if len(auths) != 2 {
-		t.Fatalf("List() len = %d, want two plugin auths", len(auths))
-	}
-	if firstIndex, secondIndex := auths[0].EnsureIndex(), auths[1].EnsureIndex(); firstIndex == "" || firstIndex == secondIndex {
-		t.Fatalf("auth indexes = %q/%q, want distinct non-empty indexes", firstIndex, secondIndex)
-	}
-	for _, auth := range auths {
-		if !cliproxyauth.IsPluginVirtualAuth(auth) {
-			t.Fatalf("auth attributes = %#v, want plugin virtual marker", auth.Attributes)
-		}
-		if auth.Attributes[cliproxyauth.AttributeVirtualSource] != path {
-			t.Fatalf("virtual_source = %q, want %q", auth.Attributes[cliproxyauth.AttributeVirtualSource], path)
-		}
-		if auth.Attributes["path"] != path || auth.Attributes["source"] != path {
-			t.Fatalf("auth attributes = %#v, want source path", auth.Attributes)
-		}
-		if gotHeader := auth.Attributes["header:X-Test"]; gotHeader != "value" {
-			t.Fatalf("header:X-Test = %q, want value", gotHeader)
-		}
-		if gotWeight := auth.Attributes[cliproxyauth.AttributeWeight]; gotWeight != "3" {
-			t.Fatalf("weight = %q, want 3", gotWeight)
-		}
-	}
-	if gotProject := auths[1].Metadata["project_id"]; gotProject != "project-a" {
-		t.Fatalf("project_id = %#v, want project-a", gotProject)
-	}
-}
-
-func TestFileTokenStoreListAppliesSourcePriorityToPluginAuths(t *testing.T) {
-	for _, testCase := range []struct {
-		name         string
-		raw          string
-		want         string
-		wantMetadata any
-	}{
-		{name: "number", raw: `{"type":"plugin","priority":1}`, want: "1", wantMetadata: float64(1)},
-		{name: "string", raw: `{"type":"plugin","priority":" 2 "}`, want: "2", wantMetadata: " 2 "},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			baseDir := t.TempDir()
-			path := filepath.Join(baseDir, "plugin.json")
-			if errWrite := os.WriteFile(path, []byte(testCase.raw), 0o600); errWrite != nil {
-				t.Fatalf("write auth file: %v", errWrite)
-			}
-			RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
-				return []*cliproxyauth.Auth{
-					{ID: "first", Provider: "plugin", Metadata: map[string]any{"project_id": "first"}},
-					{ID: "second", Provider: "plugin", Metadata: map[string]any{"project_id": "second"}},
-				}, true, nil
-			}))
-			t.Cleanup(func() { RegisterPluginAuthParser(nil) })
-
-			store := NewFileTokenStore()
-			store.SetBaseDir(baseDir)
-			auths, errList := store.List(context.Background())
-			if errList != nil {
-				t.Fatalf("List() error = %v", errList)
-			}
-			if len(auths) != 2 {
-				t.Fatalf("List() len = %d, want 2", len(auths))
-			}
-			for _, auth := range auths {
-				if got := auth.Attributes["priority"]; got != testCase.want {
-					t.Errorf("auth %s priority attribute = %q, want %q", auth.ID, got, testCase.want)
-				}
-				if got := auth.Attributes[cliproxyauth.AttributeFilePriority]; got != "true" {
-					t.Errorf("auth %s file priority marker = %q, want true", auth.ID, got)
-				}
-				if got := auth.Metadata["priority"]; got != testCase.wantMetadata {
-					t.Errorf("auth %s priority metadata = %v, want %v", auth.ID, got, testCase.wantMetadata)
-				}
-			}
-		})
-	}
-}
-
-func TestFileTokenStoreListAppliesSourceDisabledToPluginMultiAuths(t *testing.T) {
-	baseDir := t.TempDir()
-	path := filepath.Join(baseDir, "geminicli.json")
-	if errWrite := os.WriteFile(path, []byte(`{"type":"gemini-cli","disabled":true}`), 0o600); errWrite != nil {
-		t.Fatalf("write auth file: %v", errWrite)
-	}
-
-	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
-		return []*cliproxyauth.Auth{
-			{ID: "geminicli.json", Provider: "gemini-cli", Metadata: map[string]any{"type": "gemini-cli"}},
-			{ID: "geminicli-project-a.json", Provider: "gemini-cli", Metadata: map[string]any{"type": "gemini-cli", "project_id": "project-a"}},
-		}, true, nil
-	}))
-	t.Cleanup(func() {
-		RegisterPluginAuthParser(nil)
-	})
-
-	store := NewFileTokenStore()
-	store.SetBaseDir(baseDir)
-	auths, errList := store.List(context.Background())
-	if errList != nil {
-		t.Fatalf("List() error = %v", errList)
-	}
-	if len(auths) != 2 {
-		t.Fatalf("List() len = %d, want two plugin auths", len(auths))
-	}
-	for _, auth := range auths {
-		if !auth.Disabled || auth.Status != cliproxyauth.StatusDisabled {
-			t.Fatalf("auth %s disabled/status = %v/%s, want disabled", auth.ID, auth.Disabled, auth.Status)
-		}
-		if got, _ := auth.Metadata["disabled"].(bool); !got {
-			t.Fatalf("auth %s metadata disabled = %#v, want true", auth.ID, auth.Metadata["disabled"])
-		}
-	}
-}
-
-func TestFileTokenStoreListPluginHandledEmptySuppressesBuiltin(t *testing.T) {
-	baseDir := t.TempDir()
-	path := filepath.Join(baseDir, "codex.json")
-	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","access_token":"token"}`), 0o600); errWrite != nil {
-		t.Fatalf("write auth file: %v", errWrite)
-	}
-
-	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
-		return nil, true, nil
-	}))
-	t.Cleanup(func() {
-		RegisterPluginAuthParser(nil)
-	})
-
-	store := NewFileTokenStore()
-	store.SetBaseDir(baseDir)
-	auths, errList := store.List(context.Background())
-	if errList != nil {
-		t.Fatalf("List() error = %v", errList)
-	}
-	if len(auths) != 0 {
-		t.Fatalf("List() len = %d, want plugin-handled empty result", len(auths))
-	}
-}
-
-type fileStoreMultiAuthParserFunc func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error)
-
-func (f fileStoreMultiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*cliproxyauth.Auth, bool, error) {
-	return nil, false, nil
-}
-
-func (f fileStoreMultiAuthParserFunc) ParseAuths(ctx context.Context, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
-	return f(ctx, req)
 }
 
 func TestFileTokenStoreSaveReadModifyWritePreservesSIWC(t *testing.T) {
@@ -550,5 +326,33 @@ func TestFileTokenStoreSaveAllowsDeletingNonCredentialMetadata(t *testing.T) {
 	}
 	if _, exists := auth.Metadata["proxy_url"]; exists {
 		t.Fatalf("deleted proxy_url was resurrected in memory: %v", auth.Metadata["proxy_url"])
+	}
+}
+
+func TestFileTokenStoreListSkipsRemovedProviders(t *testing.T) {
+	baseDir := t.TempDir()
+	for name, content := range map[string]string{
+		"gemini.json":      `{"type":"gemini","email":"user@example.com"}`,
+		"antigravity.json": `{"type":"antigravity","email":"user@example.com"}`,
+		"vertex.json":      `{"type":"vertex","project_id":"p"}`,
+		"aistudio.json":    `{"type":"aistudio"}`,
+		"claude.json":      `{"type":"claude","email":"user@example.com"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(baseDir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auths) != 1 || auths[0].Provider != "claude" {
+		providers := make([]string, 0, len(auths))
+		for _, auth := range auths {
+			providers = append(providers, auth.Provider)
+		}
+		t.Fatalf("listed providers = %v, want only claude", providers)
 	}
 }

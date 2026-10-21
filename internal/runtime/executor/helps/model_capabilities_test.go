@@ -10,7 +10,6 @@ import (
 	helps "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/claude"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/codex"
-	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/gemini"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/openai"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -178,7 +177,6 @@ func TestApplyRequestThinkingConfigurationUpdateCrossProtocol(t *testing.T) {
 		{name: "Codex uses current update without bound model", format: "codex", body: `{"reasoning":{"effort":"xhigh"},"input":[{"role":"user","content":"ok"}]}`, path: "reasoning.effort", want: "high"},
 		{name: "OpenAI Chat uses current update", format: "openai", body: `{"reasoning_effort":"medium","messages":[]}`, path: "reasoning_effort", want: "high"},
 		{name: "Claude uses current update", format: "claude", body: `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"},"max_tokens":4096}`, path: "output_config.effort", want: "high"},
-		{name: "Gemini uses current update", format: "gemini", body: `{"generationConfig":{"thinkingConfig":{"thinkingBudget":8192}}}`, path: "generationConfig.thinkingConfig.thinkingBudget", want: "24576"},
 		{name: "empty current payload falls back to original", format: "openai", body: `{"reasoning_effort":"medium","messages":[]}`, path: "reasoning_effort", want: "low", noSource: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -366,16 +364,4 @@ func TestApplyRequestThinkingUsesSelectedPrefixedAPIKeyModel(t *testing.T) {
 		streamPayload = append(streamPayload, chunk.Payload...)
 	}
 	assertResponse("stream", streamPayload)
-}
-
-func TestAPIKeyModelIsCompatUsesAuthoritativeHomeCapabilities(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		req := cliproxyexecutor.Request{Metadata: map[string]any{
-			"cliproxy.resolved_api_key_model_info": &registry.ModelInfo{IsCompat: !enabled},
-			"cliproxy.resolved_home_model_info":    &registry.ModelInfo{IsCompat: enabled},
-		}}
-		if got := helps.APIKeyModelIsCompat(req); got != enabled {
-			t.Fatalf("Home compat=%v, got=%v", enabled, got)
-		}
-	}
 }

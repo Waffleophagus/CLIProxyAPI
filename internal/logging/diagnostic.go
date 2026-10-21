@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/redact"
 )
 
 const (
@@ -26,7 +28,7 @@ var (
 
 // SafeDiagnosticForLog returns a bounded, single-line diagnostic suitable for
 // ordinary application logs. It preserves the access-token-expired signal while
-// redacting credential values and URL userinfo.
+// redacting credential values, URL userinfo and credential-shaped tokens.
 func SafeDiagnosticForLog(message string) string {
 	excerpt, sourceTruncated := diagnosticRunePrefix(message, diagnosticLogScanRuneLimit)
 	if sourceTruncated && !accessTokenExpiredLogPattern.MatchString(excerpt) {
@@ -42,6 +44,7 @@ func SafeDiagnosticForLog(message string) string {
 	excerpt = urlUserinfoLogPattern.ReplaceAllString(excerpt, `${1}[REDACTED]@`)
 	excerpt = sensitiveLogAssignmentPattern.ReplaceAllString(excerpt, `${1}"[REDACTED]"`)
 	excerpt = authorizationLogPattern.ReplaceAllString(excerpt, `${1} [REDACTED]`)
+	excerpt = redact.Tokens(excerpt)
 
 	return truncateDiagnosticLogExcerpt(excerpt, sourceTruncated)
 }

@@ -113,7 +113,7 @@ func TestManagerAliasQuotaFailoverWithUnobservedTargetModel(t *testing.T) {
 
 func TestManagerExecute_ModelAliasRequestNotBlockedByOtherModelQuotaCooldown(t *testing.T) {
 	const (
-		provider     = "antigravity"
+		provider     = "acme"
 		requestModel = "gemini-3.6-flash"
 		targetModel  = "gemini-3.6-flash-high"
 		imageModel   = "gemini-3.1-flash-image"
@@ -134,7 +134,7 @@ func TestManagerExecute_ModelAliasRequestNotBlockedByOtherModelQuotaCooldown(t *
 	next := now.Add(1 * time.Hour)
 
 	auth := &Auth{
-		ID:       "antigravity-auth-1",
+		ID:       "acme-auth-1",
 		Provider: provider,
 		Status:   StatusActive,
 		ModelStates: map[string]*ModelState{
@@ -192,7 +192,7 @@ func TestManagerExecute_ModelAliasRequestNotBlockedByOtherModelQuotaCooldown(t *
 
 func TestManagerSelectAuth_ModelAliasRequestNotBlockedByOtherModelQuotaCooldown(t *testing.T) {
 	const (
-		provider     = "antigravity"
+		provider     = "acme"
 		requestModel = "gemini-3.6-flash"
 		targetModel  = "gemini-3.6-flash-high"
 		imageModel   = "gemini-3.1-flash-image"
@@ -213,7 +213,7 @@ func TestManagerSelectAuth_ModelAliasRequestNotBlockedByOtherModelQuotaCooldown(
 	next := now.Add(1 * time.Hour)
 
 	auth := &Auth{
-		ID:       "antigravity-auth-2",
+		ID:       "acme-auth-2",
 		Provider: provider,
 		Status:   StatusActive,
 		ModelStates: map[string]*ModelState{
@@ -271,7 +271,7 @@ func TestManagerSelectAuth_ModelAliasRequestNotBlockedByOtherModelQuotaCooldown(
 
 func TestManagerExecute_ModelAliasRequestBlockedWhenTargetModelInQuotaCooldown(t *testing.T) {
 	const (
-		provider     = "antigravity"
+		provider     = "acme"
 		requestModel = "gemini-3.6-flash"
 		targetModel  = "gemini-3.6-flash-high"
 	)
@@ -291,7 +291,7 @@ func TestManagerExecute_ModelAliasRequestBlockedWhenTargetModelInQuotaCooldown(t
 	next := now.Add(1 * time.Hour)
 
 	auth := &Auth{
-		ID:       "antigravity-auth-3",
+		ID:       "acme-auth-3",
 		Provider: provider,
 		Status:   StatusActive,
 		ModelStates: map[string]*ModelState{

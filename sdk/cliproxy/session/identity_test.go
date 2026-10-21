@@ -10,63 +10,6 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-func TestDeriveIDStableAcrossConversationGrowth(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		format sdktranslator.Format
-		first  string
-		later  string
-	}{
-		{
-			name:   "openai chat",
-			format: sdktranslator.FormatOpenAI,
-			first:  `{"messages":[{"role":"system","content":"system prompt"},{"role":"developer","content":"developer prompt"},{"role":"user","content":"complete first user prompt"}]}`,
-			later:  `{"messages":[{"role":"system","content":"system prompt"},{"role":"developer","content":"developer prompt"},{"role":"user","content":"complete first user prompt"},{"role":"assistant","content":"answer"},{"role":"developer","content":"later instruction"},{"role":"user","content":"next"}]}`,
-		},
-		{
-			name:   "claude messages",
-			format: sdktranslator.FormatClaude,
-			first:  `{"system":[{"type":"text","text":"system prompt"}],"messages":[{"role":"user","content":[{"type":"text","text":"complete first user prompt"}]}]}`,
-			later:  `{"system":[{"type":"text","text":"system prompt"}],"messages":[{"role":"user","content":[{"type":"text","text":"complete first user prompt"}]},{"role":"assistant","content":"answer"},{"role":"user","content":"next"}]}`,
-		},
-		{
-			name:   "openai responses",
-			format: sdktranslator.FormatOpenAIResponse,
-			first:  `{"instructions":"system prompt","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer prompt"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"complete first user prompt"}]}]}`,
-			later:  `{"instructions":"system prompt","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer prompt"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"complete first user prompt"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}`,
-		},
-		{
-			name:   "gemini",
-			format: sdktranslator.FormatGemini,
-			first:  `{"systemInstruction":{"parts":[{"text":"system prompt"}]},"contents":[{"role":"user","parts":[{"text":"complete first user prompt"}]}]}`,
-			later:  `{"systemInstruction":{"parts":[{"text":"system prompt"}]},"contents":[{"role":"user","parts":[{"text":"complete first user prompt"}]},{"role":"model","parts":[{"text":"answer"}]},{"role":"user","parts":[{"text":"next"}]}]}`,
-		},
-		{
-			name:   "interactions",
-			format: sdktranslator.FormatInteractions,
-			first:  `{"system_instruction":"system prompt","input":[{"type":"developer_instruction","text":"developer prompt"},{"type":"user_input","content":[{"type":"text","text":"complete first user prompt"}]}]}`,
-			later:  `{"system_instruction":"system prompt","input":[{"type":"developer_instruction","text":"developer prompt"},{"type":"user_input","content":[{"type":"text","text":"complete first user prompt"}]},{"type":"model_output","content":[{"type":"text","text":"answer"}]},{"type":"user_input","content":[{"type":"text","text":"next"}]}]}`,
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			firstID := DeriveID(test.format, []byte(test.first), "caller-a")
-			laterID := DeriveID(test.format, []byte(test.later), "caller-a")
-			if firstID == "" {
-				t.Fatal("DeriveID() returned empty")
-			}
-			if firstID != laterID {
-				t.Fatalf("conversation growth changed identity: first=%q later=%q", firstID, laterID)
-			}
-		})
-	}
-}
-
 func TestDeriveIDInstructionPrefixAndFullUser(t *testing.T) {
 	t.Parallel()
 
@@ -84,30 +27,6 @@ func TestDeriveIDInstructionPrefixAndFullUser(t *testing.T) {
 	}
 	if got := DeriveID(sdktranslator.FormatOpenAI, differentUser, "caller-a"); got == firstID {
 		t.Fatal("different full first user prompt produced the same identity")
-	}
-}
-
-func TestDeriveIDCallerIsolationAndGeminiCachedContent(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{"messages":[{"role":"user","content":"same prompt"}]}`)
-	callerA := DeriveID(sdktranslator.FormatOpenAI, payload, CallerScope("api-key-a"))
-	callerB := DeriveID(sdktranslator.FormatOpenAI, payload, CallerScope("api-key-b"))
-	if callerA == "" || callerB == "" || callerA == callerB {
-		t.Fatalf("caller isolation failed: callerA=%q callerB=%q", callerA, callerB)
-	}
-
-	firstCached := []byte(`{"cachedContent":"cachedContents/abc","contents":[{"role":"user","parts":[{"text":"first"}]}]}`)
-	grownCached := []byte(`{"cachedContent":"cachedContents/abc","contents":[{"role":"user","parts":[{"text":"first"}]},{"role":"model","parts":[{"text":"answer"}]},{"role":"user","parts":[{"text":"next"}]}]}`)
-	differentCached := []byte(`{"cachedContent":"cachedContents/abc","contents":[{"role":"user","parts":[{"text":"different"}]}]}`)
-	firstID := DeriveID(sdktranslator.FormatGemini, firstCached, "caller-a")
-	grownID := DeriveID(sdktranslator.FormatGemini, grownCached, "caller-a")
-	differentID := DeriveID(sdktranslator.FormatGemini, differentCached, "caller-a")
-	if firstID == "" || firstID != grownID {
-		t.Fatalf("cachedContent conversation growth changed identity: first=%q grown=%q", firstID, grownID)
-	}
-	if differentID == firstID {
-		t.Fatalf("different first user prompts sharing cachedContent produced the same identity: %q", firstID)
 	}
 }
 
@@ -196,14 +115,6 @@ func TestEnrichSkipsDerivationForExplicitSessions(t *testing.T) {
 			optionMetadata: map[string]any{
 				cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:stale",
 			},
-		},
-		{
-			name:    "nested request sessionId",
-			payload: []byte(`{"request":{"sessionId":"nested-session"},"messages":[{"role":"user","content":"hello"}]}`),
-		},
-		{
-			name:    "nested request subagent",
-			payload: []byte(`{"request":{"sessionId":"nested-session","metadata":{"agent_id":"worker"}},"messages":[{"role":"user","content":"hello"}]}`),
 		},
 	}
 
@@ -332,36 +243,6 @@ func TestEnrichCopiesDerivedIdentityToRequestAndOptions(t *testing.T) {
 	}
 	if _, exists := req.Metadata[cliproxyexecutor.DerivedSessionIDMetadataKey]; exists {
 		t.Fatal("Enrich() mutated original request metadata")
-	}
-}
-
-func TestDeriveIDAntigravityNestedRequestAndEmptyFirstUser(t *testing.T) {
-	t.Parallel()
-
-	nestedAntigravity := []byte(`{
-		"project_id": "test-project",
-		"request": {
-			"systemInstruction": {"parts":[{"text":"system prompt"}]},
-			"contents": [
-				{"role":"user","parts":[{"text":""}]},
-				{"role":"user","parts":[{"text":"actual user prompt"}]}
-			]
-		}
-	}`)
-	id := DeriveID(sdktranslator.FormatAntigravity, nestedAntigravity, "caller-a")
-	if id == "" {
-		t.Fatal("DeriveID returned empty for nested Antigravity request with empty first turn")
-	}
-
-	directAntigravity := []byte(`{
-		"systemInstruction": {"parts":[{"text":"system prompt"}]},
-		"contents": [
-			{"role":"user","parts":[{"text":"actual user prompt"}]}
-		]
-	}`)
-	directID := DeriveID(sdktranslator.FormatAntigravity, directAntigravity, "caller-a")
-	if id != directID {
-		t.Fatalf("DeriveID mismatch: nested=%s, direct=%s", id, directID)
 	}
 }
 
@@ -495,8 +376,8 @@ func TestNormalizeToCanonicalUUID(t *testing.T) {
 		"ctx:v1:", "ctx:",
 		"codex:", "claude:", "header:", "session:",
 		"affinity:", "slot:", "task:", "conv:",
-		"thread:", "clientreq:", "geminicache:",
-		"pck:", "user:", "execution:", "agy:", "derived:",
+		"thread:", "clientreq:",
+		"pck:", "user:", "execution:", "derived:",
 		"slot:   ",
 		"task:   ",
 		"derived:ctx:v1:",
@@ -646,5 +527,56 @@ func TestEnrich_DoesNotClonePayloadWhenPopulatingOriginalRequest_Issue6101(t *te
 	_, enrichedOpts2 := Enrich(req, optsWithOriginal)
 	if unsafe.SliceData(enrichedOpts2.OriginalRequest) != unsafe.SliceData(independentOriginal) {
 		t.Fatal("Enrich replaced explicitly provided OriginalRequest")
+	}
+}
+
+func TestDeriveIDStableAcrossConversationGrowth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		format sdktranslator.Format
+		first  string
+		later  string
+	}{
+		{
+			name:   "openai chat",
+			format: sdktranslator.FormatOpenAI,
+			first:  `{"messages":[{"role":"system","content":"system prompt"},{"role":"developer","content":"developer prompt"},{"role":"user","content":"complete first user prompt"}]}`,
+			later:  `{"messages":[{"role":"system","content":"system prompt"},{"role":"developer","content":"developer prompt"},{"role":"user","content":"complete first user prompt"},{"role":"assistant","content":"answer"},{"role":"developer","content":"later instruction"},{"role":"user","content":"next"}]}`,
+		},
+		{
+			name:   "claude messages",
+			format: sdktranslator.FormatClaude,
+			first:  `{"system":[{"type":"text","text":"system prompt"}],"messages":[{"role":"user","content":[{"type":"text","text":"complete first user prompt"}]}]}`,
+			later:  `{"system":[{"type":"text","text":"system prompt"}],"messages":[{"role":"user","content":[{"type":"text","text":"complete first user prompt"}]},{"role":"assistant","content":"answer"},{"role":"user","content":"next"}]}`,
+		},
+		{
+			name:   "openai responses",
+			format: sdktranslator.FormatOpenAIResponse,
+			first:  `{"instructions":"system prompt","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer prompt"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"complete first user prompt"}]}]}`,
+			later:  `{"instructions":"system prompt","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer prompt"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"complete first user prompt"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}`,
+		},
+		{
+			name:   "interactions",
+			format: sdktranslator.FormatInteractions,
+			first:  `{"system_instruction":"system prompt","input":[{"type":"developer_instruction","text":"developer prompt"},{"type":"user_input","content":[{"type":"text","text":"complete first user prompt"}]}]}`,
+			later:  `{"system_instruction":"system prompt","input":[{"type":"developer_instruction","text":"developer prompt"},{"type":"user_input","content":[{"type":"text","text":"complete first user prompt"}]},{"type":"model_output","content":[{"type":"text","text":"answer"}]},{"type":"user_input","content":[{"type":"text","text":"next"}]}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			firstID := DeriveID(test.format, []byte(test.first), "caller-a")
+			laterID := DeriveID(test.format, []byte(test.later), "caller-a")
+			if firstID == "" {
+				t.Fatal("DeriveID() returned empty")
+			}
+			if firstID != laterID {
+				t.Fatalf("conversation growth changed identity: first=%q later=%q", firstID, laterID)
+			}
+		})
 	}
 }

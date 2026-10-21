@@ -46,9 +46,6 @@ func TestExtractSummaryConfig(t *testing.T) {
 		{name: "claude enabled display with zero budget is invalid", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":0,"display":"summarized"}}`, wantMode: SummaryUnspecified},
 		{name: "claude auto compatibility budget summarized", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":-1,"display":"summarized"}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
 		{name: "claude auto compatibility budget omitted", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":-1,"display":"omitted"}}`, wantMode: SummaryDisabled},
-		{name: "gemini include true", format: "gemini", body: `{"generationConfig":{"thinkingConfig":{"includeThoughts":true}}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
-		{name: "gemini include false", format: "gemini", body: `{"generationConfig":{"thinkingConfig":{"includeThoughts":false}}}`, wantMode: SummaryDisabled},
-		{name: "antigravity include true", format: "antigravity", body: `{"request":{"generationConfig":{"thinkingConfig":{"includeThoughts":true}}}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
 		{name: "interactions auto", format: "interactions", body: `{"generation_config":{"thinking_summaries":"auto"}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
 		{name: "interactions none", format: "interactions", body: `{"generation_config":{"thinking_summaries":"none"}}`, wantMode: SummaryDisabled},
 		{name: "interactions nested snake include false", format: "interactions", body: `{"generation_config":{"thinking_config":{"include_thoughts":false}}}`, wantMode: SummaryDisabled},
@@ -62,7 +59,6 @@ func TestExtractSummaryConfig(t *testing.T) {
 		{name: "interactions string include alias is invalid", format: "interactions", body: `{"generation_config":{"thinking_config":{"include_thoughts":"false"}}}`, wantMode: SummaryUnspecified},
 		{name: "interactions detailed is invalid", format: "interactions", body: `{"generation_config":{"thinking_summaries":"detailed"}}`, wantMode: SummaryUnspecified},
 		{name: "interactions boolean is invalid", format: "interactions", body: `{"generation_config":{"thinking_summaries":true}}`, wantMode: SummaryUnspecified},
-		{name: "gemini string bool is invalid", format: "gemini", body: `{"generationConfig":{"thinkingConfig":{"includeThoughts":"true"}}}`, wantMode: SummaryUnspecified},
 	}
 
 	for _, test := range tests {
@@ -84,49 +80,6 @@ func TestExtractExplicitSummaryConfigDoesNotUseChatEffort(t *testing.T) {
 	body = []byte(`{"reasoning_effort":"high","reasoning":{"exclude":true}}`)
 	if got := ExtractExplicitSummaryConfig(body, "openai"); got.Mode != SummaryDisabled {
 		t.Fatalf("ExtractExplicitSummaryConfig() = %+v, want disabled", got)
-	}
-}
-
-func TestApplySummaryConfig(t *testing.T) {
-	tests := []struct {
-		name   string
-		format string
-		body   string
-		config SummaryConfig
-		path   string
-		want   string
-	}{
-		{name: "chat enabled invents no effort", format: "openai", config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: ""},
-		{name: "chat enabled preserves active effort", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: "high"},
-		{name: "chat enabled preserves disabled effort", format: "openai", body: `{"reasoning_effort":"none"}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: "none"},
-		// Chat cannot express "reason but hide", so disabling must not fall back to
-		// reasoning_effort:"none", which would disable reasoning altogether.
-		{name: "chat disabled preserves requested effort", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning_effort", want: "high"},
-		{name: "chat disabled sets openrouter exclude when present", format: "openai", body: `{"reasoning":{"effort":"high","exclude":false}}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning.exclude", want: "true"},
-		{name: "chat enabled clears openrouter exclude when present", format: "openai", body: `{"reasoning":{"effort":"high","exclude":true}}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning.exclude", want: "false"},
-		{name: "chat disabled updates legacy include_reasoning when present", format: "openai", body: `{"reasoning_effort":"high","include_reasoning":true}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "include_reasoning", want: "false"},
-		{name: "chat disabled invents no openrouter field", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning", want: ""},
-		{name: "claude enabled", format: "claude", body: `{"thinking":{"type":"adaptive"}}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "thinking.display", want: "summarized"},
-		{name: "claude disabled", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":2048}}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "thinking.display", want: "omitted"},
-		{name: "gemini enabled", format: "gemini", config: SummaryConfig{Mode: SummaryEnabled}, path: "generationConfig.thinkingConfig.includeThoughts", want: "true"},
-		{name: "gemini disabled", format: "gemini", config: SummaryConfig{Mode: SummaryDisabled}, path: "generationConfig.thinkingConfig.includeThoughts", want: "false"},
-		{name: "antigravity enabled", format: "antigravity", config: SummaryConfig{Mode: SummaryEnabled}, path: "request.generationConfig.thinkingConfig.includeThoughts", want: "true"},
-		{name: "interactions detail collapses to auto", format: "interactions", config: SummaryConfig{Mode: SummaryEnabled, Detail: "detailed"}, path: "generation_config.thinking_summaries", want: "auto"},
-		{name: "interactions disabled", format: "interactions", config: SummaryConfig{Mode: SummaryDisabled}, path: "generation_config.thinking_summaries", want: "none"},
-		{name: "responses concise", format: "openai-response", config: SummaryConfig{Mode: SummaryEnabled, Detail: "concise"}, path: "reasoning.summary", want: "concise"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			body := test.body
-			if body == "" {
-				body = `{}`
-			}
-			out := ApplySummaryConfig([]byte(body), test.format, test.config)
-			if got := gjson.GetBytes(out, test.path).String(); got != test.want {
-				t.Fatalf("%s = %q, want %q; body=%s", test.path, got, test.want, out)
-			}
-		})
 	}
 }
 
@@ -170,49 +123,6 @@ func TestApplySummaryConfig_OpenAIChatProviderDialects(t *testing.T) {
 	}
 }
 
-func TestApplySummaryConfigNormalizesTargetAliases(t *testing.T) {
-	tests := []struct {
-		format    string
-		body      string
-		canonical string
-		alias     string
-	}{
-		{format: "gemini", body: `{"generationConfig":{"thinkingConfig":{"include_thoughts":true}}}`, canonical: "generationConfig.thinkingConfig.includeThoughts", alias: "generationConfig.thinkingConfig.include_thoughts"},
-		{format: "antigravity", body: `{"request":{"generationConfig":{"thinkingConfig":{"include_thoughts":true}}}}`, canonical: "request.generationConfig.thinkingConfig.includeThoughts", alias: "request.generationConfig.thinkingConfig.include_thoughts"},
-		{format: "interactions", body: `{"generation_config":{"thinkingSummaries":"auto"}}`, canonical: "generation_config.thinking_summaries", alias: "generation_config.thinkingSummaries"},
-	}
-	for _, test := range tests {
-		out := ApplySummaryConfig([]byte(test.body), test.format, SummaryConfig{Mode: SummaryEnabled})
-		if !gjson.GetBytes(out, test.canonical).Exists() {
-			t.Fatalf("%s missing canonical field: %s", test.format, out)
-		}
-		if gjson.GetBytes(out, test.alias).Exists() {
-			t.Fatalf("%s retained alias %s: %s", test.format, test.alias, out)
-		}
-	}
-}
-
-// Anthropic requires thinking.type, and rejects display on a disabled block, so
-// display must never be written unless thinking is already active.
-func TestApplySummaryConfig_ClaudeDisplayRequiresActiveThinking(t *testing.T) {
-	bodies := []string{
-		`{}`,
-		`{"messages":[{"role":"user","content":"hi"}]}`,
-		`{"thinking":{"type":"disabled"}}`,
-	}
-	for _, mode := range []SummaryMode{SummaryEnabled, SummaryDisabled} {
-		for _, body := range bodies {
-			out := ApplySummaryConfig([]byte(body), "claude", SummaryConfig{Mode: mode})
-			if gjson.GetBytes(out, "thinking.display").Exists() {
-				t.Fatalf("mode %v wrote display without active thinking: %s", mode, out)
-			}
-			if !bytes.Equal(out, []byte(body)) {
-				t.Fatalf("mode %v changed body: got %s, want %s", mode, out, body)
-			}
-		}
-	}
-}
-
 func TestApplySummaryConfigForModel_ClaudeEnabledSummaryUsesValidThinkingMode(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -253,8 +163,89 @@ func TestApplySummaryConfigForModel_ClaudeDisabledSummaryDoesNotEnableThinking(t
 	}
 }
 
+func TestApplySummaryConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		format string
+		body   string
+		config SummaryConfig
+		path   string
+		want   string
+	}{
+		{name: "chat enabled invents no effort", format: "openai", config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: ""},
+		{name: "chat enabled preserves active effort", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: "high"},
+		{name: "chat enabled preserves disabled effort", format: "openai", body: `{"reasoning_effort":"none"}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning_effort", want: "none"},
+		// Chat cannot express "reason but hide", so disabling must not fall back to
+		// reasoning_effort:"none", which would disable reasoning altogether.
+		{name: "chat disabled preserves requested effort", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning_effort", want: "high"},
+		{name: "chat disabled sets openrouter exclude when present", format: "openai", body: `{"reasoning":{"effort":"high","exclude":false}}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning.exclude", want: "true"},
+		{name: "chat enabled clears openrouter exclude when present", format: "openai", body: `{"reasoning":{"effort":"high","exclude":true}}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "reasoning.exclude", want: "false"},
+		{name: "chat disabled updates legacy include_reasoning when present", format: "openai", body: `{"reasoning_effort":"high","include_reasoning":true}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "include_reasoning", want: "false"},
+		{name: "chat disabled invents no openrouter field", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning", want: ""},
+		{name: "claude enabled", format: "claude", body: `{"thinking":{"type":"adaptive"}}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "thinking.display", want: "summarized"},
+		{name: "claude disabled", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":2048}}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "thinking.display", want: "omitted"},
+		{name: "interactions detail collapses to auto", format: "interactions", config: SummaryConfig{Mode: SummaryEnabled, Detail: "detailed"}, path: "generation_config.thinking_summaries", want: "auto"},
+		{name: "interactions disabled", format: "interactions", config: SummaryConfig{Mode: SummaryDisabled}, path: "generation_config.thinking_summaries", want: "none"},
+		{name: "responses concise", format: "openai-response", config: SummaryConfig{Mode: SummaryEnabled, Detail: "concise"}, path: "reasoning.summary", want: "concise"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := test.body
+			if body == "" {
+				body = `{}`
+			}
+			out := ApplySummaryConfigForModel([]byte(body), test.format, "", test.config)
+			if got := gjson.GetBytes(out, test.path).String(); got != test.want {
+				t.Fatalf("%s = %q, want %q; body=%s", test.path, got, test.want, out)
+			}
+		})
+	}
+}
+
+func TestApplySummaryConfigNormalizesTargetAliases(t *testing.T) {
+	tests := []struct {
+		format    string
+		body      string
+		canonical string
+		alias     string
+	}{
+		{format: "interactions", body: `{"generation_config":{"thinkingSummaries":"auto"}}`, canonical: "generation_config.thinking_summaries", alias: "generation_config.thinkingSummaries"},
+	}
+	for _, test := range tests {
+		out := ApplySummaryConfigForModel([]byte(test.body), test.format, "", SummaryConfig{Mode: SummaryEnabled})
+		if !gjson.GetBytes(out, test.canonical).Exists() {
+			t.Fatalf("%s missing canonical field: %s", test.format, out)
+		}
+		if gjson.GetBytes(out, test.alias).Exists() {
+			t.Fatalf("%s retained alias %s: %s", test.format, test.alias, out)
+		}
+	}
+}
+
+// Anthropic requires thinking.type, and rejects display on a disabled block, so
+// display must never be written unless thinking is already active.
+func TestApplySummaryConfig_ClaudeDisplayRequiresActiveThinking(t *testing.T) {
+	bodies := []string{
+		`{}`,
+		`{"messages":[{"role":"user","content":"hi"}]}`,
+		`{"thinking":{"type":"disabled"}}`,
+	}
+	for _, mode := range []SummaryMode{SummaryEnabled, SummaryDisabled} {
+		for _, body := range bodies {
+			out := ApplySummaryConfigForModel([]byte(body), "claude", "", SummaryConfig{Mode: mode})
+			if gjson.GetBytes(out, "thinking.display").Exists() {
+				t.Fatalf("mode %v wrote display without active thinking: %s", mode, out)
+			}
+			if !bytes.Equal(out, []byte(body)) {
+				t.Fatalf("mode %v changed body: got %s, want %s", mode, out, body)
+			}
+		}
+	}
+}
+
 func TestApplySummaryConfig_ResponsesNormalizesDeprecatedGenerateSummary(t *testing.T) {
-	out := ApplySummaryConfig([]byte(`{"reasoning":{"generate_summary":"detailed"}}`), "openai-response", SummaryConfig{Mode: SummaryEnabled, Detail: "detailed"})
+	out := ApplySummaryConfigForModel([]byte(`{"reasoning":{"generate_summary":"detailed"}}`), "openai-response", "", SummaryConfig{Mode: SummaryEnabled, Detail: "detailed"})
 	if got := gjson.GetBytes(out, "reasoning.summary").String(); got != "detailed" {
 		t.Fatalf("reasoning.summary = %q, want detailed; body=%s", got, out)
 	}
@@ -264,7 +255,7 @@ func TestApplySummaryConfig_ResponsesNormalizesDeprecatedGenerateSummary(t *test
 }
 
 func TestApplySummaryConfig_ResponsesDisabledOmitsSummary(t *testing.T) {
-	out := ApplySummaryConfig([]byte(`{"reasoning":{"effort":"high","summary":"auto"}}`), "openai-response", SummaryConfig{Mode: SummaryDisabled})
+	out := ApplySummaryConfigForModel([]byte(`{"reasoning":{"effort":"high","summary":"auto"}}`), "openai-response", "", SummaryConfig{Mode: SummaryDisabled})
 	if result := gjson.GetBytes(out, "reasoning.summary"); result.Exists() {
 		t.Fatalf("reasoning.summary = %s, want absent; body=%s", result.Raw, out)
 	}
@@ -274,7 +265,7 @@ func TestApplySummaryConfig_ResponsesDisabledOmitsSummary(t *testing.T) {
 }
 
 func TestApplySummaryConfig_ResponsesDisabledDropsEmptyReasoning(t *testing.T) {
-	out := ApplySummaryConfig([]byte(`{"model":"gpt-5.4","reasoning":{"summary":"auto"}}`), "openai-response", SummaryConfig{Mode: SummaryDisabled})
+	out := ApplySummaryConfigForModel([]byte(`{"model":"gpt-5.4","reasoning":{"summary":"auto"}}`), "openai-response", "", SummaryConfig{Mode: SummaryDisabled})
 	if gjson.GetBytes(out, "reasoning").Exists() {
 		t.Fatalf("empty reasoning object left behind: %s", out)
 	}
@@ -282,7 +273,7 @@ func TestApplySummaryConfig_ResponsesDisabledDropsEmptyReasoning(t *testing.T) {
 
 func TestApplySummaryConfig_UnspecifiedLeavesBodyUnchanged(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"adaptive"}}`)
-	if got := ApplySummaryConfig(body, "claude", SummaryConfig{}); !bytes.Equal(got, body) {
+	if got := ApplySummaryConfigForModel(body, "claude", "", SummaryConfig{}); !bytes.Equal(got, body) {
 		t.Fatalf("unspecified summary changed body: got %s, want %s", got, body)
 	}
 }

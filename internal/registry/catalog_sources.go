@@ -215,48 +215,42 @@ func SetLocalModelCatalogs(local bool) {
 }
 
 // StartModelCatalogUpdaters binds process-wide readers to the service lifetime.
-func StartModelCatalogUpdaters(ctx context.Context, sources CatalogSources, home bool) {
+func StartModelCatalogUpdaters(ctx context.Context, sources CatalogSources) {
 	catalogRuntime.Lock()
 	defer catalogRuntime.Unlock()
 	catalogRuntime.ctx = ctx
-	configureCatalogs(ctx, sources, catalogRuntime.local, home)
+	configureCatalogs(ctx, sources, catalogRuntime.local)
 }
 
 // UpdateModelCatalogSources updates an already-started process policy on reload.
 // Updates before service startup or after shutdown do not start readers.
-func UpdateModelCatalogSources(sources CatalogSources, home bool) {
+func UpdateModelCatalogSources(sources CatalogSources) {
 	catalogRuntime.Lock()
 	defer catalogRuntime.Unlock()
 	if catalogRuntime.ctx != nil && catalogRuntime.ctx.Err() == nil {
-		configureCatalogs(catalogRuntime.ctx, sources, catalogRuntime.local, home)
+		configureCatalogs(catalogRuntime.ctx, sources, catalogRuntime.local)
 	}
 }
 
-func configureCatalogs(ctx context.Context, sources CatalogSources, local, home bool) {
+func configureCatalogs(ctx context.Context, sources CatalogSources, local bool) {
 	if errValidate := sources.Validate(); errValidate != nil {
 		log.WithError(errValidate).Warn("invalid catalog sources")
 		return
 	}
-	sources = effectiveCatalogSources(sources, local, home)
+	sources = effectiveCatalogSources(sources, local)
 	generalCatalogUpdater.configure(ctx, sources.Catalog)
 	codexCatalogUpdater.configure(ctx, sources.CodexCatalog)
 	devinCatalogUpdater.configure(ctx, sources.DevinCatalog)
 }
 
-func effectiveCatalogSources(sources CatalogSources, local, home bool) CatalogSources {
+func effectiveCatalogSources(sources CatalogSources, local bool) CatalogSources {
 	selectSource := func(source string) string {
 		if source == "" && local {
 			return embeddedCatalogSource
 		}
 		return source
 	}
-	general := selectSource(sources.Catalog)
-	devin := selectSource(sources.DevinCatalog)
-	if home {
-		general = "disabled"
-		devin = "disabled"
-	}
-	return CatalogSources{Catalog: general, CodexCatalog: selectSource(sources.CodexCatalog), DevinCatalog: devin}
+	return CatalogSources{Catalog: selectSource(sources.Catalog), CodexCatalog: selectSource(sources.CodexCatalog), DevinCatalog: selectSource(sources.DevinCatalog)}
 }
 
 func validateDevinCatalogBytes(data []byte) error {

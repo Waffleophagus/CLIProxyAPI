@@ -19,11 +19,6 @@ func TestDuplicateMetadataKeysPreserveSessionLookup(t *testing.T) {
 			sessionID: "session:child",
 		},
 		{
-			name:      "nested request session",
-			payload:   `{"request":{"metadata":{},"metadata":{"session_id":"child"}}}`,
-			sessionID: "session:child",
-		},
-		{
 			name:      "parent with header session",
 			headers:   http.Header{"X-Session-Id": {"child"}},
 			payload:   `{"metadata":{},"metadata":{"parent_session_id":"parent"}}`,

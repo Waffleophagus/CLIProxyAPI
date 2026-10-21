@@ -1,6 +1,6 @@
 // Package handlers provides core API handler functionality for the CLI Proxy API server.
 // It includes common types, client management, load balancing, and error handling
-// shared across all API endpoint handlers (OpenAI, Claude, Gemini).
+// shared across all API endpoint handlers (OpenAI, Claude).
 package handlers
 
 import (
@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -58,9 +57,6 @@ const idempotencyKeyMetadataKey = "idempotency_key"
 const (
 	defaultStreamingKeepAliveSeconds = 0
 	defaultStreamingBootstrapRetries = 0
-	// Stream interceptor history is intentionally bounded and not configurable in the first SDK surface.
-	maxStreamInterceptorHistoryChunks = 64
-	maxStreamInterceptorHistoryBytes  = 1 << 20
 )
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
@@ -243,12 +239,6 @@ func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 	return cfg != nil && cfg.PassthroughHeaders
 }
 
-// executionPassthroughHeaders keeps client responses behind passthrough-headers while
-// plugin-host internal executions always receive filtered upstream headers.
-func executionPassthroughHeaders(cfg *config.SDKConfig, internal bool) bool {
-	return internal || PassthroughHeadersEnabled(cfg)
-}
-
 func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// Only include it if the client explicitly provides it.
@@ -415,13 +405,6 @@ type BaseAPIHandler struct {
 
 	// Cfg holds the current application configuration.
 	Cfg *config.SDKConfig
-
-	// PluginHost optionally applies plugin interceptors around upstream execution.
-	PluginHost PluginInterceptorHost
-
-	// ModelRouterHost optionally routes matching requests to a plugin executor, the router's own
-	// executor, or a built-in provider before model-to-provider resolution and auth selection.
-	ModelRouterHost PluginModelRouterHost
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.
@@ -464,68 +447,6 @@ func (h *BaseAPIHandler) CurrentConfig() *config.SDKConfig {
 	cfg := h.Cfg
 	h.runtimeMu.RUnlock()
 	return cfg
-}
-
-// SetPluginHost configures the optional plugin interceptor host.
-func (h *BaseAPIHandler) SetPluginHost(host PluginInterceptorHost) {
-	if h == nil {
-		return
-	}
-	if isNilPluginInterceptorHost(host) {
-		host = nil
-	}
-	h.runtimeMu.Lock()
-	h.PluginHost = host
-	h.runtimeMu.Unlock()
-}
-
-// SetModelRouterHost configures the optional plugin model router host.
-func (h *BaseAPIHandler) SetModelRouterHost(host PluginModelRouterHost) {
-	if h == nil {
-		return
-	}
-	if isNilPluginModelRouterHost(host) {
-		host = nil
-	}
-	h.runtimeMu.Lock()
-	h.ModelRouterHost = host
-	h.runtimeMu.Unlock()
-}
-
-// ModelRouterHostSnapshot returns the configured plugin model router host snapshot.
-func (h *BaseAPIHandler) ModelRouterHostSnapshot() PluginModelRouterHost {
-	if h == nil {
-		return nil
-	}
-	h.runtimeMu.RLock()
-	host := h.ModelRouterHost
-	h.runtimeMu.RUnlock()
-	if isNilPluginModelRouterHost(host) {
-		return nil
-	}
-	return host
-}
-
-func isNilPluginInterceptorHost(host PluginInterceptorHost) bool {
-	return isNilInterface(host)
-}
-
-func isNilPluginModelRouterHost(host PluginModelRouterHost) bool {
-	return isNilInterface(host)
-}
-
-func isNilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	// A typed nil pointer stored in an interface is not equal to nil.
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }
 
 // GetAlt extracts the 'alt' parameter from the request query string.
@@ -601,6 +522,12 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 	if endpoint != "" {
 		newCtx = logging.WithEndpoint(newCtx, endpoint)
+	}
+	if c != nil {
+		// Capture the route template now, on the request goroutine: usage
+		// records may be published after the handler returns and the pooled
+		// gin.Context has been reused.
+		newCtx = coreusage.WithEndpoint(newCtx, c.FullPath())
 	}
 	if c != nil && c.Request != nil {
 		sessionID, parentSessionID := extractSessionIDsFromRequest(c.Request)

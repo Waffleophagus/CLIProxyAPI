@@ -21,14 +21,20 @@ import (
 
 // responsesLocalInterrupt cancels an in-flight HTTP turn. A websocket upstream
 // does not use it; that interrupt is written to the existing socket instead.
+//
+// Delivery is a hand-off: deliver reports true only once the forward loop has
+// received the frame (and will acknowledge it), and false once the loop has
+// stopped accepting interrupts. A frame therefore can never be silently
+// dropped, nor acknowledged for a response that has already ended.
 type responsesLocalInterrupt struct {
 	mu     sync.Mutex
 	active bool
 	frames chan []byte
+	stop   chan struct{}
 }
 
 func newResponsesLocalInterrupt() *responsesLocalInterrupt {
-	return &responsesLocalInterrupt{frames: make(chan []byte, 1)}
+	return &responsesLocalInterrupt{frames: make(chan []byte)}
 }
 
 func (s *responsesLocalInterrupt) begin() {
@@ -36,7 +42,10 @@ func (s *responsesLocalInterrupt) begin() {
 		return
 	}
 	s.mu.Lock()
-	s.active = true
+	if !s.active {
+		s.active = true
+		s.stop = make(chan struct{})
+	}
 	s.mu.Unlock()
 }
 
@@ -45,10 +54,9 @@ func (s *responsesLocalInterrupt) end() {
 		return
 	}
 	s.mu.Lock()
-	s.active = false
-	select {
-	case <-s.frames:
-	default:
+	if s.active {
+		s.active = false
+		close(s.stop)
 	}
 	s.mu.Unlock()
 }
@@ -58,15 +66,17 @@ func (s *responsesLocalInterrupt) deliver(payload []byte) bool {
 		return false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.active {
+	active, stop := s.active, s.stop
+	s.mu.Unlock()
+	if !active {
 		return false
 	}
 	select {
 	case s.frames <- bytes.Clone(payload):
-	default:
+		return true
+	case <-stop:
+		return false
 	}
-	return true
 }
 
 func (s *responsesLocalInterrupt) framesChan() <-chan []byte {
@@ -173,11 +183,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocketInterrupt(ctx conte
 		return fmt.Errorf("upstream executor does not support response.interrupt")
 	}
 	ctx = cliproxyexecutor.WithWebsocketAuthCheck(ctx, func(authID string) bool {
-		// Home runtime credentials live on the execution session, not in the global map.
 		auth, found := h.AuthManager.GetByID(authID)
-		if !found || auth == nil {
-			auth, found = h.AuthManager.GetExecutionSessionAuthByID(sessionID, authID)
-		}
 		return found && auth != nil && !auth.Disabled && auth.Status != coreauth.StatusDisabled
 	})
 	return sender.InterruptExecutionSession(ctx, sessionID, payload)

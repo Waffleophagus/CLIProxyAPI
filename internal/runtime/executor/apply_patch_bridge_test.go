@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -13,15 +12,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -72,10 +66,10 @@ func applyPatchTestFrames(protocol, name string) (string, string) {
 		return first, last
 	case "devin":
 		return string(task6DevinFrames(applyPatchTestPartial, false, "", name)), string(task6DevinFrames(applyPatchTestRemainder, false, `{}`, name))
-	case "gemini", "antigravity":
+	case "gemini", "acme":
 		first := `{"responseId":"r1","candidates":[{"content":{"parts":[{"text":"preparing"}]}}]}`
 		last := fmt.Sprintf(`{"responseId":"r1","candidates":[{"content":{"parts":[{"functionCall":{"name":%q,"args":%s}}]},"finishReason":"STOP"}]}`, name, args)
-		if protocol == "antigravity" {
+		if protocol == "acme" {
 			first, last = `{"response":`+first+`}`, `{"response":`+last+`}`
 		}
 		return "data: " + first + "\n\n", "data: " + last + "\n\n"
@@ -99,7 +93,7 @@ func applyPatchTestDeclaration(t *testing.T, protocol string, body []byte) {
 	case "gemini":
 		tool = gjson.GetBytes(body, "tools.0.functionDeclarations.0")
 		parameters = "parametersJsonSchema"
-	case "antigravity":
+	case "acme":
 		tool = gjson.GetBytes(body, "request.tools.0.functionDeclarations.0")
 		parameters = "parameters"
 	case "devin":
@@ -123,8 +117,8 @@ func applyPatchTestDeclaration(t *testing.T, protocol string, body []byte) {
 	if tool.Get(parameters+".properties.input.type").String() != "string" || tool.Get(parameters+".required.0").String() != "input" {
 		t.Fatalf("wrong standard input schema: %s", tool.Raw)
 	}
-	// Antigravity's existing schema sanitizer replaces additionalProperties with a description.
-	if protocol == "antigravity" {
+	// Acme's existing schema sanitizer replaces additionalProperties with a description.
+	if protocol == "acme" {
 		if !strings.Contains(tool.Get(parameters+".description").String(), "No extra properties allowed") {
 			t.Fatalf("sanitized schema lost the strict contract: %s", tool.Raw)
 		}
@@ -158,181 +152,6 @@ func applyPatchTestWireField(data []byte, target protowire.Number) []byte {
 		}
 	}
 	return nil
-}
-
-// Use a real downstream socket, not ResponseRecorder, to prove flush reaches a client.
-func newApplyPatchTestGateway(t *testing.T, exec cliproxyauth.ProviderExecutor, auth *cliproxyauth.Auth) *httptest.Server {
-	t.Helper()
-	gin.SetMode(gin.TestMode)
-	manager := cliproxyauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(exec)
-	auth.Status = cliproxyauth.StatusActive
-	if _, errRegister := manager.Register(t.Context(), auth); errRegister != nil {
-		t.Fatal(errRegister)
-	}
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, exec.Identifier(), []*registry.ModelInfo{{ID: "test"}})
-	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
-	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
-		Client: sdkconfig.ClientConfig{
-			Codex: sdkconfig.CodexClientConfig{EnableApplyPatch: true},
-		},
-	}, manager)
-	router := gin.New()
-	router.POST("/v1/responses", openai.NewOpenAIResponsesAPIHandler(base).Responses)
-	router.GET("/v1/models", openai.NewOpenAIAPIHandler(base).OpenAIModels)
-	server := httptest.NewServer(router)
-	t.Cleanup(server.Close)
-	return server
-}
-
-// The server cannot send the suffix or terminal frame until the client acknowledges
-// a complete decoded line. Snapshot paths instead acknowledge unrelated text.
-func TestApplyPatchBridgeLiveHTTPPreviewMatrix(t *testing.T) {
-	for _, tc := range []struct {
-		provider, protocol string
-		snapshot           bool
-	}{
-		{"custom-compat", "chat", false}, {"claude", "claude", false}, {"claude-oauth", "claude", false},
-		{"gemini-interactions", "interactions", false}, {"devin", "devin", false},
-		{"xai", "responses", false}, {"meta", "responses", false}, {"kimi", "responses", false},
-		{"gemini", "gemini", true}, {"vertex", "gemini", true}, {"antigravity", "antigravity", true},
-	} {
-		t.Run(tc.provider, func(t *testing.T) {
-			release := make(chan struct{})
-			requestBody := make(chan []byte, 1)
-			var releaseOnce sync.Once
-			unblock := func() { releaseOnce.Do(func() { close(release) }) }
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, errReadAll := io.ReadAll(r.Body)
-				if errReadAll != nil {
-					t.Error(errReadAll)
-					return
-				}
-				requestBody <- body
-				name := "apply_patch"
-				if tc.protocol == "claude" {
-					name = gjson.GetBytes(body, "tools.0.name").String()
-				}
-				first, last := applyPatchTestFrames(tc.protocol, name)
-				w.Header().Set("Content-Type", "text/event-stream")
-				if _, errWriteString := io.WriteString(w, first); errWriteString != nil {
-					return
-				}
-				w.(http.Flusher).Flush()
-				select {
-				case <-release:
-				case <-r.Context().Done():
-					return
-				}
-				_, _ = io.WriteString(w, last)
-			}))
-			defer upstream.Close()
-			defer unblock()
-			exec := task6Executor(tc.provider)
-			if tc.protocol == "responses" {
-				exec = task6RepairExecutor(tc.provider)
-			} else if tc.provider == "devin" {
-				exec = NewDevinExecutor(&config.Config{})
-			}
-			auth := &cliproxyauth.Auth{ID: t.Name(), Provider: exec.Identifier(), Attributes: map[string]string{"api_key": "test", "base_url": upstream.URL}}
-			if tc.provider == "claude-oauth" {
-				auth.Attributes["api_key"] = "sk-ant-oat-test"
-				auth.Metadata = map[string]any{"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
-			}
-			if tc.provider == "antigravity" {
-				auth.Metadata = map[string]any{"access_token": "test", "expires_in": 3600, "timestamp": "2099-01-01T00:00:00Z", "project_id": "test"}
-			}
-			gateway := newApplyPatchTestGateway(t, exec, auth)
-			// Catalog claims must be backed by the executor used by the POST below.
-			for _, version := range []string{"0.137.0", "0.153.4", "cpa"} {
-				applyPatchTestCatalog(t, gateway, version)
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			payload, errSetBytes := sjson.SetBytes(applyPatchTestRequest(), "stream", true)
-			if errSetBytes != nil {
-				t.Fatal(errSetBytes)
-			}
-			request, errNewRequestWithContext := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/v1/responses", bytes.NewReader(payload))
-			if errNewRequestWithContext != nil {
-				t.Fatal(errNewRequestWithContext)
-			}
-			request.Header.Set("Content-Type", "application/json")
-			response, errDo := gateway.Client().Do(request)
-			if errDo != nil {
-				t.Fatal(errDo)
-			}
-			defer func() {
-				if errClose := response.Body.Close(); errClose != nil {
-					t.Error(errClose)
-				}
-			}()
-			if response.StatusCode != http.StatusOK {
-				t.Fatalf("status = %d", response.StatusCode)
-			}
-			scanner := bufio.NewScanner(response.Body)
-			var lifecycle applyPatchTestLifecycle
-			acknowledged := false
-			for scanner.Scan() {
-				for _, raw := range applyPatchTestPayloads(scanner.Bytes()) {
-					event := gjson.ParseBytes(raw)
-					lifecycle.consume(t, event)
-					if !acknowledged {
-						if tc.snapshot {
-							if lifecycle.deltas.Len() != 0 {
-								t.Fatal("fabricated patch progress before upstream snapshot")
-							}
-							acknowledged = event.Get("type").String() == "response.output_text.delta"
-						} else {
-							acknowledged = strings.Contains(lifecycle.deltas.String(), "+hello\n")
-						}
-						if acknowledged {
-							if lifecycle.completed != 0 || lifecycle.inputDone != "" || lifecycle.itemDone != "" {
-								t.Fatal("preview arrived only after completion")
-							}
-							unblock()
-						}
-					}
-				}
-			}
-			if errScan := scanner.Err(); errScan != nil {
-				t.Fatal(errScan)
-			}
-			if !acknowledged {
-				t.Fatal("client never acknowledged the flushed frame")
-			}
-			lifecycle.assert(t)
-			applyPatchTestDeclaration(t, tc.protocol, <-requestBody)
-		})
-	}
-}
-
-func applyPatchTestCatalog(t *testing.T, server *httptest.Server, version string) {
-	t.Helper()
-	request, errNewRequestWithContext := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/v1/models?client_version="+version, nil)
-	if errNewRequestWithContext != nil {
-		t.Fatal(errNewRequestWithContext)
-	}
-	response, errDo := server.Client().Do(request)
-	if errDo != nil {
-		t.Fatal(errDo)
-	}
-	defer func() {
-		if errClose := response.Body.Close(); errClose != nil {
-			t.Error(errClose)
-		}
-	}()
-	body, errReadAll := io.ReadAll(response.Body)
-	if errReadAll != nil {
-		t.Fatal(errReadAll)
-	}
-	entry := gjson.GetBytes(body, `models.#(slug=="test")`)
-	if response.StatusCode != http.StatusOK || entry.Get("apply_patch_tool_type").String() != "freeform" {
-		t.Fatalf("catalog not backed by the registered route: %d %s", response.StatusCode, body)
-	}
-	if entry.Get("prefer_websockets").Bool() || len(entry.Get("service_tiers").Array()) != 0 {
-		t.Fatalf("patch support enabled unrelated capabilities: %s", entry.Raw)
-	}
 }
 
 type applyPatchTestLifecycle struct {

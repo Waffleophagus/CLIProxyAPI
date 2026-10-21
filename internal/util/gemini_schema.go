@@ -27,91 +27,12 @@ const placeholderReasonDescription = "Brief explanation of why you are calling t
 // once already; scope every call site to the schema itself.
 
 type jsonSchemaCleanOptions struct {
-	addPlaceholder       bool
-	addMissingArrayItems bool
-	antigravitySemantics bool
-	removeToolTitle      bool
-	removeGeminiMetadata bool
-	flattenUnions        bool
-	// flattenMultiBranchUnions forces multi-branch anyOf/oneOf unions down to a single
-	// strongest branch instead of preserving them. It is used on routes whose upstream
-	// rejects nested multi-branch unions even though they are valid JSON Schema.
-	flattenMultiBranchUnions          bool
-	forceEnumStringType               bool
-	dropAllEnums                      bool
-	dropBooleanEnums                  bool
-	preserveAdditionalPropertiesFalse bool
-	preserveAllAdditionalProperties   bool
-	preserveStandardConstraints       bool
-}
-
-// CleanJSONSchemaForAntigravity transforms a tool schema to be compatible with Antigravity API.
-// It handles unsupported keywords, type flattening, and schema simplification while preserving
-// semantic information as description hints and adding placeholders required by VALIDATED mode.
-func CleanJSONSchemaForAntigravity(jsonStr string) string {
-	return CleanJSONSchemaForAntigravityTool(jsonStr, true)
-}
-
-// CleanJSONSchemaForAntigravityTool transforms an Antigravity function schema. The private
-// backend accepts enum members only as strings, but the declared type still controls the JSON
-// type of generated function arguments, so numeric and boolean types must not be rewritten.
-// requirePlaceholder is used only for Claude VALIDATED mode.
-func CleanJSONSchemaForAntigravityTool(jsonStr string, requirePlaceholder bool) string {
-	return cleanJSONSchemaForAntigravityTool(jsonStr, requirePlaceholder, false)
-}
-
-// CleanJSONSchemaForAntigravityClaudeTool is the Antigravity tool cleaner for Claude
-// models. It applies the same Antigravity schema cleanup, but flattens multi-branch
-// anyOf/oneOf unions to a single strongest branch: the Antigravity Claude backend
-// converts Gemini function declarations into Claude custom.input_schema and rejects
-// nested multi-branch unions with "JSON schema is invalid", while the Gemini
-// backends accept preserved unions (see Issue 3662 and its regression follow-up).
-func CleanJSONSchemaForAntigravityClaudeTool(jsonStr string, requirePlaceholder bool) string {
-	return cleanJSONSchemaForAntigravityTool(jsonStr, requirePlaceholder, true)
-}
-
-func cleanJSONSchemaForAntigravityTool(jsonStr string, requirePlaceholder, flattenMultiBranchUnions bool) string {
-	return cleanJSONSchema(jsonStr, jsonSchemaCleanOptions{
-		addPlaceholder:           requirePlaceholder,
-		addMissingArrayItems:     true,
-		antigravitySemantics:     true,
-		removeToolTitle:          !requirePlaceholder,
-		flattenUnions:            true,
-		flattenMultiBranchUnions: flattenMultiBranchUnions,
-		dropAllEnums:             true,
-	})
-}
-
-// CleanJSONSchemaForAntigravityResponse transforms a response schema without applying tool-only
-// compatibility rewrites that would alter the client's structured output contract.
-//
-// Sanitization policy:
-//   - Passthrough: type, properties, items, required, description, enum, nullable, and
-//     additionalProperties: false (which Antigravity natively enforces for response schemas).
-//   - Description hints + deletion: unsupported or accepted-but-ignored constraints.
-//   - Flattened: allOf merged into properties/required.
-//   - Unions: multi-branch anyOf/oneOf unions are preserved; single-type nullable unions ([T, null]) project to T with nullable:true.
-//   - Resolved: local $ref targets are inlined before $defs/definitions are removed.
-//   - Dropped: unresolved $ref (after a hint), metadata, unsupported object-key constraints,
-//     conditional keywords (after non-conflicting properties are retained), and x-* extensions.
-func CleanJSONSchemaForAntigravityResponse(jsonStr string) string {
-	return cleanJSONSchema(jsonStr, jsonSchemaCleanOptions{
-		antigravitySemantics:              true,
-		flattenUnions:                     true,
-		dropBooleanEnums:                  true,
-		preserveAdditionalPropertiesFalse: true,
-	})
-}
-
-// CleanJSONSchemaForGemini transforms a JSON schema to be compatible with Gemini tool calling.
-// It removes unsupported keywords and simplifies schemas, without adding empty-schema placeholders.
-func CleanJSONSchemaForGemini(jsonStr string) string {
-	return cleanJSONSchema(jsonStr, jsonSchemaCleanOptions{
-		addMissingArrayItems: true,
-		removeGeminiMetadata: true,
-		flattenUnions:        true,
-		forceEnumStringType:  true,
-	})
+	addMissingArrayItems            bool
+	removeGeminiMetadata            bool
+	flattenUnions                   bool
+	forceEnumStringType             bool
+	preserveAllAdditionalProperties bool
+	preserveStandardConstraints     bool
 }
 
 // CleanJSONSchemaForGeminiJSONSchema transforms a JSON schema for Gemini tool calling
@@ -137,26 +58,22 @@ func cleanJSONSchema(jsonStr string, options jsonSchemaCleanOptions) string {
 	// Phase 1: Convert and add hints. Every cleaner removes $defs/definitions later, so local
 	// references must be expanded here for every route; otherwise nested fields are lost.
 	jsonStr = inlineLocalRefsForClean(jsonStr)
-	jsonStr = convertRefsToHints(jsonStr, options.antigravitySemantics)
+	jsonStr = convertRefsToHints(jsonStr, false)
 	jsonStr = convertConstToEnum(jsonStr)
 	jsonStr = convertEnumValuesToStrings(jsonStr, options.forceEnumStringType)
 	jsonStr = addEnumHints(jsonStr)
-	jsonStr = dropIgnoredEnumsToHints(jsonStr, options)
-	if !options.preserveAdditionalPropertiesFalse && !options.preserveAllAdditionalProperties {
+	if !options.preserveAllAdditionalProperties {
 		jsonStr = addAdditionalPropertiesHints(jsonStr)
 	}
 	jsonStr = moveConstraintsToDescription(jsonStr, options)
-	if options.antigravitySemantics {
-		jsonStr = moveNotToDescription(jsonStr)
-	}
 
 	// Phase 2: Flatten complex structures
 	jsonStr = mergeConditionals(jsonStr)
 	jsonStr = mergeAllOf(jsonStr)
 	if options.flattenUnions {
-		jsonStr = flattenAnyOfOneOf(jsonStr, options.preserveStandardConstraints, options.flattenMultiBranchUnions)
+		jsonStr = flattenAnyOfOneOf(jsonStr, options.preserveStandardConstraints)
 	}
-	jsonStr = flattenTypeArrays(jsonStr, options.antigravitySemantics)
+	jsonStr = flattenTypeArrays(jsonStr, false)
 
 	// Phase 3: Cleanup
 	jsonStr = removeUnsupportedKeywords(jsonStr, options)
@@ -164,18 +81,10 @@ func cleanJSONSchema(jsonStr string, options jsonSchemaCleanOptions) string {
 		// Gemini schema cleanup: remove nullable/title and placeholder-only fields.
 		jsonStr = removeKeywords(jsonStr, []string{"nullable", "title"})
 		jsonStr = removePlaceholderFields(jsonStr)
-	} else if options.removeToolTitle {
-		// Legacy non-VALIDATED Antigravity requests used the Gemini cleaner, which drops title.
-		// Keep that harmless metadata policy without losing Antigravity's native nullable support.
-		jsonStr = removeKeywords(jsonStr, []string{"title"})
 	}
 	jsonStr = cleanupRequiredFields(jsonStr)
 	jsonStr = sanitizeObjectProperties(jsonStr)
 	jsonStr = sanitizeArrayItems(jsonStr, options.addMissingArrayItems)
-	// Phase 4: Add placeholder for empty object schemas (Claude VALIDATED mode requirement)
-	if options.addPlaceholder {
-		jsonStr = addEmptySchemaPlaceholder(jsonStr)
-	}
 
 	return jsonStr
 }
@@ -338,7 +247,7 @@ func removePlaceholderFields(jsonStr string) string {
 // certain MCP tool definitions (e.g. Asana MCP server):
 // 1. Bare property maps missing the "type": "object" and "properties": {...} wrappers are wrapped.
 // 2. Boolean "required": true on property definitions are stripped and promoted to the parent's "required" array.
-// 3. Tool array schemas missing "items" receive a string item schema required by Gemini and Antigravity.
+// 3. Tool array schemas missing "items" receive a string item schema required by Gemini.
 func normalizeMalformedSchemaObjects(jsonStr string, addMissingArrayItems bool) string {
 	if jsonStr == "" {
 		return jsonStr
@@ -551,8 +460,8 @@ func repairSchemaNode(node map[string]any, addMissingArrayItems bool) (map[strin
 		}
 	}
 
-	// Gemini and Antigravity reject tool array schemas without an items definition,
-	// and reject tool schemas with items whose type is not ARRAY. A node still holding an
+	// Gemini rejects tool array schemas without an items definition,
+	// and rejects tool schemas with items whose type is not ARRAY. A node still holding an
 	// unresolved $ref gets neither a placeholder items nor a synthesized type: both would become
 	// sibling keywords during inlining and clobber the referenced definition's real values.
 	if addMissingArrayItems && clone["$ref"] == nil {
@@ -1310,8 +1219,7 @@ func convertConstToEnum(jsonStr string) string {
 }
 
 // convertEnumValuesToStrings ensures all enum values use the string representation required by
-// Gemini's proto schema. The declared type remains independent: Antigravity uses it to choose the
-// emitted JSON type on both response and function-argument paths.
+// Gemini's proto schema. The declared type remains independent.
 func convertEnumValuesToStrings(jsonStr string, forceStringType bool) string {
 	for _, p := range findPaths(jsonStr, "enum") {
 		arr := gjson.Get(jsonStr, p)
@@ -1355,25 +1263,6 @@ func addEnumHints(jsonStr string) string {
 	return jsonStr
 }
 
-// Antigravity does not enforce enum on function arguments and ignores boolean response enums.
-// Preserve the advisory values in description, but do not leave an unenforced constraint in the
-// schema contract. Response enums for string, number, and integer remain native constraints.
-func dropIgnoredEnumsToHints(jsonStr string, options jsonSchemaCleanOptions) string {
-	for _, path := range findPaths(jsonStr, "enum") {
-		parentPath := trimSuffix(path, ".enum")
-		shouldDrop := options.dropAllEnums || (options.dropBooleanEnums && gjson.Get(jsonStr, joinPath(parentPath, "type")).String() == "boolean")
-		if !shouldDrop {
-			continue
-		}
-		enum := gjson.Get(jsonStr, path)
-		if enum.IsArray() && len(enum.Array()) == 1 {
-			jsonStr = appendHint(jsonStr, parentPath, "Allowed: "+enum.Array()[0].String())
-		}
-		jsonStr, _ = sjson.Delete(jsonStr, path)
-	}
-	return jsonStr
-}
-
 func addAdditionalPropertiesHints(jsonStr string) string {
 	for _, p := range findPaths(jsonStr, "additionalProperties") {
 		if gjson.Get(jsonStr, p).Type == gjson.False {
@@ -1393,11 +1282,7 @@ func constraintKeywords(options jsonSchemaCleanOptions) []string {
 	if options.preserveStandardConstraints {
 		return nil
 	}
-	keywords := append([]string(nil), unsupportedConstraints...)
-	if options.antigravitySemantics {
-		keywords = append(keywords, "minimum", "maximum", "multipleOf")
-	}
-	return keywords
+	return append([]string(nil), unsupportedConstraints...)
 }
 
 func moveConstraintsToDescription(jsonStr string, options jsonSchemaCleanOptions) string {
@@ -1422,17 +1307,6 @@ func moveConstraintsToDescription(jsonStr string, options jsonSchemaCleanOptions
 			}
 			jsonStr = appendHint(jsonStr, parentPath, fmt.Sprintf("%s: %s", key, val.String()))
 		}
-	}
-	return jsonStr
-}
-
-func moveNotToDescription(jsonStr string) string {
-	for _, path := range findPaths(jsonStr, "not") {
-		value := gjson.Get(jsonStr, path)
-		if !value.Exists() || isPropertyDefinition(trimSuffix(path, ".not")) {
-			continue
-		}
-		jsonStr = appendHint(jsonStr, trimSuffix(path, ".not"), "not: "+value.Raw)
 	}
 	return jsonStr
 }
@@ -1630,7 +1504,7 @@ func partitionUnionBranches(items []gjson.Result, parentProps gjson.Result) (non
 	return
 }
 
-func flattenAnyOfOneOf(jsonStr string, preserveOneOf, flattenMultiBranch bool) string {
+func flattenAnyOfOneOf(jsonStr string, preserveOneOf bool) string {
 	pathsByField := findPathsByFields(jsonStr, []string{"oneOf", "anyOf"})
 	var paths []string
 	for _, key := range []string{"oneOf", "anyOf"} {
@@ -1662,10 +1536,7 @@ func flattenAnyOfOneOf(jsonStr string, preserveOneOf, flattenMultiBranch bool) s
 		// protobuf Schema has only a single anyOf field and cannot represent a second union
 		// conjunction structurally. Preserve anyOf as the primary union and move the sibling
 		// oneOf constraint to a description hint instead of concatenating it into anyOf.
-		// Routes that flatten multi-branch unions skip this shortcut: the primary union is
-		// about to be flattened away too, and hinting the raw oneOf JSON into the
-		// description would only add a giant, misleading hint.
-		if key == "oneOf" && !flattenMultiBranch && !preserveOneOf && parent.Get("anyOf").IsArray() {
+		if key == "oneOf" && !preserveOneOf && parent.Get("anyOf").IsArray() {
 			jsonStr = appendHint(jsonStr, parentPath, "oneOf: "+arr.Raw)
 			jsonStr, _ = sjson.Delete(jsonStr, p)
 			continue
@@ -1680,11 +1551,9 @@ func flattenAnyOfOneOf(jsonStr string, preserveOneOf, flattenMultiBranch bool) s
 		nullable := hasNull || parent.Get("nullable").Bool()
 
 		// Preserve multi-branch unions (2+ standalone non-null branches) so non-first branches are not lost.
-		// On native Gemini/Antigravity Schema carriers (!preserveOneOf), normalize oneOf to anyOf because
+		// On native Gemini Schema carriers (!preserveOneOf), normalize oneOf to anyOf because
 		// the protobuf Schema message supports anyOf but rejects oneOf.
-		// Routes that reject multi-branch unions upstream (flattenMultiBranch) skip this
-		// preservation and fall through to the single-strongest-branch flattening below.
-		if len(nonNullItems) >= 2 && !flattenMultiBranch {
+		if len(nonNullItems) >= 2 {
 			targetKey := key
 			if key == "oneOf" && !preserveOneOf {
 				targetKey = "anyOf"
@@ -1918,9 +1787,6 @@ func removeUnsupportedKeywords(jsonStr string, options jsonSchemaCleanOptions) s
 		"$comment", "enumDescriptions", "enumTitles", "prefill", "deprecated", "encrypted", "discriminator", "readOnly", "writeOnly", // Schema metadata fields unsupported by Gemini
 		"additionalItems", "unevaluatedProperties", "unevaluatedItems", "contentSchema", "contentMediaType", "contentEncoding",
 	)
-	if options.antigravitySemantics {
-		keywords = append(keywords, "not")
-	}
 
 	deletePaths := make([]string, 0)
 	pathsByField := findPathsByFields(jsonStr, keywords)
@@ -1931,9 +1797,6 @@ func removeUnsupportedKeywords(jsonStr string, options jsonSchemaCleanOptions) s
 			}
 			if key == "additionalProperties" {
 				if options.preserveAllAdditionalProperties {
-					continue
-				}
-				if options.preserveAdditionalPropertiesFalse && gjson.Get(jsonStr, p).Type == gjson.False {
 					continue
 				}
 			}
@@ -2029,77 +1892,6 @@ func cleanupRequiredFields(jsonStr string) string {
 			}
 		}
 	}
-	return jsonStr
-}
-
-// addEmptySchemaPlaceholder adds a placeholder "reason" property to empty object schemas.
-// Claude VALIDATED mode requires at least one required property in tool schemas.
-func addEmptySchemaPlaceholder(jsonStr string) string {
-	// Find all "type" fields
-	paths := findPaths(jsonStr, "type")
-
-	// Process from deepest to shallowest (to handle nested objects properly)
-	sortByDepth(paths)
-
-	for _, p := range paths {
-		typeVal := gjson.Get(jsonStr, p)
-		if typeVal.String() != "object" {
-			continue
-		}
-
-		// Get the parent path (the object containing "type")
-		parentPath := trimSuffix(p, ".type")
-
-		// Check if properties exists and is empty or missing
-		propsPath := joinPath(parentPath, "properties")
-		propsVal := gjson.Get(jsonStr, propsPath)
-		reqPath := joinPath(parentPath, "required")
-		reqVal := gjson.Get(jsonStr, reqPath)
-		hasRequiredProperties := reqVal.IsArray() && len(reqVal.Array()) > 0
-		if gjson.Get(jsonStr, joinPath(parentPath, "anyOf")).IsArray() || gjson.Get(jsonStr, joinPath(parentPath, "oneOf")).IsArray() {
-			continue
-		}
-
-		needsPlaceholder := false
-		if !propsVal.Exists() {
-			// No properties field at all
-			needsPlaceholder = true
-		} else if propsVal.IsObject() && len(propsVal.Map()) == 0 {
-			// Empty properties object
-			needsPlaceholder = true
-		}
-
-		if needsPlaceholder {
-			// Add placeholder "reason" property
-			reasonPath := joinPath(propsPath, "reason")
-			updated, _ := sjson.SetBytes([]byte(jsonStr), reasonPath+".type", "string")
-			jsonStr = string(updated)
-			updated, _ = sjson.SetBytes([]byte(jsonStr), reasonPath+".description", placeholderReasonDescription)
-			jsonStr = string(updated)
-
-			// Add to required array
-			updated, _ = sjson.SetBytes([]byte(jsonStr), reqPath, []string{"reason"})
-			jsonStr = string(updated)
-			continue
-		}
-
-		// If schema has properties but none are required, add a minimal placeholder.
-		if propsVal.IsObject() && !hasRequiredProperties {
-			// DO NOT add placeholder if it's a top-level schema (parentPath is empty)
-			// or if we've already added a placeholder reason above.
-			if parentPath == "" {
-				continue
-			}
-			placeholderPath := joinPath(propsPath, "_")
-			if !gjson.Get(jsonStr, placeholderPath).Exists() {
-				updated, _ := sjson.SetBytes([]byte(jsonStr), placeholderPath+".type", "boolean")
-				jsonStr = string(updated)
-			}
-			updated, _ := sjson.SetBytes([]byte(jsonStr), reqPath, []string{"_"})
-			jsonStr = string(updated)
-		}
-	}
-
 	return jsonStr
 }
 

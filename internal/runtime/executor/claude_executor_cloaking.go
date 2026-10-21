@@ -1012,40 +1012,6 @@ func captureClaudeCodeSystemPlacement(before, after []byte, cloaked bool) claude
 	}
 }
 
-// reconcileClaudeCodeSystemPlacementAfterPayload repairs an otherwise stale
-// placement decision when payload rules change the final model from modern to
-// legacy. It removes only the exact contiguous turns captured above and replays
-// their text through the existing legacy <system-reminder> path. If any payload
-// rule also changed those messages, reconciliation fails closed and leaves the
-// final validation guard to return 400.
-func reconcileClaudeCodeSystemPlacementAfterPayload(payload []byte, state claudeCodeSystemPlacementState) []byte {
-	if len(state.insertedRaw) == 0 || !claudeUsesLegacySystemReminder(payload) {
-		return payload
-	}
-	messages := gjson.GetBytes(payload, "messages").Array()
-	if state.insertAt < 0 || state.insertAt+len(state.insertedRaw) > len(messages) {
-		return payload
-	}
-	for idx, raw := range state.insertedRaw {
-		if messages[state.insertAt+idx].Raw != raw {
-			return payload
-		}
-	}
-
-	rawMessages := make([]string, 0, len(messages)-len(state.insertedRaw))
-	for idx, message := range messages {
-		if idx >= state.insertAt && idx < state.insertAt+len(state.insertedRaw) {
-			continue
-		}
-		rawMessages = append(rawMessages, message.Raw)
-	}
-	updated, errSet := sjson.SetRawBytes(payload, "messages", []byte("["+strings.Join(rawMessages, ",")+"]"))
-	if errSet != nil {
-		return payload
-	}
-	return prependClaudeSystemRemindersToFirstUserMessage(updated, state.texts)
-}
-
 type claudeCodeFableState struct {
 	injectedFallbacks bool
 	injectedDisplay   bool

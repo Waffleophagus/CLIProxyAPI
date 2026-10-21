@@ -1,6 +1,6 @@
 // Package api provides the HTTP API server implementation for the CLI Proxy API.
 // It includes the main server struct, routing setup, middleware for CORS and authentication,
-// and integration with various AI API handlers (OpenAI, Claude, Gemini).
+// and integration with various AI API handlers (OpenAI, Claude).
 // The server supports hot-reloading of clients and configuration.
 package api
 
@@ -22,11 +22,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/webui"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -43,13 +40,6 @@ type Server struct {
 
 	// server is the underlying HTTP server.
 	server *http.Server
-
-	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
-	listenerMu      sync.Mutex
-	muxBaseListener net.Listener
-
-	// muxHTTPListener receives HTTP connections selected by the multiplexer.
-	muxHTTPListener *muxListener
 
 	// handlers contains the API handlers for processing requests.
 	handlers         *handlers.BaseAPIHandler
@@ -76,17 +66,8 @@ type Server struct {
 	// currentPath is the absolute path to the current working directory.
 	currentPath string
 
-	// wsRoutes tracks registered websocket upgrade paths.
-	wsRouteMu     sync.Mutex
-	wsRoutes      map[string]struct{}
-	wsAuthChanged func(bool, bool)
-	wsAuthEnabled atomic.Bool
-
 	// management handler
 	mgmt *managementHandlers.Handler
-
-	// pluginHost owns dynamic plugin Management API route dispatch.
-	pluginHost *pluginhost.Host
 
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
@@ -96,16 +77,19 @@ type Server struct {
 	// envManagementSecret indicates whether MANAGEMENT_PASSWORD is configured.
 	envManagementSecret bool
 
-	localPassword string
-
-	keepAliveEnabled   bool
-	keepAliveTimeout   time.Duration
-	keepAliveOnTimeout func()
-	keepAliveHeartbeat chan struct{}
-	keepAliveStop      chan struct{}
-
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
+
+	// webui serves the embedded management web UI under /ui/.
+	webui *webui.Handler
+
+	// tailnet resolves tailnet identities and node status; nil when tailscale is off.
+	tailnet TailnetNode
+
+	// extraServers tracks http.Servers for additional listeners (see ServeListener).
+	extraMu      sync.Mutex
+	extraServers map[*http.Server]struct{}
+	stopped      bool
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -163,15 +147,15 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		configFilePath:               configFilePath,
 		currentPath:                  wd,
 		envManagementSecret:          envManagementSecret,
-		wsRoutes:                     make(map[string]struct{}),
-		pluginHost:                   optionState.pluginHost,
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
+		tailnet:                      optionState.tailnet,
 	}
 
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
 	engine.Use(logging.CPATraceIDMiddleware())
+	engine.Use(usageEndpointMiddleware())
 	engine.Use(s.maxRequestBodyBytesMiddleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
@@ -196,32 +180,21 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.loggerToggle = toggle
 
 	engine.Use(corsMiddleware())
-	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
-	s.handlers.SetPluginHost(optionState.pluginHost)
-	if optionState.pluginHost != nil {
-		optionState.pluginHost.SetModelExecutor(s.handlers)
-		optionState.pluginHost.SetAuthManager(authManager)
-	}
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 	s.applyAccessConfig(nil, cfg)
 	if authManager != nil {
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
-	githubauth.SetToken(cfg.GitHubToken)
-	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
-	applySignatureCacheConfig(nil, cfg)
 	applyClaudeToolSearchConfig(cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
-	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
-	if optionState.localPassword != "" {
-		s.mgmt.SetLocalPassword(optionState.localPassword)
-	}
+	s.mgmt.SetSlugResolver(optionState.slugResolver)
+	s.mgmt.SetUsageRuntime(optionState.usageRuntime)
 	logDir := logging.ResolveLogDirectory(cfg)
 	s.mgmt.SetLogDirectory(logDir)
 	if optionState.postAuthHook != nil {
@@ -230,11 +203,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthPersistHook != nil {
 		s.mgmt.SetPostAuthPersistHook(optionState.postAuthPersistHook)
 	}
-	s.localPassword = optionState.localPassword
 
-	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
-	// subscribe-config heartbeat connection is healthy.
-	engine.Use(s.homeHeartbeatMiddleware())
 	engine.Use(s.exampleAPIKeySafeModeMiddleware())
 
 	// Setup routes
@@ -246,18 +215,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 
 	// Register management routes when configuration or environment secrets are available,
-	// or when a local management password is provided (e.g. TUI mode).
-	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret || s.localPassword != ""
+	// or when tailnet identities may manage the proxy. Without a secret the routes
+	// stay unavailable to everyone but identity-authorized tailnet callers.
+	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret
 	s.managementRoutesEnabled.Store(hasManagementSecret)
-	redisqueue.SetEnabled(hasManagementSecret || (cfg != nil && cfg.Home.Enabled))
-	if hasManagementSecret {
+	if hasManagementSecret || s.tailnetManagementConfigured(cfg) {
 		s.registerManagementRoutes()
-	}
-	s.refreshPluginManagementRoutes()
-	engine.NoRoute(s.pluginManagementNoRoute)
-
-	if optionState.keepAliveEnabled {
-		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
 	}
 
 	// Create HTTP server
@@ -335,74 +298,11 @@ func (s *Server) Start() error {
 		log.Debugf("Starting API server on %s", addr)
 	}
 
-	httpListener := newMuxListener(listener.Addr(), 1024)
-	s.listenerMu.Lock()
-	s.muxBaseListener = listener
-	s.muxHTTPListener = httpListener
-	s.listenerMu.Unlock()
-
-	httpErrCh := make(chan error, 1)
-	acceptErrCh := make(chan error, 1)
-
-	go func() {
-		httpErrCh <- s.server.Serve(httpListener)
-	}()
-	go func() {
-		acceptErrCh <- s.acceptMuxConnections(listener, httpListener)
-	}()
-
-	select {
-	case errServe := <-httpErrCh:
-		s.listenerMu.Lock()
-		muxBase := s.muxBaseListener
-		muxHTTP := s.muxHTTPListener
-		s.muxBaseListener = nil
-		s.muxHTTPListener = nil
-		s.listenerMu.Unlock()
-		if muxBase != nil {
-			if errClose := muxBase.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
-				log.Debugf("failed to close shared listener after HTTP serve exit: %v", errClose)
-			}
-		}
-		if muxHTTP != nil {
-			_ = muxHTTP.Close()
-		}
-		errAccept := <-acceptErrCh
-		errServe = normalizeHTTPServeError(errServe)
-		errAccept = normalizeListenerError(errAccept)
-		if errServe != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errServe)
-		}
-		if errAccept != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errAccept)
-		}
-		return nil
-	case errAccept := <-acceptErrCh:
-		s.listenerMu.Lock()
-		muxHTTP := s.muxHTTPListener
-		muxBase := s.muxBaseListener
-		s.muxHTTPListener = nil
-		s.muxBaseListener = nil
-		s.listenerMu.Unlock()
-		if muxHTTP != nil {
-			_ = muxHTTP.Close()
-		}
-		if muxBase != nil {
-			if errClose := muxBase.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
-				log.Debugf("failed to close shared listener after accept loop exit: %v", errClose)
-			}
-		}
-		errServe := <-httpErrCh
-		errServe = normalizeHTTPServeError(errServe)
-		errAccept = normalizeListenerError(errAccept)
-		if errAccept != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errAccept)
-		}
-		if errServe != nil {
-			return fmt.Errorf("failed to start HTTP server: %v", errServe)
-		}
+	errServe := s.server.Serve(listener)
+	if errServe == nil || errors.Is(errServe, http.ErrServerClosed) || errors.Is(errServe, net.ErrClosed) {
 		return nil
 	}
+	return fmt.Errorf("failed to start HTTP server: %v", errServe)
 }
 
 // Stop closes listeners and immediately shuts down the API server without waiting for active connections.
@@ -415,29 +315,6 @@ func (s *Server) Start() error {
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
 
-	if s.keepAliveEnabled {
-		select {
-		case s.keepAliveStop <- struct{}{}:
-		default:
-		}
-	}
-
-	s.listenerMu.Lock()
-	muxHTTP := s.muxHTTPListener
-	s.muxHTTPListener = nil
-	muxBase := s.muxBaseListener
-	s.muxBaseListener = nil
-	s.listenerMu.Unlock()
-
-	if muxHTTP != nil {
-		_ = muxHTTP.Close()
-	}
-	if muxBase != nil {
-		if errCloseBase := muxBase.Close(); errCloseBase != nil && !errors.Is(errCloseBase, net.ErrClosed) {
-			log.Debugf("failed to close shared listener: %v", errCloseBase)
-		}
-	}
-
 	// Close the HTTP server immediately without graceful draining.
 	var errCloseServer error
 	if s.server != nil {
@@ -446,8 +323,12 @@ func (s *Server) Stop(ctx context.Context) error {
 			errCloseServer = nil
 		}
 	}
+	errCloseExtra := s.closeExtraListeners()
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
+	}
+	if errCloseServer == nil {
+		errCloseServer = errCloseExtra
 	}
 	if errCloseServer != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errCloseServer)

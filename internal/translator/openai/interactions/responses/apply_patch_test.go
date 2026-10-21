@@ -318,7 +318,7 @@ func TestInteractionsApplyPatchDoesNotChangeOtherFunctionNames(t *testing.T) {
 	chunks := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "devin/swe-2", request, nil, patchStep("step.start", map[string]any{"type": "function_call", "id": "c", "name": "external_read_file"}), &param)
 	events := patchEvents(chunks)
 	if len(events) != 1 || events[0].Get("item.name").String() != "external_read_file" {
-		t.Fatalf("borrowed Antigravity name alias: %v", events)
+		t.Fatalf("borrowed Acme name alias: %v", events)
 	}
 }
 

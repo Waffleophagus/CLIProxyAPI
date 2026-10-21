@@ -240,14 +240,14 @@ func TestCodexClientModelsResponse_RequiresTemplateAndCodexProvidersForSearchToo
 }
 
 var searchToolRouteProviders = map[string][]string{
-	"claude-sonnet-4-5":     {"claude"},
-	"gpt-5.5":               {"claude"},
-	"claude-third-party":    {"claude"},
-	"gpt-5.6-sol":           {"codex"},
-	"claude-opus-mixed":     {"claude", "openai-compatibility"},
-	"claude-and-codex":      {"claude", "codex"},
-	"claude-unknown-route":  nil,
-	"claude-on-antigravity": {"antigravity"},
+	"claude-sonnet-4-5":    {"claude"},
+	"gpt-5.5":              {"claude"},
+	"claude-third-party":   {"claude"},
+	"gpt-5.6-sol":          {"codex"},
+	"claude-opus-mixed":    {"claude", "openai-compatibility"},
+	"claude-and-codex":     {"claude", "codex"},
+	"claude-unknown-route": nil,
+	"claude-on-acme":       {"acme"},
 }
 
 func assertSupportsSearchTool(t *testing.T, resp map[string]any, want map[string]bool) {
@@ -276,14 +276,14 @@ func TestCodexClientModelsResponse_SearchToolRequiresRoutesThatCloseTheLoop(t *t
 	capability := func(id string) bool { return id == "claude-sonnet-4-5" || id == "gpt-5.5" }
 	resp := BuildResponseForClientWithToolCapabilities(searchToolAvailableModels(), func(id string) []string { return searchToolRouteProviders[id] }, nil, nil, capability, false, "")
 	assertSupportsSearchTool(t, resp, map[string]bool{
-		"claude-sonnet-4-5":     true,
-		"gpt-5.5":               true,
-		"claude-third-party":    false,
-		"gpt-5.6-sol":           true,
-		"claude-opus-mixed":     false,
-		"claude-and-codex":      false,
-		"claude-unknown-route":  false,
-		"claude-on-antigravity": false,
+		"claude-sonnet-4-5":    true,
+		"gpt-5.5":              true,
+		"claude-third-party":   false,
+		"gpt-5.6-sol":          true,
+		"claude-opus-mixed":    false,
+		"claude-and-codex":     false,
+		"claude-unknown-route": false,
+		"claude-on-acme":       false,
 	})
 }
 
@@ -292,14 +292,14 @@ func TestCodexClientModelsResponse_SearchToolRequiresRoutesThatCloseTheLoop(t *t
 func TestCodexClientModelsResponse_ClaudeSearchToolNeedsCapability(t *testing.T) {
 	resp := BuildResponseForClientWithToolCapabilities(searchToolAvailableModels(), func(id string) []string { return searchToolRouteProviders[id] }, nil, nil, nil, false, "")
 	assertSupportsSearchTool(t, resp, map[string]bool{
-		"claude-sonnet-4-5":     false,
-		"gpt-5.5":               false,
-		"claude-third-party":    false,
-		"gpt-5.6-sol":           true,
-		"claude-opus-mixed":     false,
-		"claude-and-codex":      false,
-		"claude-unknown-route":  false,
-		"claude-on-antigravity": false,
+		"claude-sonnet-4-5":    false,
+		"gpt-5.5":              false,
+		"claude-third-party":   false,
+		"gpt-5.6-sol":          true,
+		"claude-opus-mixed":    false,
+		"claude-and-codex":     false,
+		"claude-unknown-route": false,
+		"claude-on-acme":       false,
 	})
 }
 
@@ -549,8 +549,8 @@ func TestCodexClientModelsResponseMapsMaxCompletionTokensToMaxTokens(t *testing.
 	}
 }
 
-func TestCodexClientModelsResponseUsesProvidedCapabilitiesForNewHomeModel(t *testing.T) {
-	const modelID = "gemini-new-home-model-test"
+func TestCodexClientModelsResponseUsesProvidedCapabilitiesForNewModel(t *testing.T) {
+	const modelID = "gemini-new-model-test"
 	const wantContextWindow = 1048576
 
 	resp := BuildResponse([]map[string]any{{
@@ -611,7 +611,7 @@ func TestCodexClientModelsResponseDoesNotInheritUnsupportedReasoningLevels(t *te
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp := BuildResponseForClient([]map[string]any{{
-				"id":       "home-extended-reasoning-model-test",
+				"id":       "extended-reasoning-model-test",
 				"thinking": &tt.thinking,
 			}}, nil, false, tt.version)
 			models, ok := resp["models"].([]map[string]any)

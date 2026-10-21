@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadConfigOptional_CodexHeaderDefaults(t *testing.T) {
+func TestLoadConfig_CodexHeaderDefaults(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	configYAML := []byte(`
@@ -18,9 +18,9 @@ codex-header-defaults:
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	cfg, err := LoadConfigOptional(configPath, false)
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", err)
+		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
 	if got := cfg.CodexHeaderDefaults.UserAgent; got != "my-codex-client/1.0" {
@@ -34,7 +34,7 @@ codex-header-defaults:
 	}
 }
 
-func TestLoadConfigOptional_CodexOptions(t *testing.T) {
+func TestLoadConfig_CodexOptions(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	configYAML := []byte(`
@@ -46,9 +46,9 @@ codex:
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	cfg, err := LoadConfigOptional(configPath, false)
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", err)
+		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
 	if !cfg.Codex.DisableCodexCloaking {
@@ -59,7 +59,7 @@ codex:
 	}
 }
 
-func TestLoadConfigOptional_CodexModelLevelCooling(t *testing.T) {
+func TestLoadConfig_CodexModelLevelCooling(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	configYAML := []byte(`
@@ -70,9 +70,9 @@ codex:
 		t.Fatalf("failed to write config: %v", err)
 	}
 
-	cfg, err := LoadConfigOptional(configPath, false)
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", err)
+		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
 	if !cfg.Codex.ModelLevelCooling {

@@ -79,8 +79,7 @@ func ConvertInteractionsResponseToOpenAINonStream(ctx context.Context, modelName
 			}
 		case "function_call":
 			sawToolCall = true
-			forAntigravity := isAntigravityModel(firstNonEmpty(interaction.Get("model").String(), modelName))
-			toolCalls = append(toolCalls, openAIChatToolCallFromInteractions(step, gjson.Result{}, forAntigravity))
+			toolCalls = append(toolCalls, openAIChatToolCallFromInteractions(step, gjson.Result{}))
 		}
 		return true
 	})
@@ -166,9 +165,6 @@ func interactionsStepStartToOpenAIChat(modelName string, root gjson.Result, st *
 		}
 		st.ToolIDs[index] = firstNonEmpty(step.Get("call_id").String(), step.Get("id").String(), fmt.Sprintf("call_%d", toolCallIndex))
 		name := step.Get("name").String()
-		if isAntigravityModel(modelName) || (st != nil && isAntigravityModel(st.Model)) {
-			name = translatorcommon.AntigravityUpstreamToolNameToClient(name)
-		}
 		st.ToolNames[index] = name
 		if st.ToolArguments[index] == nil {
 			st.ToolArguments[index] = &strings.Builder{}
@@ -322,14 +318,11 @@ func openAIChatToolCallArgumentsChunk(st *interactionsToOpenAIChatStreamState, i
 	return chunk
 }
 
-func openAIChatToolCallFromInteractions(step, fallbackArgs gjson.Result, forAntigravity bool) []byte {
+func openAIChatToolCallFromInteractions(step, fallbackArgs gjson.Result) []byte {
 	toolCall := []byte(`{"id":"","type":"function","function":{"name":"","arguments":"{}"}}`)
 	callID := firstNonEmpty(step.Get("call_id").String(), step.Get("id").String(), "call_0")
 	toolCall, _ = sjson.SetBytes(toolCall, "id", callID)
 	name := step.Get("name").String()
-	if forAntigravity {
-		name = translatorcommon.AntigravityUpstreamToolNameToClient(name)
-	}
 	toolCall, _ = sjson.SetBytes(toolCall, "function.name", name)
 	args := step.Get("arguments")
 	if !args.Exists() {

@@ -68,7 +68,7 @@ func BuildResponseForClient(availableModels []map[string]any, providersForModel 
 }
 
 // BuildResponseForClientWithCPACapabilities builds a client response while
-// allowing Home to supply capability metadata independent of the local registry.
+// allowing callers to supply capability metadata independent of the local registry.
 func BuildResponseForClientWithCPACapabilities(availableModels []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
 	return BuildResponseForClientWithToolCapabilities(availableModels, providersForModel, webSearchCapabilityForModel, nil, nil, optimizeMultiAgentV2, clientVersion)
 }
@@ -79,7 +79,7 @@ func BuildResponseForClientWithToolCapabilities(availableModels []map[string]any
 	return BuildResponseForClientWithSearchToolRoutes(availableModels, providersForModel, nil, webSearchCapabilityForModel, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion)
 }
 
-// BuildResponseForClientWithSearchToolRoutes lets Home supply routing evidence
+// BuildResponseForClientWithSearchToolRoutes lets callers supply routing evidence
 // for supports_search_tool without the other provider-dependent metadata.
 // A nil searchToolProvidersForModel uses providersForModel. A nil
 // toolSearchCapabilityForModel keeps Claude routes from advertising search.
@@ -99,10 +99,6 @@ func MarshalCompact(payload any) ([]byte, error) {
 		return nil, errEncode
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
-}
-
-func buildCodexClientModels(models []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {
-	return buildCodexClientModelsWithToolCapabilities(models, providersForModel, nil, webSearchCapabilityForModel, nil, nil, optimizeMultiAgentV2, clientVersion)
 }
 
 func buildCodexClientModelsWithToolCapabilities(models []map[string]any, providersForModel, searchToolProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {

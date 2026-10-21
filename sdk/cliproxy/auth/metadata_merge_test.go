@@ -76,14 +76,14 @@ func TestMergeRefreshedAuth(t *testing.T) {
 	t.Run("preserves concurrent proxy_url and merges refreshed token", func(t *testing.T) {
 		base := &Auth{
 			ID:       "auth1",
-			Metadata: map[string]any{"access_token": "token-old", "type": "antigravity"},
+			Metadata: map[string]any{"access_token": "token-old", "type": "acme"},
 		}
 		current := &Auth{
 			ID:       "auth1",
 			ProxyURL: "http://127.0.0.1:8080",
 			Metadata: map[string]any{
 				"access_token": "token-old",
-				"type":         "antigravity",
+				"type":         "acme",
 				"proxy_url":    "http://127.0.0.1:8080",
 				"user_note":    "important",
 			},
@@ -92,7 +92,7 @@ func TestMergeRefreshedAuth(t *testing.T) {
 			ID: "auth1",
 			Metadata: map[string]any{
 				"access_token": "token-new",
-				"type":         "antigravity",
+				"type":         "acme",
 				"expired":      "2030-01-01T00:00:00Z",
 			},
 		}

@@ -1956,35 +1956,6 @@ func TestNewProxyAwareWebsocketDialerDirectDisablesProxy(t *testing.T) {
 	}
 }
 
-func TestCodexWebsocketUpgradeRequiredDoesNotFallbackToHTTPWithLifecycle(t *testing.T) {
-	var httpFallbackCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			httpFallbackCalls.Add(1)
-			http.Error(w, "unexpected HTTP fallback", http.StatusInternalServerError)
-			return
-		}
-		http.Error(w, "websocket upgrade required", http.StatusUpgradeRequired)
-	}))
-	defer server.Close()
-
-	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
-	auth := &cliproxyauth.Auth{ID: "auth-a", Provider: "codex", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
-	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`)}
-	opts := cliproxyexecutor.Options{
-		SourceFormat:       sdktranslator.FromString("openai-response"),
-		ResponseFormat:     sdktranslator.FromString("openai-response"),
-		ExecutionLifecycle: newTerminalFailureLifecycle(),
-	}
-
-	if _, errExecute := exec.ExecuteStream(context.Background(), auth, req, opts); errExecute == nil {
-		t.Fatal("ExecuteStream() error = nil, want failed Home lifecycle attempt")
-	}
-	if got := httpFallbackCalls.Load(); got != 0 {
-		t.Fatalf("HTTP fallback calls = %d, want 0 with an execution lifecycle", got)
-	}
-}
-
 func TestCodexWebsocketHandshakeFailureReleasesSessionRequestLock(t *testing.T) {
 	for _, statusCode := range []int{http.StatusUpgradeRequired, http.StatusBadGateway} {
 		t.Run(http.StatusText(statusCode), func(t *testing.T) {
@@ -2022,25 +1993,7 @@ func TestCodexWebsocketHandshakeFailureReleasesSessionRequestLock(t *testing.T) 
 	}
 }
 
-type terminalFailureLifecycle struct {
-	active atomic.Bool
-	ends   atomic.Int32
-}
-
-func newTerminalFailureLifecycle() *terminalFailureLifecycle {
-	lifecycle := &terminalFailureLifecycle{}
-	lifecycle.active.Store(true)
-	return lifecycle
-}
-
-func (*terminalFailureLifecycle) Bind(func() error) error { return nil }
-func (l *terminalFailureLifecycle) End(string) {
-	l.ends.Add(1)
-	l.active.Store(false)
-}
-func (*terminalFailureLifecycle) Retain() {}
-
-func TestCodexWebsocketTerminalFailureInvalidatesRetainedLifecycle(t *testing.T) {
+func TestCodexWebsocketTerminalFailureInvalidatesSessionConnection(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var connections atomic.Int32
 	firstRelease := make(chan struct{})
@@ -2070,9 +2023,8 @@ func TestCodexWebsocketTerminalFailureInvalidatesRetainedLifecycle(t *testing.T)
 	auth := &cliproxyauth.Auth{ID: "auth-a", Provider: "codex", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
 	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`)}
 	opts := cliproxyexecutor.Options{
-		SourceFormat:       sdktranslator.FromString("openai-response"),
-		ResponseFormat:     sdktranslator.FromString("openai-response"),
-		ExecutionLifecycle: newTerminalFailureLifecycle(),
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
 		Metadata: map[string]any{
 			cliproxyexecutor.ExecutionSessionMetadataKey: "terminal-failure",
 		},
@@ -2087,13 +2039,6 @@ func TestCodexWebsocketTerminalFailureInvalidatesRetainedLifecycle(t *testing.T)
 			continue
 		}
 	}
-	lifecycle := opts.ExecutionLifecycle.(*terminalFailureLifecycle)
-	if lifecycle.active.Load() {
-		t.Fatal("terminal failure left the retained lifecycle active")
-	}
-	if got := lifecycle.ends.Load(); got != 1 {
-		t.Fatalf("retained lifecycle End calls = %d, want 1", got)
-	}
 	sess := exec.getOrCreateSession("terminal-failure")
 	sess.connMu.Lock()
 	connected := sess.conn != nil
@@ -2103,7 +2048,6 @@ func TestCodexWebsocketTerminalFailureInvalidatesRetainedLifecycle(t *testing.T)
 	}
 	close(firstRelease)
 
-	opts.ExecutionLifecycle = newTerminalFailureLifecycle()
 	result, errExecute = exec.ExecuteStream(context.Background(), auth, req, opts)
 	if errExecute != nil {
 		t.Fatalf("second ExecuteStream() error = %v", errExecute)
@@ -2112,141 +2056,6 @@ func TestCodexWebsocketTerminalFailureInvalidatesRetainedLifecycle(t *testing.T)
 	}
 	if got := connections.Load(); got != 2 {
 		t.Fatalf("websocket connections = %d, want 2 after terminal invalidation", got)
-	}
-}
-
-type rejectingExecutionLifecycle struct{}
-
-func (rejectingExecutionLifecycle) Bind(func() error) error {
-	return errors.New("lifecycle bind rejected")
-}
-func (rejectingExecutionLifecycle) End(string) {}
-
-func TestCodexWebsocketNonstreamLifecycleBindFailureDetachesConnection(t *testing.T) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	var connections atomic.Int32
-	closed := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
-		if errUpgrade != nil {
-			t.Errorf("upgrade websocket: %v", errUpgrade)
-			return
-		}
-		connection := connections.Add(1)
-		defer func() {
-			_ = conn.Close()
-			if connection == 1 {
-				closed <- struct{}{}
-			}
-		}()
-		if _, _, errRead := conn.ReadMessage(); errRead != nil {
-			return
-		}
-		completed := []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
-		if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
-			t.Errorf("write completed response: %v", errWrite)
-		}
-	}))
-	defer server.Close()
-
-	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
-	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
-	auth := &cliproxyauth.Auth{ID: "auth-a", Provider: "codex", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
-	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`)}
-	opts := cliproxyexecutor.Options{
-		SourceFormat:       sdktranslator.FromString("openai-response"),
-		ResponseFormat:     sdktranslator.FromString("openai-response"),
-		ExecutionLifecycle: rejectingExecutionLifecycle{},
-		Metadata: map[string]any{
-			cliproxyexecutor.ExecutionSessionMetadataKey: "nonstream-bind-failed",
-		},
-	}
-	attemptCtx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	if _, errExecute := exec.Execute(attemptCtx, auth, req, opts); errExecute == nil {
-		t.Fatal("Execute() error = nil, want lifecycle bind failure")
-	}
-	if cliproxyexecutor.UpstreamAttempted(attemptCtx) {
-		t.Fatal("successful handshake marked a lifecycle bind failure as an upstream request attempt")
-	}
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("nonstream lifecycle bind failure did not close the upstream websocket")
-	}
-	sess := exec.getOrCreateSession("nonstream-bind-failed")
-	sess.connMu.Lock()
-	connected := sess.conn != nil
-	sess.connMu.Unlock()
-	if connected {
-		t.Fatal("nonstream lifecycle bind failure left the closed connection attached to the session")
-	}
-
-	opts.ExecutionLifecycle = nil
-	if _, errExecute := exec.Execute(context.Background(), auth, req, opts); errExecute != nil {
-		t.Fatalf("second Execute() error = %v", errExecute)
-	}
-	if got := connections.Load(); got != 2 {
-		t.Fatalf("websocket connections = %d, want 2 after bind failure", got)
-	}
-}
-
-func TestCodexWebsocketLifecycleBindFailureReleasesSessionRequestLock(t *testing.T) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	closed := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
-		if errUpgrade != nil {
-			t.Errorf("upgrade websocket: %v", errUpgrade)
-			return
-		}
-		defer func() {
-			_ = conn.Close()
-			closed <- struct{}{}
-		}()
-		for {
-			if _, _, errRead := conn.ReadMessage(); errRead != nil {
-				return
-			}
-		}
-	}))
-	defer server.Close()
-
-	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
-	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
-	auth := &cliproxyauth.Auth{ID: "auth-a", Provider: "codex", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
-	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`)}
-	opts := cliproxyexecutor.Options{
-		SourceFormat:       sdktranslator.FromString("openai-response"),
-		ResponseFormat:     sdktranslator.FromString("openai-response"),
-		ExecutionLifecycle: rejectingExecutionLifecycle{},
-		Metadata: map[string]any{
-			cliproxyexecutor.ExecutionSessionMetadataKey: "bind-failed",
-		},
-	}
-	attemptCtx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
-	if _, errExecute := exec.ExecuteStream(attemptCtx, auth, req, opts); errExecute == nil {
-		t.Fatal("ExecuteStream() error = nil, want lifecycle bind failure")
-	}
-	if cliproxyexecutor.UpstreamAttempted(attemptCtx) {
-		t.Fatal("successful handshake marked a lifecycle bind failure as an upstream request attempt")
-	}
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("lifecycle bind failure did not close the upstream websocket")
-	}
-
-	sess := exec.getOrCreateSession("bind-failed")
-	acquired := make(chan struct{})
-	go func() {
-		sess.reqMu.Lock()
-		close(acquired)
-		sess.reqMu.Unlock()
-	}()
-	select {
-	case <-acquired:
-	case <-time.After(time.Second):
-		t.Fatal("lifecycle bind failure left the session request lock held")
 	}
 }
 
@@ -2637,24 +2446,34 @@ func TestCodexWebsockets_PingHandlerDoesNotBlockOnWriteMu(t *testing.T) {
 	}
 }
 
-func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	serverPongCh := make(chan string, 1)
+// newKeepalivePingDuringUploadServer installs a payload write hook that holds the
+// client's request write until the upstream ping has been answered, and returns
+// an upstream that pings during that held write. The upstream only replies with
+// terminal after the held request has actually arrived; replying (and closing)
+// earlier would race the client's still-pending write against its own read loop
+// tearing the socket down.
+func newKeepalivePingDuringUploadServer(t *testing.T, ping string, terminal string) *httptest.Server {
+	t.Helper()
+	const wait = 10 * time.Second
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
-
-	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
+	var hookCalls atomic.Int32
+	testWebsocketWritePayloadHook = func(*websocket.Conn) {
+		if n := hookCalls.Add(1); n > 1 {
+			t.Errorf("unexpected payload write #%d: the held request write must succeed without a retry", n)
+			return
+		}
 		close(inWriteHook)
-		// Wait until server confirms pong was received before allowing write to finish.
 		select {
 		case <-pongDeliveredDuringWrite:
-		case <-time.After(2 * time.Second):
+		case <-time.After(wait):
 			t.Error("timed out waiting for pong delivery while payload write was held in hook")
 		}
 	}
-	defer func() { testWebsocketWritePayloadHook = nil }()
+	t.Cleanup(func() { testWebsocketWritePayloadHook = nil })
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade websocket: %v", err)
@@ -2662,49 +2481,76 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 
+		pongs := make(chan string, 1)
 		conn.SetPongHandler(func(appData string) error {
-			serverPongCh <- appData
+			select {
+			case pongs <- appData:
+			default:
+			}
 			return nil
 		})
 
-		// Start server reader loop so server processes control frames.
-		readErrCh := make(chan error, 1)
+		// The reader processes control frames and reports application messages.
+		requests := make(chan []byte, 1)
 		go func() {
 			for {
-				if _, _, errRead := conn.ReadMessage(); errRead != nil {
-					readErrCh <- errRead
+				_, payload, errRead := conn.ReadMessage()
+				if errRead != nil {
 					return
+				}
+				select {
+				case requests <- payload:
+				default:
 				}
 			}
 		}()
 
-		// Wait until client has entered writeMessage and is actively holding writeMu.
+		// Wait until the client is inside writeMessage holding writeMu.
 		select {
 		case <-inWriteHook:
-		case <-time.After(2 * time.Second):
+		case <-time.After(wait):
 			t.Errorf("timed out waiting for client write hook")
 			return
 		}
 
-		// Upstream sends Ping WHILE client payload write is in progress holding writeMu.
-		_ = conn.WriteControl(websocket.PingMessage, []byte("session-ping"), time.Now().Add(time.Second))
+		// Ping while the client payload write is in progress.
+		if errPing := conn.WriteControl(websocket.PingMessage, []byte(ping), time.Now().Add(wait)); errPing != nil {
+			t.Errorf("write ping: %v", errPing)
+			return
+		}
 
-		// Server asserts Pong arrives while client write is still blocked in the hook.
+		// The pong must arrive while the client write is still blocked in the hook.
 		select {
-		case got := <-serverPongCh:
-			if got != "session-ping" {
-				t.Errorf("unexpected pong payload: got %q, want session-ping", got)
+		case got := <-pongs:
+			if got != ping {
+				t.Errorf("unexpected pong payload: got %q, want %s", got, ping)
 			}
 			close(pongDeliveredDuringWrite)
-		case <-time.After(2 * time.Second):
+		case <-time.After(wait):
 			t.Errorf("pong was not received while payload write was in progress")
 			return
 		}
 
-		// Now send terminal response.
-		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
-		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
+		// Respond only once the held request write has landed.
+		select {
+		case payload := <-requests:
+			if got := gjson.GetBytes(payload, "type").String(); got != "response.create" {
+				t.Errorf("unexpected request type %q: %s", got, payload)
+				return
+			}
+		case <-time.After(wait):
+			t.Errorf("request payload was not received after pong delivery")
+			return
+		}
+
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(terminal)); errWrite != nil {
+			t.Errorf("write terminal response: %v", errWrite)
+		}
 	}))
+}
+
+func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
+	server := newKeepalivePingDuringUploadServer(t, "session-ping", `{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 	defer server.Close()
 
 	exec := NewCodexWebsocketsExecutor(&config.Config{
@@ -2738,68 +2584,7 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 }
 
 func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	serverPongCh := make(chan string, 1)
-	inWriteHook := make(chan struct{})
-	pongDeliveredDuringWrite := make(chan struct{})
-
-	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
-		select {
-		case <-pongDeliveredDuringWrite:
-		case <-time.After(2 * time.Second):
-			t.Error("timed out waiting for pong delivery while payload write was held in hook")
-		}
-	}
-	defer func() { testWebsocketWritePayloadHook = nil }()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade websocket: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		conn.SetPongHandler(func(appData string) error {
-			serverPongCh <- appData
-			return nil
-		})
-
-		go func() {
-			for {
-				if _, _, errRead := conn.ReadMessage(); errRead != nil {
-					return
-				}
-			}
-		}()
-
-		// Wait until client has entered writeMessage on sessionless path.
-		select {
-		case <-inWriteHook:
-		case <-time.After(2 * time.Second):
-			t.Errorf("timed out waiting for client write hook")
-			return
-		}
-
-		// Upstream sends Ping WHILE client payload write is in progress.
-		_ = conn.WriteControl(websocket.PingMessage, []byte("sessionless-ping"), time.Now().Add(time.Second))
-
-		// Server asserts Pong arrives while client write is still in progress.
-		select {
-		case got := <-serverPongCh:
-			if got != "sessionless-ping" {
-				t.Errorf("unexpected pong payload: got %q, want sessionless-ping", got)
-			}
-			close(pongDeliveredDuringWrite)
-		case <-time.After(2 * time.Second):
-			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
-			return
-		}
-
-		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
-		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
-	}))
+	server := newKeepalivePingDuringUploadServer(t, "sessionless-ping", `{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 	defer server.Close()
 
 	exec := NewCodexWebsocketsExecutor(&config.Config{
@@ -2830,68 +2615,7 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 }
 
 func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testing.T) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	serverPongCh := make(chan string, 1)
-	inWriteHook := make(chan struct{})
-	pongDeliveredDuringWrite := make(chan struct{})
-
-	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
-		select {
-		case <-pongDeliveredDuringWrite:
-		case <-time.After(2 * time.Second):
-			t.Error("timed out waiting for pong delivery while nonstream payload write was held in hook")
-		}
-	}
-	defer func() { testWebsocketWritePayloadHook = nil }()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade websocket: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		conn.SetPongHandler(func(appData string) error {
-			serverPongCh <- appData
-			return nil
-		})
-
-		go func() {
-			for {
-				if _, _, errRead := conn.ReadMessage(); errRead != nil {
-					return
-				}
-			}
-		}()
-
-		// Wait until client has entered writeMessage on nonstream path.
-		select {
-		case <-inWriteHook:
-		case <-time.After(2 * time.Second):
-			t.Errorf("timed out waiting for client write hook")
-			return
-		}
-
-		// Upstream sends Ping WHILE client payload write is in progress.
-		_ = conn.WriteControl(websocket.PingMessage, []byte("nonstream-sessionless-ping"), time.Now().Add(time.Second))
-
-		// Server asserts Pong arrives while client write is still in progress.
-		select {
-		case got := <-serverPongCh:
-			if got != "nonstream-sessionless-ping" {
-				t.Errorf("unexpected pong payload: got %q, want nonstream-sessionless-ping", got)
-			}
-			close(pongDeliveredDuringWrite)
-		case <-time.After(2 * time.Second):
-			t.Errorf("pong was not received while payload write was in progress on nonstream sessionless connection")
-			return
-		}
-
-		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
-		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
-	}))
+	server := newKeepalivePingDuringUploadServer(t, "nonstream-sessionless-ping", `{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 	defer server.Close()
 
 	exec := NewCodexWebsocketsExecutor(&config.Config{

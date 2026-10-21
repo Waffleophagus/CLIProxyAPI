@@ -34,7 +34,6 @@ type ModelRegistry interface {
 	GetModelsForClient(clientID string) []*ModelInfo
 	GetModelsAndEpochForClient(clientID string) ([]*ModelInfo, uint64)
 	ClientRegistrationEpoch(clientID string) uint64
-	ApplyClientModelCapabilities(clientID string, expectedEpoch uint64, mutate func(modelID string, info *ModelInfo)) bool
 }
 
 // GlobalModelRegistry returns the shared registry instance.
@@ -127,7 +126,7 @@ func (f modelRegistrationFence) publishIfCurrent(s *Service, authID string, publ
 			// Match the watcher's normalization so no-op and unrelated reloads do not
 			// discard work. A real change always schedules a replacement: the watcher
 			// redispatches affected auths, and applyConfigRuntime re-registers every
-			// auth (which also covers Home mode, where no watcher runs).
+			// auth.
 			for _, provider := range [2]string{f.exclusionProvider, f.fallbackExclusionProvider} {
 				if provider == "" {
 					continue

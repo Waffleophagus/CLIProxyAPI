@@ -9,14 +9,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestEnsureColonSpacedJSONLeavesInvalidPayloadUnchanged(t *testing.T) {
-	input := []byte(`{"text":"unterminated}`)
-	output := ensureColonSpacedJSON(input)
-	if &output[0] != &input[0] || string(output) != string(input) {
-		t.Fatal("invalid JSON payload changed")
-	}
-}
-
 func TestNormalizeKimiToolMessageLinksReusesCanonicalPayload(t *testing.T) {
 	input := []byte(`{"messages":[{"role":"assistant","reasoning_content":"checking","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"}]}`)
 	output, errNormalize := normalizeKimiToolMessageLinks(input)

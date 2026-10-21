@@ -131,31 +131,6 @@ func TestCodexSpawnAgentModelsFromSourcesIncludesModelMetadata(t *testing.T) {
 	}
 }
 
-func TestDecodeCodexHomeAvailableModels(t *testing.T) {
-	t.Parallel()
-
-	raw := []byte(`{
-		"codex":[{"id":"model-b","display_name":"Model B"},{"id":"model-a"}],
-		"other":[{"name":"models/model-c","displayName":"Model C"},{"id":"model-a","display_name":"duplicate"}]
-	}`)
-	models := decodeCodexHomeAvailableModels(raw)
-	if len(models) != 3 {
-		t.Fatalf("model count = %d, want 3", len(models))
-	}
-	if got := mapString(models[0], "id"); got != "model-a" {
-		t.Fatalf("first model ID = %q, want model-a", got)
-	}
-	if got := mapString(models[1], "description"); got != "Model B" {
-		t.Fatalf("model-b description = %q, want Model B", got)
-	}
-	if got := mapString(models[2], "id"); got != "model-c" {
-		t.Fatalf("last model ID = %q, want model-c", got)
-	}
-	if got := decodeCodexHomeAvailableModels([]byte(`{"error":{"type":"no_credentials"}}`)); got != nil {
-		t.Fatalf("error envelope decoded as models: %#v", got)
-	}
-}
-
 func TestRewriteCodexSpawnAgentDescriptionNormalizesModelList(t *testing.T) {
 	t.Parallel()
 
@@ -366,7 +341,7 @@ func TestPrepareCodexMultiAgentV2ToolsOnlyPreparesToolDefinitions(t *testing.T) 
 		]
 	}`)
 	headers := http.Header{"User-Agent": []string{"codex_cli_rs/0.144.1"}}
-	got, prepared := PrepareCodexMultiAgentV2Tools(context.Background(), headers, payload, true, false)
+	got, prepared := PrepareCodexMultiAgentV2Tools(context.Background(), headers, payload, true)
 	if !prepared {
 		t.Fatal("Codex CLI request was not marked prepared")
 	}
@@ -763,62 +738,6 @@ func TestRewriteCodexMultiAgentV2InputConditions(t *testing.T) {
 	}
 }
 
-func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
-	payload := []byte(`{"model":"test-model","input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"task"}]}]}`)
-	enabledCfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
-	eligibleHeaders := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
-
-	translations := []struct {
-		name  string
-		to    sdktranslator.Format
-		path  string
-		want  string
-		model string
-	}{
-		{name: "Claude", to: sdktranslator.FormatClaude, path: "messages.0.content", want: "task", model: "claude-sonnet-4-5"},
-		{name: "Gemini", to: sdktranslator.FormatGemini, path: "contents.0.parts.0.text", want: "task", model: "gemini-2.5-pro"},
-		{name: "Antigravity", to: sdktranslator.FormatAntigravity, path: "request.contents.0.parts.0.text", want: "task", model: "gemini-2.5-pro"},
-		{name: "OpenAI", to: sdktranslator.FormatOpenAI, path: "messages.0.content.0.text", want: "task", model: "chat-model"},
-		{name: "Interactions", to: sdktranslator.FormatInteractions, path: "input.0.content.0.text", want: "task", model: "interaction-model"},
-	}
-	for _, tt := range translations {
-		t.Run(tt.name, func(t *testing.T) {
-			got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAIResponse, tt.to, tt.model, payload, false)
-			if value := gjson.GetBytes(got, tt.path).String(); value != tt.want {
-				t.Fatalf("%s = %q, want %q; output=%s", tt.path, value, tt.want, got)
-			}
-		})
-	}
-
-	t.Run("disabled optimization", func(t *testing.T) {
-		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, &config.Config{}, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "chat-model", payload, false)
-		if count := gjson.GetBytes(got, "messages.#").Int(); count != 0 {
-			t.Fatalf("disabled optimization translated agent_message; output=%s", got)
-		}
-	})
-	t.Run("unrelated client", func(t *testing.T) {
-		headers := http.Header{"User-Agent": []string{"curl/8.7.1"}}
-		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), headers, enabledCfg, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "chat-model", payload, false)
-		if count := gjson.GetBytes(got, "messages.#").Int(); count != 0 {
-			t.Fatalf("unrelated client agent_message was translated; output=%s", got)
-		}
-	})
-	t.Run("non-Responses source", func(t *testing.T) {
-		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAI, "test-model", payload, false)
-		if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "agent_message" {
-			t.Fatalf("non-Responses source changed agent_message; output=%s", got)
-		}
-	})
-	for _, target := range []sdktranslator.Format{sdktranslator.FormatCodex, sdktranslator.FormatOpenAIResponse} {
-		t.Run("excluded target "+target.String(), func(t *testing.T) {
-			got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAIResponse, target, "test-model", payload, false)
-			if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "agent_message" {
-				t.Fatalf("target %s changed agent_message; output=%s", target, got)
-			}
-		})
-	}
-}
-
 func TestRewriteCodexSpawnAgentDescriptionDisabledLeavesPayloadUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -1077,7 +996,7 @@ func TestCodexSpawnAgentModelsCacheInvalidation(t *testing.T) {
 		modelRegistry.UnregisterClient(clientID2)
 	})
 
-	formatted1 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil, false)
+	formatted1 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil)
 	if !strings.Contains(formatted1, "test-spawn-model-alpha") {
 		t.Fatalf("expected initial markdown to contain test-spawn-model-alpha, got: %s", formatted1)
 	}
@@ -1086,7 +1005,7 @@ func TestCodexSpawnAgentModelsCacheInvalidation(t *testing.T) {
 	}
 
 	// 2. Cache hit returns identical content
-	formattedHit := formatCodexSpawnAgentModelsForRequest(context.Background(), nil, false)
+	formattedHit := formatCodexSpawnAgentModelsForRequest(context.Background(), nil)
 	if formattedHit != formatted1 {
 		t.Fatalf("cache hit expected identical output, got %s vs %s", formattedHit, formatted1)
 	}
@@ -1100,7 +1019,7 @@ func TestCodexSpawnAgentModelsCacheInvalidation(t *testing.T) {
 		},
 	})
 
-	formatted2 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil, false)
+	formatted2 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil)
 	if !strings.Contains(formatted2, "test-spawn-model-beta") {
 		t.Fatalf("expected cache invalidation to include test-spawn-model-beta, got: %s", formatted2)
 	}
@@ -1117,14 +1036,14 @@ func TestCodexSpawnAgentModelsCacheInvalidation(t *testing.T) {
 		},
 	})
 
-	formatted3 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil, false)
+	formatted3 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil)
 	if !strings.Contains(formatted3, "low, medium (default), high, max") {
 		t.Fatalf("expected updated thinking levels to reflect in markdown, got: %s", formatted3)
 	}
 
 	// 5. Unregistering client invalidates cache
 	modelRegistry.UnregisterClient(clientID2)
-	formatted4 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil, false)
+	formatted4 := formatCodexSpawnAgentModelsForRequest(context.Background(), nil)
 	if strings.Contains(formatted4, "test-spawn-model-beta") {
 		t.Fatalf("expected test-spawn-model-beta to be removed after unregistering, got: %s", formatted4)
 	}
@@ -1153,7 +1072,7 @@ func BenchmarkCodexSpawnAgentModelsForRequest(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		codexSpawnAgentModelsForRequest(ctx, nil, false)
+		codexSpawnAgentModelsForRequest(ctx, nil)
 	}
 }
 
@@ -1186,7 +1105,7 @@ func BenchmarkPrepareCodexMultiAgentV2Tools(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		PrepareCodexMultiAgentV2Tools(ctx, headers, payload, true, false)
+		PrepareCodexMultiAgentV2Tools(ctx, headers, payload, true)
 	}
 }
 
@@ -1221,5 +1140,59 @@ func BenchmarkOptimizeCodexMultiAgentV2Request(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
+	}
+}
+
+func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
+	payload := []byte(`{"model":"test-model","input":[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"task"}]}]}`)
+	enabledCfg := &config.Config{SDKConfig: config.SDKConfig{Client: config.ClientConfig{Codex: config.CodexClientConfig{OptimizeMultiAgentV2: true}}}}
+	eligibleHeaders := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
+
+	translations := []struct {
+		name  string
+		to    sdktranslator.Format
+		path  string
+		want  string
+		model string
+	}{
+		{name: "Claude", to: sdktranslator.FormatClaude, path: "messages.0.content", want: "task", model: "claude-sonnet-4-5"},
+		{name: "OpenAI", to: sdktranslator.FormatOpenAI, path: "messages.0.content.0.text", want: "task", model: "chat-model"},
+		{name: "Interactions", to: sdktranslator.FormatInteractions, path: "input.0.content.0.text", want: "task", model: "interaction-model"},
+	}
+	for _, tt := range translations {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAIResponse, tt.to, tt.model, payload, false)
+			if value := gjson.GetBytes(got, tt.path).String(); value != tt.want {
+				t.Fatalf("%s = %q, want %q; output=%s", tt.path, value, tt.want, got)
+			}
+		})
+	}
+
+	t.Run("disabled optimization", func(t *testing.T) {
+		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, &config.Config{}, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "chat-model", payload, false)
+		if count := gjson.GetBytes(got, "messages.#").Int(); count != 0 {
+			t.Fatalf("disabled optimization translated agent_message; output=%s", got)
+		}
+	})
+	t.Run("unrelated client", func(t *testing.T) {
+		headers := http.Header{"User-Agent": []string{"curl/8.7.1"}}
+		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), headers, enabledCfg, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "chat-model", payload, false)
+		if count := gjson.GetBytes(got, "messages.#").Int(); count != 0 {
+			t.Fatalf("unrelated client agent_message was translated; output=%s", got)
+		}
+	})
+	t.Run("non-Responses source", func(t *testing.T) {
+		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAI, "test-model", payload, false)
+		if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "agent_message" {
+			t.Fatalf("non-Responses source changed agent_message; output=%s", got)
+		}
+	})
+	for _, target := range []sdktranslator.Format{sdktranslator.FormatCodex, sdktranslator.FormatOpenAIResponse} {
+		t.Run("excluded target "+target.String(), func(t *testing.T) {
+			got := TranslateRequestWithCodexMultiAgentV2(context.Background(), eligibleHeaders, enabledCfg, sdktranslator.FormatOpenAIResponse, target, "test-model", payload, false)
+			if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "agent_message" {
+				t.Fatalf("target %s changed agent_message; output=%s", target, got)
+			}
+		})
 	}
 }

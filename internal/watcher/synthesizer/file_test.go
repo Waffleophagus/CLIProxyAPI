@@ -1,7 +1,6 @@
 package synthesizer
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestNewFileSynthesizer(t *testing.T) {
@@ -281,243 +279,6 @@ func TestFileSynthesizer_Synthesize_KimiDomainExplicitOverrides(t *testing.T) {
 	if a2.Attributes["base_url"] != "https://api.kimi.com/coding" {
 		t.Errorf("a2 base_url = %q, want https://api.kimi.com/coding", a2.Attributes["base_url"])
 	}
-}
-
-func TestFileSynthesizer_Synthesize_IgnoresGeminiProviderFile(t *testing.T) {
-	tempDir := t.TempDir()
-
-	authData := map[string]any{
-		"type":  "gemini",
-		"email": "gemini@example.com",
-	}
-	data, _ := json.Marshal(authData)
-	err := os.WriteFile(filepath.Join(tempDir, "gemini-auth.json"), data, 0644)
-	if err != nil {
-		t.Fatalf("failed to write auth file: %v", err)
-	}
-
-	synth := NewFileSynthesizer()
-	ctx := &SynthesisContext{
-		Config:      &config.Config{},
-		AuthDir:     tempDir,
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 0 {
-		t.Fatalf("expected Gemini auth file to be ignored, got %d auths", len(auths))
-	}
-}
-
-func TestSynthesizeAuthFileExpandsPluginMultiAuths(t *testing.T) {
-	tempDir := t.TempDir()
-	fullPath := filepath.Join(tempDir, "geminicli.json")
-	raw := []byte(`{"type":"gemini-cli","excluded_models":["model-a"],"headers":{"X-Test":"value"}}`)
-
-	ctx := &SynthesisContext{
-		Config:  &config.Config{},
-		AuthDir: tempDir,
-		Now:     time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC),
-		PluginAuthParser: multiAuthParserFunc(func(ctx context.Context, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
-			if req.Provider != "gemini-cli" || req.Path != fullPath || req.FileName != "geminicli.json" {
-				t.Fatalf("ParseAuths request = %#v, want file context", req)
-			}
-			return []*coreauth.Auth{
-				{
-					ID:       "geminicli.json",
-					Provider: "gemini-cli",
-					Metadata: map[string]any{
-						"type": "gemini-cli",
-						"headers": map[string]any{
-							"X-Test": "value",
-						},
-					},
-				},
-				nil,
-				{
-					ID:       "geminicli-project-a.json",
-					Provider: "gemini-cli",
-					Metadata: map[string]any{
-						"type":       "gemini-cli",
-						"project_id": "project-a",
-						"headers": map[string]any{
-							"X-Test": "value",
-						},
-					},
-				},
-			}, true, nil
-		}),
-	}
-
-	auths, errSynthesize := SynthesizeAuthFile(ctx, fullPath, raw)
-	if errSynthesize != nil {
-		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
-	}
-	if len(auths) != 2 {
-		t.Fatalf("SynthesizeAuthFile() len = %d, want two plugin auths", len(auths))
-	}
-	if firstIndex, secondIndex := auths[0].EnsureIndex(), auths[1].EnsureIndex(); firstIndex == "" || firstIndex == secondIndex {
-		t.Fatalf("auth indexes = %q/%q, want distinct non-empty indexes", firstIndex, secondIndex)
-	}
-	for _, auth := range auths {
-		if !coreauth.IsPluginVirtualAuth(auth) {
-			t.Fatalf("auth attributes = %#v, want plugin virtual marker", auth.Attributes)
-		}
-		if auth.Attributes[coreauth.AttributeVirtualSource] != fullPath {
-			t.Fatalf("virtual_source = %q, want %q", auth.Attributes[coreauth.AttributeVirtualSource], fullPath)
-		}
-		if auth.Attributes["path"] != fullPath || auth.Attributes["source"] != fullPath {
-			t.Fatalf("auth attributes = %#v, want source path", auth.Attributes)
-		}
-		if gotHeader := auth.Attributes["header:X-Test"]; gotHeader != "value" {
-			t.Fatalf("header:X-Test = %q, want value", gotHeader)
-		}
-		if gotKind := auth.Attributes["auth_kind"]; gotKind != "oauth" {
-			t.Fatalf("auth_kind = %q, want oauth", gotKind)
-		}
-	}
-	if gotProject := auths[1].Metadata["project_id"]; gotProject != "project-a" {
-		t.Fatalf("project_id = %#v, want project-a", gotProject)
-	}
-}
-
-func TestSynthesizeAuthFileAppliesSourcePriorityToPluginAuths(t *testing.T) {
-	for _, testCase := range []struct {
-		name         string
-		raw          string
-		want         string
-		wantMetadata any
-	}{
-		{name: "number", raw: `{"type":"plugin","priority":1}`, want: "1", wantMetadata: float64(1)},
-		{name: "string", raw: `{"type":"plugin","priority":" 2 "}`, want: "2", wantMetadata: " 2 "},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			fullPath := filepath.Join(t.TempDir(), "plugin.json")
-			ctx := &SynthesisContext{
-				Config:  &config.Config{},
-				AuthDir: filepath.Dir(fullPath),
-				PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
-					return []*coreauth.Auth{
-						{ID: "first", Provider: "plugin", Metadata: map[string]any{"project_id": "first"}},
-						{ID: "second", Provider: "plugin", Metadata: map[string]any{"project_id": "second"}},
-					}, true, nil
-				}),
-			}
-			auths, errSynthesize := SynthesizeAuthFile(ctx, fullPath, []byte(testCase.raw))
-			if errSynthesize != nil {
-				t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
-			}
-			if len(auths) != 2 {
-				t.Fatalf("SynthesizeAuthFile() len = %d, want 2", len(auths))
-			}
-			for _, auth := range auths {
-				if got := auth.Attributes["priority"]; got != testCase.want {
-					t.Errorf("auth %s priority attribute = %q, want %q", auth.ID, got, testCase.want)
-				}
-				if got := auth.Attributes[coreauth.AttributeFilePriority]; got != "true" {
-					t.Errorf("auth %s file priority marker = %q, want true", auth.ID, got)
-				}
-				if got := auth.Metadata["priority"]; got != testCase.wantMetadata {
-					t.Errorf("auth %s priority metadata = %v, want %v", auth.ID, got, testCase.wantMetadata)
-				}
-			}
-		})
-	}
-}
-
-func TestSynthesizeAuthFileSkipsInvalidPluginAuthWeight(t *testing.T) {
-	tempDir := t.TempDir()
-	fullPath := filepath.Join(tempDir, "plugin.json")
-	ctx := &SynthesisContext{
-		Config:  &config.Config{},
-		AuthDir: tempDir,
-		Now:     time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC),
-		PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
-			return []*coreauth.Auth{
-				{ID: "invalid", Provider: "plugin", Attributes: map[string]string{coreauth.AttributeWeight: "1.5"}},
-				{ID: "valid", Provider: "plugin", Attributes: map[string]string{coreauth.AttributeWeight: "0"}},
-			}, true, nil
-		}),
-	}
-
-	auths, errSynthesize := SynthesizeAuthFile(ctx, fullPath, []byte(`{"type":"plugin"}`))
-	if errSynthesize != nil {
-		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
-	}
-	if len(auths) != 1 || auths[0].ID != "valid" {
-		t.Fatalf("SynthesizeAuthFile() auths = %#v, want only valid zero-weight auth", auths)
-	}
-}
-
-func TestSynthesizeAuthFileAppliesSourceDisabledToPluginMultiAuths(t *testing.T) {
-	tempDir := t.TempDir()
-	fullPath := filepath.Join(tempDir, "geminicli.json")
-	raw := []byte(`{"type":"gemini-cli","disabled":true}`)
-
-	ctx := &SynthesisContext{
-		Config:  &config.Config{},
-		AuthDir: tempDir,
-		Now:     time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC),
-		PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
-			return []*coreauth.Auth{
-				{ID: "geminicli.json", Provider: "gemini-cli", Metadata: map[string]any{"type": "gemini-cli"}},
-				{ID: "geminicli-project-a.json", Provider: "gemini-cli", Metadata: map[string]any{"type": "gemini-cli", "project_id": "project-a"}},
-			}, true, nil
-		}),
-	}
-
-	auths, errSynthesize := SynthesizeAuthFile(ctx, fullPath, raw)
-	if errSynthesize != nil {
-		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
-	}
-	if len(auths) != 2 {
-		t.Fatalf("SynthesizeAuthFile() len = %d, want two plugin auths", len(auths))
-	}
-	for _, auth := range auths {
-		if !auth.Disabled || auth.Status != coreauth.StatusDisabled {
-			t.Fatalf("auth %s disabled/status = %v/%s, want disabled", auth.ID, auth.Disabled, auth.Status)
-		}
-		if got, _ := auth.Metadata["disabled"].(bool); !got {
-			t.Fatalf("auth %s metadata disabled = %#v, want true", auth.ID, auth.Metadata["disabled"])
-		}
-	}
-}
-
-func TestSynthesizeAuthFilePluginHandledEmptySuppressesBuiltin(t *testing.T) {
-	tempDir := t.TempDir()
-	fullPath := filepath.Join(tempDir, "codex.json")
-	raw := []byte(`{"type":"codex","access_token":"token"}`)
-
-	ctx := &SynthesisContext{
-		Config:  &config.Config{},
-		AuthDir: tempDir,
-		Now:     time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC),
-		PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
-			return nil, true, nil
-		}),
-	}
-
-	auths, errSynthesize := SynthesizeAuthFile(ctx, fullPath, raw)
-	if errSynthesize != nil {
-		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
-	}
-	if len(auths) != 0 {
-		t.Fatalf("SynthesizeAuthFile() len = %d, want plugin-handled empty result", len(auths))
-	}
-}
-
-type multiAuthParserFunc func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error)
-
-func (f multiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
-	return nil, false, nil
-}
-
-func (f multiAuthParserFunc) ParseAuths(ctx context.Context, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
-	return f(ctx, req)
 }
 
 func TestFileSynthesizer_Synthesize_SkipsInvalidFiles(t *testing.T) {
@@ -914,38 +675,6 @@ func TestFileSynthesizer_Synthesize_OAuthModelAliases(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizer_Synthesize_IgnoresGeminiOAuthFile(t *testing.T) {
-	tempDir := t.TempDir()
-
-	authData := map[string]any{
-		"type":       "gemini",
-		"email":      "multi@example.com",
-		"project_id": "project-a, project-b, project-c",
-		"priority":   " 10 ",
-	}
-	data, _ := json.Marshal(authData)
-	err := os.WriteFile(filepath.Join(tempDir, "gemini-multi.json"), data, 0644)
-	if err != nil {
-		t.Fatalf("failed to write auth file: %v", err)
-	}
-
-	synth := NewFileSynthesizer()
-	ctx := &SynthesisContext{
-		Config:      &config.Config{},
-		AuthDir:     tempDir,
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 0 {
-		t.Fatalf("expected Gemini auth file to be ignored, got %d auths", len(auths))
-	}
-}
-
 func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1153,5 +882,21 @@ func TestFileSynthesizerRecordsIncompleteFiles(t *testing.T) {
 	}
 	if _, ok := ctx.IncompleteFiles[validAuthPath]; ok {
 		t.Fatalf("did not expect valid auth file %s in IncompleteFiles", validAuthPath)
+	}
+}
+
+func TestSynthesizeAuthFileSkipsRemovedProviders(t *testing.T) {
+	dir := t.TempDir()
+	ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: dir, Now: time.Now()}
+	for _, provider := range []string{"gemini", "antigravity", "vertex", "aistudio"} {
+		path := filepath.Join(dir, provider+".json")
+		auths, err := SynthesizeAuthFile(ctx, path, []byte(`{"type":"`+provider+`","email":"user@example.com"}`))
+		if err != nil || len(auths) != 0 {
+			t.Fatalf("%s: auths=%d err=%v, want ignored", provider, len(auths), err)
+		}
+	}
+	auths, err := SynthesizeAuthFile(ctx, filepath.Join(dir, "codex.json"), []byte(`{"type":"codex","email":"user@example.com"}`))
+	if err != nil || len(auths) != 1 {
+		t.Fatalf("codex: auths=%d err=%v, want one auth", len(auths), err)
 	}
 }

@@ -63,9 +63,6 @@ type codexWebsocketSession struct {
 	connCfg                   *config.Config
 	hasConnCfg                bool
 	multiAgentV2OptimizedConn *websocket.Conn
-	lifecycleBindMu           sync.Mutex
-	lifecycle                 cliproxyexecutor.ExecutionLifecycle
-	lifecycleModel            string
 
 	writeMu sync.Mutex
 
@@ -181,13 +178,6 @@ func (s *codexWebsocketSession) activeForConn(conn *websocket.Conn) (chan codexW
 		return nil, nil
 	}
 	return s.activeCh, s.activeDone
-}
-
-func clearRetryActiveState(sess *codexWebsocketSession, conn *websocket.Conn, ch chan codexWebsocketRead) bool {
-	if sess == nil {
-		return false
-	}
-	return sess.clearActive(conn, ch)
 }
 
 func (s *codexWebsocketSession) clearActive(conn *websocket.Conn, ch chan codexWebsocketRead) bool {
@@ -330,103 +320,6 @@ func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 	})
 }
 
-func (s *codexWebsocketSession) bindExecutionLifecycle(opts cliproxyexecutor.Options, conn *websocket.Conn, closer *websocketConnectionCloser, model string) error {
-	if closer == nil {
-		return fmt.Errorf("codex websockets executor: websocket connection closer is nil")
-	}
-	if s == nil {
-		return cliproxyexecutor.BindExecutionResource(opts, closer)
-	}
-	lifecycle := opts.ExecutionLifecycle
-	if lifecycle == nil || conn == nil {
-		return nil
-	}
-
-	s.lifecycleBindMu.Lock()
-	defer s.lifecycleBindMu.Unlock()
-
-	s.connMu.Lock()
-	if s.conn == conn && s.connCloser == nil {
-		s.connCloser = closer
-	}
-	alreadyBound := s.conn == conn && s.connCloser == closer && s.lifecycle == lifecycle
-	s.connMu.Unlock()
-	if alreadyBound {
-		return nil
-	}
-
-	if errBind := lifecycle.Bind(func() error {
-		return s.closeBoundConnection(conn, closer, lifecycle)
-	}); errBind != nil {
-		return errBind
-	}
-	if retained, ok := lifecycle.(interface{ Retain() }); ok {
-		retained.Retain()
-	}
-
-	s.connMu.Lock()
-	if s.conn != conn || s.connCloser != closer {
-		s.connMu.Unlock()
-		return fmt.Errorf("codex websockets executor: websocket connection closed during lifecycle bind")
-	}
-	previous := s.lifecycle
-	s.lifecycle = lifecycle
-	s.lifecycleModel = strings.TrimSpace(model)
-	s.connMu.Unlock()
-	if previous != nil && previous != lifecycle {
-		previous.End("target_replaced")
-	}
-	return nil
-}
-
-func (s *codexWebsocketSession) closeBoundConnection(conn *websocket.Conn, closer *websocketConnectionCloser, lifecycle cliproxyexecutor.ExecutionLifecycle) error {
-	if s == nil || conn == nil {
-		return nil
-	}
-	s.detachConnection(conn, lifecycle)
-	errClose := closer.Close()
-	go lifecycle.End("connection_closed")
-	return errClose
-}
-
-func (s *codexWebsocketSession) detachConnection(conn *websocket.Conn, lifecycle cliproxyexecutor.ExecutionLifecycle) *websocketConnectionCloser {
-	if s == nil || conn == nil {
-		return nil
-	}
-	s.connMu.Lock()
-	var closer *websocketConnectionCloser
-	matched := s.conn == conn
-	if matched {
-		closer = s.connCloser
-		s.conn = nil
-		s.connCloser = nil
-		s.connCfg = nil
-		s.hasConnCfg = false
-		s.multiAgentV2OptimizedConn = nil
-		if s.readerConn == conn {
-			s.readerConn = nil
-		}
-	}
-	if (lifecycle == nil && matched) || (lifecycle != nil && s.lifecycle == lifecycle) {
-		s.lifecycle = nil
-		s.lifecycleModel = ""
-	}
-	s.connMu.Unlock()
-	return closer
-}
-
-func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket.Conn, closer *websocketConnectionCloser) {
-	if conn == nil || closer == nil {
-		return
-	}
-	if sess != nil {
-		sess.detachConnection(conn, nil)
-	}
-	if errClose := closer.Close(); errClose != nil {
-		log.Errorf("websockets executor: close lifecycle bind failure connection error: %v", errClose)
-	}
-}
-
 func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
 	if sess == nil {
 		return false
@@ -475,24 +368,21 @@ func websocketSessionTargetMatches(sess *codexWebsocketSession, authID string, w
 		strings.TrimSpace(sess.proxyURL) == strings.TrimSpace(proxyURL)
 }
 
-func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
+func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) (*websocket.Conn, *websocketConnectionCloser, string, string) {
 	if sess == nil {
-		return nil, nil, "", "", nil
+		return nil, nil, "", ""
 	}
 
 	sess.connMu.Lock()
 	defer sess.connMu.Unlock()
 	conn := sess.conn
 	if conn == nil || websocketSessionTargetMatches(sess, authID, wsURL, proxyURL) {
-		return nil, nil, "", "", nil
+		return nil, nil, "", ""
 	}
 
 	previousAuthID := sess.authID
 	previousWSURL := sess.wsURL
-	lifecycle := sess.lifecycle
 	closer := sess.connCloser
-	sess.lifecycle = nil
-	sess.lifecycleModel = ""
 	sess.conn = nil
 	sess.connCloser = nil
 	sess.connCfg = nil
@@ -501,7 +391,7 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}
-	return conn, closer, previousAuthID, previousWSURL, lifecycle
+	return conn, closer, previousAuthID, previousWSURL
 }
 
 func configureRawCodexWebsocketConn(conn *websocket.Conn, authID string, wsURL string) {
@@ -670,16 +560,13 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	}
 
 	proxyURL := executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth)
-	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, proxyURL); staleConn != nil {
+	if staleConn, staleCloser, staleAuthID, staleWSURL := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, proxyURL); staleConn != nil {
 		staleLastEvent := sess.getLastEventType(staleConn)
 		logCodexWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, staleAuthID, staleWSURL, "target_changed", staleLastEvent, nil)
 		if staleCloser != nil {
 			if errClose := staleCloser.Close(); errClose != nil {
 				log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
 			}
-		}
-		if staleLifecycle != nil {
-			staleLifecycle.End("target_changed")
 		}
 	}
 
@@ -834,10 +721,7 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 		sess.connMu.Unlock()
 		return
 	}
-	lifecycle := sess.lifecycle
 	closer := sess.connCloser
-	sess.lifecycle = nil
-	sess.lifecycleModel = ""
 	sess.conn = nil
 	sess.connCloser = nil
 	sess.connCfg = nil
@@ -857,9 +741,6 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 		if errClose := closer.Close(); errClose != nil {
 			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
 		}
-	}
-	if lifecycle != nil {
-		lifecycle.End(reason)
 	}
 }
 
@@ -961,10 +842,7 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 	conn := sess.conn
 	authID := sess.authID
 	wsURL := sess.wsURL
-	lifecycle := sess.lifecycle
 	closer := sess.connCloser
-	sess.lifecycle = nil
-	sess.lifecycleModel = ""
 	sess.conn = nil
 	sess.connCloser = nil
 	sess.connCfg = nil
@@ -984,9 +862,6 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
 			}
 		}
-	}
-	if lifecycle != nil {
-		lifecycle.End(reason)
 	}
 }
 

@@ -2228,65 +2228,7 @@ func TestXAIWebsockets_PingHandlerDoesNotBlockOnWriteMu(t *testing.T) {
 }
 
 func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	serverPongCh := make(chan string, 1)
-	inWriteHook := make(chan struct{})
-	pongDeliveredDuringWrite := make(chan struct{})
-
-	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
-		select {
-		case <-pongDeliveredDuringWrite:
-		case <-time.After(2 * time.Second):
-			t.Error("timed out waiting for pong delivery while xai payload write was held in hook")
-		}
-	}
-	defer func() { testWebsocketWritePayloadHook = nil }()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade websocket: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		conn.SetPongHandler(func(appData string) error {
-			serverPongCh <- appData
-			return nil
-		})
-
-		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
-		}()
-
-		select {
-		case <-inWriteHook:
-		case <-time.After(2 * time.Second):
-			t.Errorf("timed out waiting for client write hook")
-			return
-		}
-
-		_ = conn.WriteControl(websocket.PingMessage, []byte("xai-session-ping"), time.Now().Add(time.Second))
-
-		select {
-		case got := <-serverPongCh:
-			if got != "xai-session-ping" {
-				t.Errorf("unexpected pong payload: got %q, want xai-session-ping", got)
-			}
-			close(pongDeliveredDuringWrite)
-		case <-time.After(2 * time.Second):
-			t.Errorf("pong was not received while payload write was in progress")
-			return
-		}
-
-		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
-		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
-	}))
+	server := newKeepalivePingDuringUploadServer(t, "xai-session-ping", `{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
 	defer server.Close()
 
 	exec := NewXAIWebsocketsExecutor(&config.Config{})
@@ -2324,65 +2266,7 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 }
 
 func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	serverPongCh := make(chan string, 1)
-	inWriteHook := make(chan struct{})
-	pongDeliveredDuringWrite := make(chan struct{})
-
-	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
-		select {
-		case <-pongDeliveredDuringWrite:
-		case <-time.After(2 * time.Second):
-			t.Error("timed out waiting for pong delivery while xai sessionless payload write was held in hook")
-		}
-	}
-	defer func() { testWebsocketWritePayloadHook = nil }()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade websocket: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		conn.SetPongHandler(func(appData string) error {
-			serverPongCh <- appData
-			return nil
-		})
-
-		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
-		}()
-
-		select {
-		case <-inWriteHook:
-		case <-time.After(2 * time.Second):
-			t.Errorf("timed out waiting for client write hook")
-			return
-		}
-
-		_ = conn.WriteControl(websocket.PingMessage, []byte("xai-sessionless-ping"), time.Now().Add(time.Second))
-
-		select {
-		case got := <-serverPongCh:
-			if got != "xai-sessionless-ping" {
-				t.Errorf("unexpected pong payload: got %q, want xai-sessionless-ping", got)
-			}
-			close(pongDeliveredDuringWrite)
-		case <-time.After(2 * time.Second):
-			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
-			return
-		}
-
-		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
-		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
-	}))
+	server := newKeepalivePingDuringUploadServer(t, "xai-sessionless-ping", `{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
 	defer server.Close()
 
 	exec := NewXAIWebsocketsExecutor(&config.Config{})

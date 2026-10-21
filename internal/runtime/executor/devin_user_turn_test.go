@@ -34,55 +34,6 @@ func requireDevinUnsupportedPart(t *testing.T, err error, wantType string) {
 	}
 }
 
-// Devin cannot fetch a remote uri or take audio, video or documents, so a user
-// turn that only holds such media is refused before any HTTP call, for both
-// execution paths and for Interactions and non-Interactions sources.
-func TestDevinExecutorRefusesAnUnsendableMediaOnlyTurnBeforeCallingUpstream(t *testing.T) {
-	var upstreamCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamCalls.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	const claudeWhitespaceImage = `{"max_tokens":8,"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"user","content":[{"type":"text","text":"  "},{"type":"image","source":{"type":"file","file_id":"f1"}}]}]}`
-	const geminiFile = `{"contents":[{"role":"user","parts":[{"text":"a"}]},{"role":"model","parts":[{"text":"b"}]},{"role":"user","parts":[{"fileData":{"mimeType":"image/png","fileUri":"gs://b/a.png"}}]}]}`
-	cases := []struct {
-		name     string
-		source   sdktranslator.Format
-		payload  string
-		wantPart string
-	}{
-		{"image by uri", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"image","mime_type":"image/png","uri":"https://example.test/a.png"}]}`), "image"},
-		{"image by file_uri", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"image","mime_type":"image/png","file_uri":"gs://b/a.png"}]}`), "image"},
-		{"document by fileUri", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"document","mime_type":"application/pdf","fileUri":"gs://b/a.pdf"}]}`), "document"},
-		{"inline audio", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"audio","mime_type":"audio/wav","data":"UklGRg=="}]}`), "audio"},
-		{"whitespace text does not hide it", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"text","text":" \n"},{"type":"video","mime_type":"video/mp4","uri":"https://example.test/a.mp4"}]}`), "video"},
-		{"emptied turn before a later text turn", sdktranslator.FormatInteractions, `{"input":[{"type":"user_input","content":[{"type":"image","mime_type":"image/png","uri":"https://example.test/a.png"}]},{"type":"model_output","content":[{"type":"text","text":"ok"}]},{"type":"user_input","content":[{"type":"text","text":"next"}]}]}`, "image"},
-		{"gemini fileData through interactions", sdktranslator.FormatGemini, geminiFile, "image"},
-		{"claude whitespace text beside an unrepresentable image", sdktranslator.FormatClaude, claudeWhitespaceImage, "image"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			exec := NewDevinExecutor(&config.Config{})
-			auth := &cliproxyauth.Auth{ID: "devin-media-only", Provider: "devin", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
-			req := cliproxyexecutor.Request{Model: "devin/swe-2", Payload: []byte(tc.payload)}
-			opts := cliproxyexecutor.Options{SourceFormat: tc.source}
-
-			_, errExecute := exec.Execute(context.Background(), auth, req, opts)
-			requireDevinUnsupportedPart(t, errExecute, tc.wantPart)
-			opts.Stream = true
-			_, errStream := exec.ExecuteStream(context.Background(), auth, req, opts)
-			requireDevinUnsupportedPart(t, errStream, tc.wantPart)
-			_, _, _, errPrepare := exec.prepareDevinHTTPRequest(context.Background(), auth, req, opts)
-			requireDevinUnsupportedPart(t, errPrepare, tc.wantPart)
-		})
-	}
-	if got := upstreamCalls.Load(); got != 0 {
-		t.Fatalf("upstream was called %d times, want 0", got)
-	}
-}
-
 func TestDevinExecutorSendsTextBesideUnsendableMediaWithoutAPlaceholder(t *testing.T) {
 	exec := NewDevinExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{ID: "devin-text-beside-media", Provider: "devin", Attributes: map[string]string{"api_key": "test-key"}}
@@ -134,5 +85,52 @@ func TestDevinExecutorStillSendsInlineImages(t *testing.T) {
 		if !bytes.Contains(body, []byte("pasted_image_1.png")) {
 			t.Fatalf("inline image was not sent for %s", part)
 		}
+	}
+}
+
+// Devin cannot fetch a remote uri or take audio, video or documents, so a user
+// turn that only holds such media is refused before any HTTP call, for both
+// execution paths and for Interactions and non-Interactions sources.
+func TestDevinExecutorRefusesAnUnsendableMediaOnlyTurnBeforeCallingUpstream(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	const claudeWhitespaceImage = `{"max_tokens":8,"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"user","content":[{"type":"text","text":"  "},{"type":"image","source":{"type":"file","file_id":"f1"}}]}]}`
+	cases := []struct {
+		name     string
+		source   sdktranslator.Format
+		payload  string
+		wantPart string
+	}{
+		{"image by uri", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"image","mime_type":"image/png","uri":"https://example.test/a.png"}]}`), "image"},
+		{"image by file_uri", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"image","mime_type":"image/png","file_uri":"gs://b/a.png"}]}`), "image"},
+		{"document by fileUri", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"document","mime_type":"application/pdf","fileUri":"gs://b/a.pdf"}]}`), "document"},
+		{"inline audio", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"audio","mime_type":"audio/wav","data":"UklGRg=="}]}`), "audio"},
+		{"whitespace text does not hide it", sdktranslator.FormatInteractions, devinInteractionsPayload(`{"type":"user_input","content":[{"type":"text","text":" \n"},{"type":"video","mime_type":"video/mp4","uri":"https://example.test/a.mp4"}]}`), "video"},
+		{"emptied turn before a later text turn", sdktranslator.FormatInteractions, `{"input":[{"type":"user_input","content":[{"type":"image","mime_type":"image/png","uri":"https://example.test/a.png"}]},{"type":"model_output","content":[{"type":"text","text":"ok"}]},{"type":"user_input","content":[{"type":"text","text":"next"}]}]}`, "image"},
+		{"claude whitespace text beside an unrepresentable image", sdktranslator.FormatClaude, claudeWhitespaceImage, "image"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := NewDevinExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{ID: "devin-media-only", Provider: "devin", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+			req := cliproxyexecutor.Request{Model: "devin/swe-2", Payload: []byte(tc.payload)}
+			opts := cliproxyexecutor.Options{SourceFormat: tc.source}
+
+			_, errExecute := exec.Execute(context.Background(), auth, req, opts)
+			requireDevinUnsupportedPart(t, errExecute, tc.wantPart)
+			opts.Stream = true
+			_, errStream := exec.ExecuteStream(context.Background(), auth, req, opts)
+			requireDevinUnsupportedPart(t, errStream, tc.wantPart)
+			_, _, _, errPrepare := exec.prepareDevinHTTPRequest(context.Background(), auth, req, opts)
+			requireDevinUnsupportedPart(t, errPrepare, tc.wantPart)
+		})
+	}
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("upstream was called %d times, want 0", got)
 	}
 }

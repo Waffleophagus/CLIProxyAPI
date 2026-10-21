@@ -57,54 +57,6 @@ func TestBase64AlphabetSet_MatchesEncoderAlphabets(t *testing.T) {
 	}
 }
 
-// replaySafeEnvelopeFixtures returns one fixture per self-describing provider
-// envelope that carries replayable state. Every entry must survive the structural
-// pre-filter, because losing one would silently reclassify that provider.
-func replaySafeEnvelopeFixtures(t *testing.T) map[string]struct {
-	sig  string
-	want SignatureProvider
-} {
-	return map[string]struct {
-		sig  string
-		want SignatureProvider
-	}{
-		"claude single-layer E":  {testClaudeThinkingSignature(), SignatureProviderClaude},
-		"claude double-layer R":  {testUnpaddedAntigravityClaudeThinkingSignature(), SignatureProviderClaude},
-		"claude CAIS":            {testClaudeCAISSignature("claude-fable-5"), SignatureProviderClaude},
-		"antigravity CAQS":       {antigravityCAQSFixture(t), SignatureProviderClaude},
-		"gemini protobuf field2": {testGeminiThoughtSignatureEnvelope(), SignatureProviderGemini},
-		"gpt fernet":             {testGPTReasoningSignature(), SignatureProviderGPT},
-		"meta muse":              {testMetaReasoningSignature(1024), SignatureProviderMeta},
-	}
-}
-
-// TestSelfDescribingSignatureFirstChars_CoversEveryKnownEnvelope guards the
-// structural pre-filter. DetectSignatureProviderForBlock skips every provider
-// validator when maybeSelfDescribingSignatureEnvelope returns false, so an
-// envelope missing from selfDescribingSignatureFirstChars would silently fall
-// through to the residual class. Adding a provider envelope without registering
-// its base64 first character fails here.
-func TestSelfDescribingSignatureFirstChars_CoversEveryKnownEnvelope(t *testing.T) {
-	for name, fixture := range replaySafeEnvelopeFixtures(t) {
-		if !maybeSelfDescribingSignatureEnvelope(fixture.sig) {
-			t.Errorf("%s: first char %q is not in selfDescribingSignatureFirstChars %q; register it or detection will skip this envelope",
-				name, string(fixture.sig[0]), selfDescribingSignatureFirstChars)
-		}
-	}
-
-	// The pre-filter must not be so wide that it stops filtering. Opaque xAI
-	// ciphertext is the shape it exists to reject.
-	for _, sig := range []string{
-		"K1ZAIbzDbO",
-		"jQDLUr+fD8RFP8nbkkfI",
-		"qcgG7jzxH3D6mlVLBBaKXaG3",
-	} {
-		if maybeSelfDescribingSignatureEnvelope(sig) {
-			t.Errorf("opaque ciphertext %q must not look like a self-describing envelope", sig)
-		}
-	}
-}
-
 // TestGeminiASCIIUUIDIsGateIndependent documents why ascii_uuid is excluded from
 // selfDescribingSignatureFirstChars. Its first byte is the first hex character of
 // the UUID, so the base64 first character spreads over several values, and none of
@@ -132,17 +84,6 @@ func TestGeminiASCIIUUIDIsGateIndependent(t *testing.T) {
 	}
 }
 
-// TestDetectSignatureProviderForBlock_ClassifiesEveryKnownEnvelope pins the
-// classification of each envelope so a reordering of the validator chain cannot
-// silently reassign one provider's signatures to another.
-func TestDetectSignatureProviderForBlock_ClassifiesEveryKnownEnvelope(t *testing.T) {
-	for name, fixture := range replaySafeEnvelopeFixtures(t) {
-		if got := DetectSignatureProvider(fixture.sig); got != fixture.want {
-			t.Errorf("%s: DetectSignatureProvider = %q, want %q", name, got, fixture.want)
-		}
-	}
-}
-
 // TestGeminiEnvelopeNeverClaimsClaudeSignatures pins the invariant that keeps
 // Claude and Gemini separable independently of probe order in
 // DetectSignatureProviderForBlock. Gemini validates wire shape only and has no
@@ -154,7 +95,7 @@ func TestGeminiEnvelopeNeverClaimsClaudeSignatures(t *testing.T) {
 	for name, sig := range map[string]string{
 		"single-layer E":        testClaudeThinkingSignature(),
 		"single-layer E opaque": testClaudeThinkingSignatureWithOpaqueLen(64),
-		"double-layer R":        testUnpaddedAntigravityClaudeThinkingSignature(),
+		"double-layer R":        testUnpaddedAcmeClaudeThinkingSignature(),
 		"CAIS synthetic":        testClaudeCAISSignature("claude-opus-5"),
 		"CAIS observed":         observedFable5Sample,
 	} {
@@ -211,29 +152,6 @@ func TestCompatibleSignatureForProvider_ClaudeUsesProviderNativeEForm(t *testing
 	}
 	if normalized != nativeSig {
 		t.Fatalf("CompatibleSignatureForProvider(Claude) = %q, want provider-native %q", normalized, nativeSig)
-	}
-}
-
-func TestCompatibleAntigravityClaudeThinkingSignature_UsesDoubleLayerRForm(t *testing.T) {
-	nativeSig := testClaudeThinkingSignature()
-	expected := base64.StdEncoding.EncodeToString([]byte(nativeSig))
-
-	normalized, ok := CompatibleAntigravityClaudeThinkingSignature(nativeSig)
-	if !ok {
-		t.Fatal("Claude signature should be compatible with Antigravity Claude")
-	}
-	if normalized != expected {
-		t.Fatalf("CompatibleAntigravityClaudeThinkingSignature = %q, want %q", normalized, expected)
-	}
-}
-
-func TestCompatibleAntigravityClaudeThinkingSignature_RejectsGeminiEPrefix(t *testing.T) {
-	geminiSig := testGemini3ThoughtSignature([]byte{0x01, 0x0c, 0x39, 0xd6, 0xc7, 0x34})
-	if !strings.HasPrefix(geminiSig, "E") {
-		t.Fatalf("test signature should start with E, got %q", geminiSig[:1])
-	}
-	if normalized, ok := CompatibleAntigravityClaudeThinkingSignature(geminiSig); ok || normalized != "" {
-		t.Fatalf("Gemini E-prefix signature normalized=%q ok=%v, want rejected", normalized, ok)
 	}
 }
 
@@ -470,5 +388,63 @@ func TestSanitizeClaudeMessagesForClaudeUpstream_NormalizesValidThinkingAndDrops
 	}
 	if got := messages[1].Get("role").String(); got != "user" {
 		t.Fatalf("remaining second role = %q, want user", got)
+	}
+}
+
+// TestSelfDescribingSignatureFirstChars_CoversEveryKnownEnvelope guards the
+// structural pre-filter. DetectSignatureProviderForBlock skips every provider
+// validator when maybeSelfDescribingSignatureEnvelope returns false, so an
+// envelope missing from selfDescribingSignatureFirstChars would silently fall
+// through to the residual class. Adding a provider envelope without registering
+// its base64 first character fails here.
+func TestSelfDescribingSignatureFirstChars_CoversEveryKnownEnvelope(t *testing.T) {
+	for name, fixture := range replaySafeEnvelopeFixtures(t) {
+		if !maybeSelfDescribingSignatureEnvelope(fixture.sig) {
+			t.Errorf("%s: first char %q is not in selfDescribingSignatureFirstChars %q; register it or detection will skip this envelope",
+				name, string(fixture.sig[0]), selfDescribingSignatureFirstChars)
+		}
+	}
+
+	// The pre-filter must not be so wide that it stops filtering. Opaque xAI
+	// ciphertext is the shape it exists to reject.
+	for _, sig := range []string{
+		"K1ZAIbzDbO",
+		"jQDLUr+fD8RFP8nbkkfI",
+		"qcgG7jzxH3D6mlVLBBaKXaG3",
+	} {
+		if maybeSelfDescribingSignatureEnvelope(sig) {
+			t.Errorf("opaque ciphertext %q must not look like a self-describing envelope", sig)
+		}
+	}
+}
+
+// TestDetectSignatureProviderForBlock_ClassifiesEveryKnownEnvelope pins the
+// classification of each envelope so a reordering of the validator chain cannot
+// silently reassign one provider's signatures to another.
+func TestDetectSignatureProviderForBlock_ClassifiesEveryKnownEnvelope(t *testing.T) {
+	for name, fixture := range replaySafeEnvelopeFixtures(t) {
+		if got := DetectSignatureProvider(fixture.sig); got != fixture.want {
+			t.Errorf("%s: DetectSignatureProvider = %q, want %q", name, got, fixture.want)
+		}
+	}
+}
+
+// replaySafeEnvelopeFixtures returns one fixture per self-describing provider
+// envelope that carries replayable state. Every entry must survive the structural
+// pre-filter, because losing one would silently reclassify that provider.
+func replaySafeEnvelopeFixtures(t *testing.T) map[string]struct {
+	sig  string
+	want SignatureProvider
+} {
+	return map[string]struct {
+		sig  string
+		want SignatureProvider
+	}{
+		"claude single-layer E":  {testClaudeThinkingSignature(), SignatureProviderClaude},
+		"claude double-layer R":  {testUnpaddedAcmeClaudeThinkingSignature(), SignatureProviderClaude},
+		"claude CAIS":            {testClaudeCAISSignature("claude-fable-5"), SignatureProviderClaude},
+		"gemini protobuf field2": {testGeminiThoughtSignatureEnvelope(), SignatureProviderGemini},
+		"gpt fernet":             {testGPTReasoningSignature(), SignatureProviderGPT},
+		"meta muse":              {testMetaReasoningSignature(1024), SignatureProviderMeta},
 	}
 }

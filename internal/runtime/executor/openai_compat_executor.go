@@ -107,6 +107,10 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return
 	}
+	if errPending := openAICompatFollowPendingError(compat, baseURL, baseModel); errPending != nil {
+		err = errPending
+		return
+	}
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -123,14 +127,14 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	originalPayload := originalPayloadSource
 	isCompat := helps.APIKeyModelIsCompat(req)
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
-	originalTranslated, translated, updatesChanged, err := helps.TranslateRequestPairWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, opts.Headers, e.cfg, from, to, targetModel, originalPayload, req.Payload, opts.Stream, isCompat)
+	originalTranslated, translated, err := helps.TranslateRequestPairWithAPIKeyModelCompatibilityChecked(ctx, opts.Headers, e.cfg, from, to, targetModel, originalPayload, req.Payload, opts.Stream, isCompat)
 	if err != nil {
 		return resp, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	translated = helps.SetStringIfDifferent(translated, "model", baseModel)
 
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
+	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
@@ -243,6 +247,10 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return resp, err
 	}
+	if errPending := openAICompatFollowPendingError(e.resolveCompatConfig(auth, req), baseURL, baseModel); errPending != nil {
+		err = errPending
+		return resp, err
+	}
 
 	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), false)
 	if errPrepare != nil {
@@ -348,6 +356,10 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return nil, err
 	}
+	if errPending := openAICompatFollowPendingError(compat, baseURL, baseModel); errPending != nil {
+		err = errPending
+		return nil, err
+	}
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -359,14 +371,14 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	originalPayload := originalPayloadSource
 	isCompat := helps.APIKeyModelIsCompat(req)
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
-	originalTranslated, translated, updatesChanged, err := helps.TranslateRequestPairWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, opts.Headers, e.cfg, from, to, targetModel, originalPayload, req.Payload, true, isCompat)
+	originalTranslated, translated, err := helps.TranslateRequestPairWithAPIKeyModelCompatibilityChecked(ctx, opts.Headers, e.cfg, from, to, targetModel, originalPayload, req.Payload, true, isCompat)
 	if err != nil {
 		return nil, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	translated = helps.SetStringIfDifferent(translated, "model", baseModel)
 
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
+	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
 	}
@@ -654,6 +666,10 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return nil, err
 	}
+	if errPending := openAICompatFollowPendingError(e.resolveCompatConfig(auth, req), baseURL, baseModel); errPending != nil {
+		err = errPending
+		return nil, err
+	}
 
 	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), true)
 	if errPrepare != nil {
@@ -774,18 +790,18 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
 	isCompat := helps.APIKeyModelIsCompat(req)
-	translated, updatesChanged, err := helps.TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, isCompat)
+	translated, err := helps.TranslateRequestWithAPIKeyModelCompatibilityChecked(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, isCompat)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
 	originalTranslatedForPayload := append([]byte(nil), translated...)
 	if len(opts.OriginalRequest) > 0 {
-		originalTranslatedForPayload, _, _ = helps.TranslateRequestWithAPIKeyModelCompatibilityAndUpdateIntent(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, false, isCompat)
+		originalTranslatedForPayload, _ = helps.TranslateRequestWithAPIKeyModelCompatibilityChecked(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, false, isCompat)
 	}
 
 	modelForCounting := baseModel
 
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
+	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -808,12 +824,9 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 // Refresh is a no-op for API-key based compatibility providers.
 // OAuth-style credentials with a refresh token cannot be rotated here; callers
-// that need plugin/Home refresh must bind a refresh-capable executor instead.
+// that need refresh must bind a refresh-capable executor instead.
 func (e *OpenAICompatExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	log.Debugf("openai compat executor: refresh called")
-	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
-		return refreshed, err
-	}
 	if openAICompatAuthHasRefreshToken(auth) {
 		provider := ""
 		if e != nil {
@@ -1021,37 +1034,6 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 	if auth == nil || e.cfg == nil {
 		return nil
 	}
-	if e.cfg.Home.Enabled {
-		// Home excludes provider credentials from the global configuration. These
-		// non-secret options belong to the credential selected for this attempt.
-		var options struct {
-			SupportPromptCacheKey bool                              `json:"support-prompt-cache-key"`
-			Models                []config.OpenAICompatibilityModel `json:"models"`
-		}
-		present := false
-		if rawOptions, exists := auth.Metadata["credential_options"]; exists {
-			if data, errMarshal := json.Marshal(rawOptions); errMarshal == nil {
-				present = json.Unmarshal(data, &options) == nil
-			}
-		}
-		if raw, exists := auth.Attributes["support_prompt_cache_key"]; exists {
-			if value, errParse := strconv.ParseBool(raw); errParse == nil {
-				options.SupportPromptCacheKey = value
-				present = true
-			}
-		}
-		if model, ok := cliproxyauth.ResolvedHomeModelOptions(req); ok {
-			options.Models = []config.OpenAICompatibilityModel{model}
-			present = true
-		}
-		if present {
-			return &config.OpenAICompatibility{
-				Name:                  auth.Attributes["compat_name"],
-				SupportPromptCacheKey: options.SupportPromptCacheKey,
-				Models:                options.Models,
-			}
-		}
-	}
 	if auth.AuthSourceKind() == cliproxyauth.AuthSourceConfig && auth.Attributes != nil {
 		if rawIndex := strings.TrimSpace(auth.Attributes["config_index"]); rawIndex != "" {
 			configIndex, errIndex := strconv.Atoi(rawIndex)
@@ -1087,13 +1069,6 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 		}
 	}
 	return nil
-}
-
-func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
-	if len(payload) == 0 || model == "" {
-		return payload
-	}
-	return helps.SetStringIfDifferent(payload, "model", model)
 }
 
 func openAICompatErrorEvent(eventName string) bool {
@@ -1159,6 +1134,27 @@ func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
 func (e statusErr) IsCredentialScoped() bool   { return e.credentialScoped }
 
 const openAICompatTPMFallbackRetryAfter = time.Minute
+
+// openAICompatFollowPendingErr reports a follow-mode slug whose upstream model has
+// not been resolved yet. It is request scoped: the credential is healthy, so it
+// must not cool down, and the slug becomes routable after the next successful poll.
+type openAICompatFollowPendingErr struct {
+	statusErr
+}
+
+func (openAICompatFollowPendingErr) IsRequestScoped() bool    { return true }
+func (openAICompatFollowPendingErr) IsCredentialScoped() bool { return false }
+
+func openAICompatFollowPendingError(compat *config.OpenAICompatibility, baseURL, model string) error {
+	alias, pending := helps.OpenAICompatFollowPendingAlias(compat, model)
+	if !pending {
+		return nil
+	}
+	return openAICompatFollowPendingErr{statusErr{
+		code: http.StatusServiceUnavailable,
+		msg:  fmt.Sprintf("upstream unavailable: slug %s has no resolved upstream model yet (waiting for %s/models to list one)", alias, strings.TrimSuffix(baseURL, "/")),
+	}}
+}
 
 func newOpenAICompatStatusError(status int, headers http.Header, body []byte) statusErr {
 	return statusErr{

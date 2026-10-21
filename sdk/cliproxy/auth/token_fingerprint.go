@@ -1,14 +1,13 @@
 package auth
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
 )
 
-// AccessTokenSHA256 returns the normalized OAuth access-token fingerprint used
-// to fence asynchronous Home execution results without exposing the token.
+// AccessTokenSHA256 returns the normalized OAuth access-token fingerprint
+// without exposing the token.
 func AccessTokenSHA256(auth *Auth) string {
 	accessToken := accessTokenForFingerprint(auth)
 	if accessToken == "" {
@@ -16,31 +15,6 @@ func AccessTokenSHA256(auth *Auth) string {
 	}
 	digest := sha256.Sum256([]byte(accessToken))
 	return hex.EncodeToString(digest[:])
-}
-
-type accessTokenFingerprintObserverContextKey struct{}
-
-func withAccessTokenFingerprintObserver(ctx context.Context, observer func(*Auth)) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if observer == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, accessTokenFingerprintObserverContextKey{}, observer)
-}
-
-// NotifyAccessTokenFingerprint reports the auth snapshot actually used by an
-// executor that may refresh its local token before sending upstream. The
-// observer derives the fingerprint and can reuse that snapshot for recovery.
-func NotifyAccessTokenFingerprint(ctx context.Context, auth *Auth) {
-	if ctx == nil || auth == nil || AccessTokenSHA256(auth) == "" {
-		return
-	}
-	observer, _ := ctx.Value(accessTokenFingerprintObserverContextKey{}).(func(*Auth))
-	if observer != nil {
-		observer(auth.Clone())
-	}
 }
 
 func accessTokenForFingerprint(auth *Auth) string {

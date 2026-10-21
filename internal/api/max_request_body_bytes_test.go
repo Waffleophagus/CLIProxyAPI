@@ -36,7 +36,7 @@ type bodyReadingAccessProvider struct {
 }
 
 func (p *bodyReadingAccessProvider) Identifier() string {
-	return "plugin:test:body-auth"
+	return "custom:test:body-auth"
 }
 
 func (p *bodyReadingAccessProvider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.Result, *sdkaccess.AuthError) {
@@ -133,8 +133,6 @@ observability:
 		"/v1/chat/completions",
 		"/v1/responses",
 		"/v1/messages",
-		"/v1beta/models/gemini-2.5-pro:generateContent",
-		"/v1beta/interactions",
 	} {
 		t.Run("authenticated chunked body exceeding limit returns 413 on "+endpoint, func(t *testing.T) {
 			cfgNoLog := parseTestServerConfigYAML(t, `config-version: 8
@@ -199,15 +197,15 @@ access:
 		}
 	})
 
-	t.Run("unauthenticated chunked body with plugin auth fallback is bounded and returns 413", func(t *testing.T) {
-		cfgPluginAuth := parseTestServerConfigYAML(t, `config-version: 8
+	t.Run("unauthenticated chunked body with custom auth fallback is bounded and returns 413", func(t *testing.T) {
+		cfgCustomAuth := parseTestServerConfigYAML(t, `config-version: 8
 server:
   max-request-body-bytes: 64
 access:
   api-keys:
     - test-key
 `)
-		srv := newTestServerWithConfig(t, cfgPluginAuth)
+		srv := newTestServerWithConfig(t, cfgCustomAuth)
 		fallbackProvider := &bodyReadingAccessProvider{}
 		providers := append(srv.accessManager.Providers(), fallbackProvider)
 		srv.accessManager.SetProviders(providers)
@@ -390,7 +388,6 @@ access:
 			method string
 			path   string
 		}{
-			{http.MethodPost, "/v8/management/plugins/store/demo/install"},
 			{http.MethodPut, "/v8/management/config"},
 		} {
 			reqMgmt := httptest.NewRequest(endpoint.method, endpoint.path, io.NopCloser(strings.NewReader(`{"version":"`+strings.Repeat("v", 128)+`"}`)))

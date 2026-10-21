@@ -8,7 +8,7 @@ import (
 
 func TestSummarizeOAuthRequestScopedErrors_NormalizesKeys(t *testing.T) {
 	out := SummarizeOAuthRequestScopedErrors(map[string][]config.RequestScopedErrorRule{
-		" Vertex ": {
+		" Vendora ": {
 			{Status: 400, Match: []string{"error"}, Action: "stop"},
 		},
 		"": {
@@ -18,8 +18,8 @@ func TestSummarizeOAuthRequestScopedErrors_NormalizesKeys(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("expected 1 normalized entry, got %d", len(out))
 	}
-	if summary, ok := out["vertex"]; !ok || summary.count != 1 {
-		t.Fatalf("unexpected summary for vertex: %#v", summary)
+	if summary, ok := out["vendora"]; !ok || summary.count != 1 {
+		t.Fatalf("unexpected summary for vendora: %#v", summary)
 	}
 
 	if outEmpty := SummarizeOAuthRequestScopedErrors(nil); outEmpty != nil {
@@ -29,7 +29,7 @@ func TestSummarizeOAuthRequestScopedErrors_NormalizesKeys(t *testing.T) {
 
 func TestDiffOAuthRequestScopedErrorsChanges(t *testing.T) {
 	oldMap := map[string][]config.RequestScopedErrorRule{
-		"vertex": {
+		"vendora": {
 			{Status: 400, Match: []string{"context_length"}, Action: "stop"},
 		},
 		"claude": {
@@ -37,7 +37,7 @@ func TestDiffOAuthRequestScopedErrorsChanges(t *testing.T) {
 		},
 	}
 	newMap := map[string][]config.RequestScopedErrorRule{
-		"vertex": {
+		"vendora": {
 			{Status: 400, Match: []string{"context_length_updated"}, Action: "stop"},
 		},
 		"codex": {
@@ -49,9 +49,9 @@ func TestDiffOAuthRequestScopedErrorsChanges(t *testing.T) {
 
 	expectContains(t, changes, "oauth-request-scoped-errors[claude]: removed")
 	expectContains(t, changes, "oauth-request-scoped-errors[codex]: added (1 entries)")
-	expectContains(t, changes, "oauth-request-scoped-errors[vertex]: updated (1 -> 1 entries)")
+	expectContains(t, changes, "oauth-request-scoped-errors[vendora]: updated (1 -> 1 entries)")
 
 	expectContains(t, affected, "claude")
 	expectContains(t, affected, "codex")
-	expectContains(t, affected, "vertex")
+	expectContains(t, affected, "vendora")
 }

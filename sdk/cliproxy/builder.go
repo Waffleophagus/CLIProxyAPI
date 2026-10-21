@@ -9,11 +9,13 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/slugs"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
@@ -50,9 +52,6 @@ type Builder struct {
 
 	// cooldownStateStore overrides runtime cooldown persistence.
 	cooldownStateStore coreauth.CooldownStateStore
-
-	// pluginHost owns dynamic plugin lifecycle and adapters.
-	pluginHost *pluginhost.Host
 
 	// postAuthHook is called after auth record creation and before persistence.
 	postAuthHook coreauth.PostAuthHook
@@ -158,24 +157,9 @@ func (b *Builder) WithCooldownStateStore(store coreauth.CooldownStateStore) *Bui
 	return b
 }
 
-// WithPluginHost overrides the dynamic plugin host used by the service.
-func (b *Builder) WithPluginHost(host *pluginhost.Host) *Builder {
-	b.pluginHost = host
-	return b
-}
-
 // WithServerOptions appends server configuration options used during construction.
 func (b *Builder) WithServerOptions(opts ...api.ServerOption) *Builder {
 	b.serverOptions = append(b.serverOptions, opts...)
-	return b
-}
-
-// WithLocalManagementPassword configures a password that is only accepted from localhost management requests.
-func (b *Builder) WithLocalManagementPassword(password string) *Builder {
-	if password == "" {
-		return b
-	}
-	b.serverOptions = append(b.serverOptions, api.WithLocalManagementPassword(password))
 	return b
 }
 
@@ -195,6 +179,10 @@ func (b *Builder) WithResultPolicy(policy coreauth.ResultPolicy) *Builder {
 	return b
 }
 
+// newSlugManager creates the follow-mode slug resolver; tests replace it to
+// drive polling deterministically.
+var newSlugManager = func() *slugs.Manager { return slugs.NewManager(slugs.Options{}) }
+
 // Build validates inputs, applies defaults, and returns a ready-to-run service.
 func (b *Builder) Build() (*Service, error) {
 	if b.cfg == nil {
@@ -205,10 +193,6 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	if errValidate := b.cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, fmt.Errorf("cliproxy: validate credential weights: %w", errValidate)
-	}
-	b.cfg.NormalizePluginsConfig()
-	if errResolvePluginsDir := b.cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && b.cfg.Plugins.Enabled {
-		return nil, fmt.Errorf("cliproxy: %w", errResolvePluginsDir)
 	}
 
 	tokenProvider := b.tokenProvider
@@ -237,14 +221,6 @@ func (b *Builder) Build() (*Service, error) {
 	}
 
 	configaccess.Register(&b.cfg.SDKConfig)
-	pluginHost := b.pluginHost
-	if pluginHost == nil {
-		pluginHost = pluginhost.New()
-	}
-	if b.cfg != nil {
-		pluginHost.ApplyConfig(context.Background(), b.cfg)
-		pluginHost.RegisterFrontendAuthProviders()
-	}
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
 	coreManager := b.coreManager
@@ -255,29 +231,37 @@ func (b *Builder) Build() (*Service, error) {
 		if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && b.cfg != nil {
 			dirSetter.SetBaseDir(b.cfg.AuthDir)
 		}
-		if cooldownStateStore == nil {
-			if provider, ok := tokenStore.(coreauth.CooldownStateStoreProvider); ok {
-				cooldownStateStore = provider.CooldownStateStore()
-			}
-		}
-
 		routingState := normalizedRoutingRuntimeState(b.cfg)
 		coreManager = coreauth.NewManager(tokenStore, newRoutingSelector(routingState), nil)
 		appliedRoutingState = &routingState
 	}
+	// Follow-mode slugs start unresolved; runtime components get the effective config.
+	slugManager := newSlugManager()
+	slugManager.Reconfigure(b.cfg)
+	sourceCfg := b.cfg.CloneForRuntime()
+	effectiveCfg := slugManager.Effective(sourceCfg)
+
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
-	coreManager.SetConfig(b.cfg)
+	coreManager.SetConfig(effectiveCfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
-	if pluginHost != nil {
-		coreManager.SetPluginScheduler(pluginHost)
-	}
 	if b.resultPolicy != nil {
 		coreManager.SetResultPolicy(b.resultPolicy)
 	}
 
+	usageRuntime := usagestore.NewRuntime(func(authID string) usagestore.AuthInfo {
+		if auth, ok := coreManager.GetByID(authID); ok {
+			return usagestore.AuthInfoFor(auth)
+		}
+		return usagestore.AuthInfo{}
+	})
+	usage.RegisterNamedPlugin("usagestore", usageRuntime)
+
 	service := &Service{
-		cfg:                 b.cfg.CloneForRuntime(),
+		cfg:                 effectiveCfg,
+		sourceCfg:           sourceCfg,
+		slugs:               slugManager,
+		usageRuntime:        usageRuntime,
 		configPath:          b.configPath,
 		tokenProvider:       tokenProvider,
 		apiKeyProvider:      apiKeyProvider,
@@ -287,17 +271,17 @@ func (b *Builder) Build() (*Service, error) {
 		accessManager:       accessManager,
 		coreManager:         coreManager,
 		cooldownStateStore:  cooldownStateStore,
-		pluginHost:          pluginHost,
-		discoveryManager:    newDiscoveryAdvertiserManager(),
 		appliedRoutingState: appliedRoutingState,
 		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
 	}
+	slugManager.SetOnChange(service.applySlugResolution)
 	service.serverOptions = append(service.serverOptions,
+		api.WithSlugResolver(slugManager),
+		api.WithUsageRuntime(usageRuntime),
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
-		api.WithPluginHost(pluginHost),
 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
 			service.reloadConfigFromWatcher()
 		}),

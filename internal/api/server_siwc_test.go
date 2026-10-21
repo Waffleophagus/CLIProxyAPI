@@ -24,21 +24,18 @@ func TestSIWCManagementRouteAccessControl(t *testing.T) {
 		t.Fatal(errHash)
 	}
 	for _, tc := range []struct {
-		name                      string
-		enabled, home, authorized bool
-		want                      int
+		name                string
+		enabled, authorized bool
+		want                int
 	}{
-		{"authorized invalid target", true, false, true, http.StatusBadRequest},
-		{"missing management key", true, false, false, http.StatusUnauthorized},
-		{"management disabled", false, false, true, http.StatusNotFound},
-		{"home disabled local API", true, true, true, http.StatusNotFound},
+		{"authorized invalid target", true, true, http.StatusBadRequest},
+		{"missing management key", true, false, http.StatusUnauthorized},
+		{"management disabled", false, true, http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{AuthDir: t.TempDir()}
-			cfg.Home.Enabled = tc.home
 			cfg.RemoteManagement.SecretKey = string(hash)
 			h := management.NewHandlerWithoutConfigFilePath(cfg, nil)
-			h.SetLocalPassword("test-password")
 			s := &Server{cfg: cfg, engine: gin.New(), mgmt: h}
 			s.managementRoutesEnabled.Store(tc.enabled)
 			s.registerManagementRoutes()
@@ -88,7 +85,6 @@ func TestCodexCallbackRejectsSIWCState(t *testing.T) {
 		t.Fatal(errRegister)
 	}
 	s.mgmt.SetAuthManager(manager)
-	s.mgmt.SetLocalPassword("test-password")
 	s.managementRoutesEnabled.Store(true)
 	s.registerManagementRoutes()
 	req := httptest.NewRequest(http.MethodPost, "/v8/management/oauth/siwc/bind", strings.NewReader(`{"name":"codex.json"}`))

@@ -5,8 +5,6 @@
 package api
 
 import (
-	"time"
-
 	"github.com/gin-gonic/gin"
 	internalapi "github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -28,16 +26,6 @@ func WithEngineConfigurator(fn func(*gin.Engine)) ServerOption {
 // WithRouterConfigurator appends a callback after default routes are registered.
 func WithRouterConfigurator(fn func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)) ServerOption {
 	return internalapi.WithRouterConfigurator(fn)
-}
-
-// WithLocalManagementPassword stores a runtime-only management password accepted for localhost requests.
-func WithLocalManagementPassword(password string) ServerOption {
-	return internalapi.WithLocalManagementPassword(password)
-}
-
-// WithKeepAliveEndpoint enables a keep-alive endpoint with the provided timeout and callback.
-func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption {
-	return internalapi.WithKeepAliveEndpoint(timeout, onTimeout)
 }
 
 // WithRequestLoggerFactory customises request logger creation.

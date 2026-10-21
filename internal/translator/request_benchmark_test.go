@@ -39,11 +39,11 @@ func benchmarkRequestTranslation(b *testing.B, turns int) {
 		source  string
 		targets []string
 	}{
-		{source: "claude", targets: []string{"openai", "gemini", "codex", "interactions", "antigravity"}},
-		{source: "gemini", targets: []string{"openai", "claude", "codex", "interactions", "antigravity", "gemini"}},
-		{source: "openai", targets: []string{"claude", "gemini", "codex", "interactions", "antigravity", "openai"}},
+		{source: "claude", targets: []string{"openai", "gemini", "codex", "interactions", "acme"}},
+		{source: "gemini", targets: []string{"openai", "claude", "codex", "interactions", "acme", "gemini"}},
+		{source: "openai", targets: []string{"claude", "gemini", "codex", "interactions", "acme", "openai"}},
 		{source: "openai-response", targets: []string{"claude", "gemini", "codex", "interactions", "openai"}},
-		{source: "interactions", targets: []string{"claude", "gemini", "codex", "openai", "openai-response", "antigravity"}},
+		{source: "interactions", targets: []string{"claude", "gemini", "codex", "openai", "openai-response", "acme"}},
 	}
 
 	for _, route := range routes {

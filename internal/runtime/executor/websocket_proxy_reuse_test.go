@@ -30,7 +30,7 @@ func TestWebsocketSessionIsolatesReusableConnectionByProxy(t *testing.T) {
 		t.Fatal("proxy change was not treated as a websocket target change")
 	}
 
-	detached, detachedCloser, _, _, _ := detachMismatchedWebsocketSessionConn(sess, "auth-1", sess.wsURL, "")
+	detached, detachedCloser, _, _ := detachMismatchedWebsocketSessionConn(sess, "auth-1", sess.wsURL, "")
 	if detached == nil || detachedCloser == nil {
 		t.Fatal("removing the proxy override did not detach the websocket")
 	}

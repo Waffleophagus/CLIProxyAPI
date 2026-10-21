@@ -64,6 +64,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 					deleteConfigV8Path(server, []string{"credential"})
 				}
 			}
+			deleteConfigV8Path(root, v8TailscaleAuthKeyPath)
 			h.injectV8APIKeyAuthIndexesLocked(root, data)
 		}
 		value := configV8Node(root, parts)
@@ -87,6 +88,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	}
 	before := cloneConfigV8Node(root)
 	config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
+	commentSource := cloneConfigV8Node(root)
 	if c.Request.Method == http.MethodDelete {
 		if len(parts) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot_delete_config"})
@@ -147,28 +149,18 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			*dst = *update.Content[0]
 		}
 	}
+	if !yamlRequest && c.Request.Method != http.MethodDelete {
+		// JSON carries no comments: keep those of entries that survive a
+		// replacement. YAML writes state their comments explicitly.
+		carryConfigV8Comments(root, commentSource)
+	}
 	if err = config.NormalizeV8ConfigAliases(root); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
 	if !yamlRequest && c.Request.Method != http.MethodDelete {
 		preserveV8TURNSecrets(root, before)
-	}
-	// Revisions are owned by Home and must not become ordinary editable settings.
-	for _, field := range []string{"credentials/concurrency/lifecycle-config-revision", "credentials/concurrency/observation-barrier-revision", "plugins/auth-revision"} {
-		old := configV8Node(before, strings.Split(field, "/"))
-		next := configV8Node(root, strings.Split(field, "/"))
-		var a, b any
-		if old != nil {
-			_ = old.Decode(&a)
-		}
-		if next != nil {
-			_ = next.Decode(&b)
-		}
-		if !reflect.DeepEqual(a, b) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "read_only_field", "field": field})
-			return
-		}
+		preserveV8TailscaleAuthKey(root, before)
 	}
 	stripAPIKeysAuthIndexesFromRoot(root)
 	config.NormalizeCollectionNodeStyles(root)
@@ -192,18 +184,16 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		return
 	}
 	// Save the validated canonical tree directly: projecting runtime defaults
-	// back onto it loses explicit nulls, empty maps, and opaque plugin settings.
+	// back onto it loses explicit nulls and empty maps.
 	// WriteConfig retains the inode of a mounted configuration file.
 	if err = WriteConfig(h.configFilePath, data); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": err.Error()})
 		return
 	}
-	// Runtime-only ownership state is never sourced from an uploaded YAML document.
-	next.Home = h.cfg.Home
 	// WriteConfig may normalize the bytes, so report the version actually on
 	// disk. If it cannot be read back, omit the ETag instead of guessing one.
-	// Like Home, SourceHash keeps its runtime owner and is published by the
-	// reload, so it is not overwritten on next here.
+	// SourceHash keeps its runtime owner and is published by the reload, so it
+	// is not overwritten on next here.
 	if saved, errSaved := os.ReadFile(h.configFilePath); errSaved == nil {
 		c.Header("ETag", configV8ETag(config.ComputeSourceHash(saved)))
 	}
@@ -304,6 +294,20 @@ func preserveV8TURNSecrets(root, before *yaml.Node) {
 	}
 }
 
+var v8TailscaleAuthKeyPath = []string{"tailscale", "auth-key"}
+
+// JSON reads redact tailscale.auth-key. Keep the stored key when a JSON write
+// omits it; an explicit empty string or null clears it.
+func preserveV8TailscaleAuthKey(root, before *yaml.Node) {
+	section := configV8Node(root, v8TailscaleAuthKeyPath[:1])
+	if section == nil || section.Kind != yaml.MappingNode || configV8Node(section, v8TailscaleAuthKeyPath[1:]) != nil {
+		return
+	}
+	if previous := configV8Node(before, v8TailscaleAuthKeyPath); previous != nil {
+		section.Content = append(section.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v8TailscaleAuthKeyPath[1]}, cloneConfigV8Node(previous))
+	}
+}
+
 func configV8Node(root *yaml.Node, parts []string) *yaml.Node {
 	for _, part := range parts {
 		if root == nil || root.Kind != yaml.MappingNode {
@@ -322,7 +326,7 @@ func configV8Node(root *yaml.Node, parts []string) *yaml.Node {
 }
 
 // deleteConfigV8Path prunes only empty ancestors of the removed field. Other
-// explicit empty maps can carry inheritance or plugin semantics and stay intact.
+// explicit empty maps can carry inheritance semantics and stay intact.
 func deleteConfigV8Path(root *yaml.Node, parts []string) bool {
 	if root == nil || root.Kind != yaml.MappingNode || len(parts) == 0 {
 		return false
@@ -376,4 +380,95 @@ func mergeConfigV8Patch(dst, src *yaml.Node) {
 			dst.Content = append(dst.Content, key, value)
 		}
 	}
+}
+
+// configV8IdentityKeys name the fields that identify a mapping inside a list,
+// in priority order: openai-compatibility models by alias, groups by name,
+// key entries by api-key.
+var configV8IdentityKeys = []string{"alias", "name", "api-key", "id"}
+
+// carryConfigV8Comments copies YAML comments from the previous document (src)
+// onto nodes that a JSON write recreated without any. Mapping values match by
+// key. List items match by identity (a scalar's value, or a mapping's first
+// identity field) and otherwise by position when unchanged, so comments stay
+// with entries that survive when a whole list is replaced. Nodes that already
+// carry comments keep them.
+func carryConfigV8Comments(dst, src *yaml.Node) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.HeadComment == "" && dst.LineComment == "" && dst.FootComment == "" {
+		dst.HeadComment, dst.LineComment, dst.FootComment = src.HeadComment, src.LineComment, src.FootComment
+	}
+	if dst.Kind != src.Kind {
+		return
+	}
+	switch dst.Kind {
+	case yaml.DocumentNode:
+		for i := 0; i < len(dst.Content) && i < len(src.Content); i++ {
+			carryConfigV8Comments(dst.Content[i], src.Content[i])
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(dst.Content); i += 2 {
+			for j := 0; j+1 < len(src.Content); j += 2 {
+				if src.Content[j].Value == dst.Content[i].Value {
+					carryConfigV8Comments(dst.Content[i], src.Content[j])
+					carryConfigV8Comments(dst.Content[i+1], src.Content[j+1])
+					break
+				}
+			}
+		}
+	case yaml.SequenceNode:
+		used := make([]bool, len(src.Content))
+		for i, item := range dst.Content {
+			if j := matchConfigV8Item(item, i, src.Content, used); j >= 0 {
+				used[j] = true
+				carryConfigV8Comments(item, src.Content[j])
+			}
+		}
+	}
+}
+
+func matchConfigV8Item(item *yaml.Node, index int, previous []*yaml.Node, used []bool) int {
+	if id := configV8ItemIdentity(item); id != "" {
+		for j, candidate := range previous {
+			if !used[j] && configV8ItemIdentity(candidate) == id {
+				return j
+			}
+		}
+	}
+	if index < len(previous) && !used[index] && configV8NodesEqual(item, previous[index]) {
+		return index
+	}
+	return -1
+}
+
+func configV8ItemIdentity(node *yaml.Node) string {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		return "=" + node.Value
+	case yaml.MappingNode:
+		for _, key := range configV8IdentityKeys {
+			if value := configV8Node(node, []string{key}); value != nil && value.Kind == yaml.ScalarNode && value.Value != "" {
+				return key + "=" + value.Value
+			}
+		}
+	}
+	return ""
+}
+
+// configV8NodesEqual compares content, ignoring comments and quoting style.
+func configV8NodesEqual(a, b *yaml.Node) bool {
+	if a.Kind != b.Kind || a.Value != b.Value || len(a.Content) != len(b.Content) {
+		return false
+	}
+	if a.Kind == yaml.ScalarNode && a.ShortTag() != b.ShortTag() {
+		return false
+	}
+	for i := range a.Content {
+		if !configV8NodesEqual(a.Content[i], b.Content[i]) {
+			return false
+		}
+	}
+	return true
 }

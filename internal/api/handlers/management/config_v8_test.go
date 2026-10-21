@@ -16,102 +16,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	raw := "# Keep this configuration\nport: 8317\nrequest-retry: 3\napi-keys: [client]\nws-auth: true\ntls: {}\npayload: null\ncodex: {live-media-relay: {}}\n"
-	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &Handler{cfg: cfg, configFilePath: path}
-	reloads := make(chan *config.Config, 8)
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) { reloads <- cfg })
-	router := gin.New()
-	router.GET("/v8/management/config", h.ConfigV8)
-	router.PATCH("/v8/management/config", h.ConfigV8)
-	router.PUT("/v8/management/config.yaml", h.ConfigV8)
-	router.PUT("/v8/management/config/*path", h.ConfigV8)
-	router.DELETE("/v8/management/config/*path", h.ConfigV8)
-	router.PUT("/v0/management/request-retry", h.PutRequestRetry)
-	request := func(method, url, body string, status int) {
-		t.Helper()
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(method, url, strings.NewReader(body)))
-		if recorder.Code != status {
-			t.Fatalf("%s %s: status=%d body=%s", method, url, recorder.Code, recorder.Body.String())
-		}
-	}
-	request(http.MethodGet, "/v8/management/config", "", 200)
-	saved, _ := os.ReadFile(path)
-	if string(saved) != raw {
-		t.Fatal("GET migrated the config")
-	}
-	request(http.MethodPatch, "/v8/management/config", `{"server":{"port":"invalid"}}`, 422)
-	saved, _ = os.ReadFile(path)
-	if string(saved) != raw {
-		t.Fatal("failed write migrated the config")
-	}
-	request(http.MethodPut, "/v0/management/request-retry", `{"value":2}`, 200)
-	saved, _ = os.ReadFile(path)
-	if strings.Contains(string(saved), "config-version") || strings.Contains(string(saved), "routing:") {
-		t.Fatal("v0 migrated a legacy file")
-	}
-	originalFile, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request(http.MethodPatch, "/v8/management/config", `{"routing":{"retry":{"request-retry":0}},"oauth":{"providers":{"aistudio":{"ws-auth":false}}}}`, 200)
-	updatedFile, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !os.SameFile(originalFile, updatedFile) {
-		t.Fatal("v8 update replaced the mounted configuration inode")
-	}
-	saved, _ = os.ReadFile(path)
-	if !strings.Contains(string(saved), "config-version: 8") || !strings.Contains(string(saved), "# Keep this configuration") {
-		t.Fatal("migration or comment preservation failed")
-	}
-	if err = config.ValidateV8Config(saved); err != nil {
-		t.Fatalf("saved migration retained an invalid legacy block: %v", err)
-	}
-	loaded, err := config.LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.RequestRetry != 0 || loaded.WebsocketAuth || len(loaded.APIKeys) != 1 {
-		t.Fatal("v8 patch lost effective values")
-	}
-	request(http.MethodPut, "/v0/management/request-retry", `{"value":5}`, 200)
-	loaded, err = config.LoadConfig(path)
-	if err != nil || loaded.RequestRetry != 5 {
-		t.Fatalf("v0 update to v8 config failed: %v", err)
-	}
-	saved, err = os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = config.ValidateV8Config(saved); err != nil || !strings.Contains(string(saved), "config-version: 8") {
-		t.Fatalf("v0 did not preserve the existing v8 layout: %v", err)
-	}
-	request(http.MethodPut, "/v8/management/config/requests/proxy-url", `"direct"`, 200)
-	loaded, err = config.LoadConfig(path)
-	if err != nil || loaded.ProxyURL != "direct" {
-		t.Fatalf("path update failed: %v", err)
-	}
-	request(http.MethodPut, "/v8/management/config/server/unknown-option", `true`, 400)
-	request(http.MethodPut, "/v8/management/config/credentials/concurrency/lifecycle-config-revision", `999`, 400)
-	select {
-	case <-reloads:
-	case <-time.After(5 * time.Second):
-		t.Fatal("config reload hook was not called")
-	}
-}
-
 func TestConfigV8CommentsUnknownLegacySectionsOnWrite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -123,7 +27,6 @@ func TestConfigV8CommentsUnknownLegacySectionsOnWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Home = config.HomeConfig{Enabled: true, Host: "runtime.example"}
 	h := &Handler{cfg: cfg, configFilePath: path}
 	router := gin.New()
 	router.GET("/v8/management/config", h.ConfigV8)
@@ -166,8 +69,8 @@ func TestConfigV8CommentsUnknownLegacySectionsOnWrite(t *testing.T) {
 	if url := configV8Node(doc.Content[0], []string{"requests", "proxy-url"}); url == nil || url.Value != "direct" {
 		t.Fatal("path update did not persist the proxy URL")
 	}
-	if h.cfg.Home.Host != "runtime.example" || !h.cfg.Home.Enabled || h.cfg.ProxyURL != "direct" {
-		t.Fatal("path update changed runtime Home settings or missed the proxy URL")
+	if h.cfg.ProxyURL != "direct" {
+		t.Fatal("path update missed the proxy URL")
 	}
 	request(http.MethodPut, "/v8/management/config/requests/proxy-url", `"none"`, http.StatusOK)
 	request(http.MethodDelete, "/v8/management/config/server", "", http.StatusOK)
@@ -279,9 +182,7 @@ func TestV8MigrationReloadSnapshotMatchesDisk(t *testing.T) {
 		handler                 func(*Handler) gin.HandlerFunc
 		migrated                bool
 	}{
-		{"legacy", "/v0/management/debug", "/v0/management/debug", `{"value":true}`, func(h *Handler) gin.HandlerFunc { return h.PutDebug }, false},
 		{"v8 logs", "/v8/management/config/*path", "/v8/management/config/observability/logs/debug", `true`, func(h *Handler) gin.HandlerFunc { return h.ConfigV8 }, true},
-		{"v8 plugin", "/v8/management/config/*path", "/v8/management/config/plugins/configs/test-plugin/enabled", `false`, func(h *Handler) gin.HandlerFunc { return h.ConfigV8 }, true},
 		{"v8 config", "/v8/management/config", "/v8/management/config", `{"observability":{"logs":{"debug":true}}}`, func(h *Handler) gin.HandlerFunc { return h.ConfigV8 }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,165 +233,12 @@ func TestV8MigrationReloadSnapshotMatchesDisk(t *testing.T) {
 	}
 }
 
-func TestV8GroupedCredentialsSurviveLegacyWrites(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	raw := `api-keys:
-  codex:
-    - name: production
-      base-url: https://example.invalid
-      headers: {X-Shared: value}
-      request-retry: 2
-      keys:
-        - api-key: first
-          request-retry: null
-        - api-key: second
-          request-retry: 0
-`
-	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &Handler{cfg: cfg, configFilePath: path}
-	router := gin.New()
-	router.PUT("/v0/management/debug", h.PutDebug)
-	router.PUT("/v0/management/codex-api-key", h.PutCodexKeys)
-	for _, tc := range []struct{ url, body string }{
-		{"/v0/management/debug", `{"value":true}`},
-		{"/v0/management/codex-api-key", `[{"api-key":"first","base-url":"https://example.invalid","request-retry":0}]`},
-	} {
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, tc.url, strings.NewReader(tc.body)))
-		if recorder.Code != 200 {
-			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-		}
-		data, _ := os.ReadFile(path)
-		if tc.url == "/v0/management/debug" && !strings.Contains(string(data), "production") {
-			t.Fatal("unrelated legacy write lost group identity")
-		}
-	}
-	loaded, err := config.LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded.CodexKey) != 1 || loaded.CodexKey[0].RequestRetry == nil || *loaded.CodexKey[0].RequestRetry != 0 {
-		t.Fatal("legacy credential replacement was not applied")
-	}
-}
-
-func TestConfigV8DeleteLastField(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		raw   string
-		path  string
-		check func(*config.Config) bool
-	}{
-		{"retry", "request-retry: 3\n", "routing/retry/request-retry", func(cfg *config.Config) bool { return cfg.RequestRetry == 0 }},
-		{"websocket", "ws-auth: false\n", "oauth/providers/aistudio/ws-auth", func(cfg *config.Config) bool { return cfg.WebsocketAuth }},
-		{"debug", "debug: true\n", "observability/logs/debug", func(cfg *config.Config) bool { return !cfg.Debug }},
-		{"sibling", "routing: {strategy: fill-first, retry: {request-retry: 3}}\n", "routing/retry/request-retry", func(cfg *config.Config) bool { return cfg.RequestRetry == 0 && cfg.Routing.Strategy == "fill-first" }},
-		{"provider", "oauth: {providers: {codex: {disable-codex-cloaking: true}}}\n", "upstream/codex/disable-codex-cloaking", func(cfg *config.Config) bool { return !cfg.Codex.DisableCodexCloaking }},
-		{"excluded models", "oauth: {excluded-models: {codex: [blocked-model]}}\n", "oauth/excluded-models", func(cfg *config.Config) bool { return len(cfg.OAuthExcludedModels) == 0 }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			file := filepath.Join(t.TempDir(), "config.yaml")
-			raw := tc.raw + "port: 8317\napi-keys: [client]\nplugins: {configs: {sample: {enabled: false, options: {}}}}\n"
-			if err := os.WriteFile(file, []byte(raw), 0600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := config.LoadConfig(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			h := &Handler{cfg: cfg, configFilePath: file}
-			router := gin.New()
-			router.DELETE("/v8/management/config/*path", h.ConfigV8)
-			router.GET("/v8/management/config/*path", h.ConfigV8)
-			url := "/v8/management/config/" + tc.path
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, url, nil))
-			if w.Code != http.StatusOK {
-				t.Fatalf("delete last field: status=%d body=%s", w.Code, w.Body.String())
-			}
-			cfg, err = config.LoadConfig(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !tc.check(cfg) || cfg.Port != 8317 || len(cfg.APIKeys) != 1 || cfg.APIKeys[0] != "client" {
-				t.Fatal("delete did not restore defaults or changed unrelated settings")
-			}
-			if !reflect.DeepEqual(h.cfg.OAuthOnlyFields, cfg.OAuthOnlyFields) {
-				t.Fatal("delete left the runtime OAuth scope out of sync with disk")
-			}
-			saved, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var doc yaml.Node
-			if err = yaml.Unmarshal(saved, &doc); err != nil {
-				t.Fatal(err)
-			}
-			if configV8Node(doc.Content[0], strings.Split(tc.path, "/")) != nil {
-				t.Fatal("save reintroduced the deleted field")
-			}
-			if options := configV8Node(doc.Content[0], []string{"plugins", "configs", "sample", "options"}); options == nil || options.Kind != yaml.MappingNode || len(options.Content) != 0 {
-				t.Fatal("delete removed an unrelated explicit empty mapping")
-			}
-			for _, method := range []string{http.MethodGet, http.MethodDelete} {
-				w = httptest.NewRecorder()
-				router.ServeHTTP(w, httptest.NewRequest(method, url, nil))
-				if w.Code != http.StatusNotFound {
-					t.Fatalf("%s deleted field: status=%d body=%s", method, w.Code, w.Body.String())
-				}
-			}
-		})
-	}
-}
-
-func TestConfigV8ReplaceEmptyGroup(t *testing.T) {
-	for _, tc := range []struct{ path, raw string }{
-		{"routing/retry", "routing: {retry: {request-retry: 3}}\n"},
-		{"oauth/providers/aistudio", "oauth: {providers: {aistudio: {ws-auth: false}}}\n"},
-		{"observability/logs", "observability: {logs: {debug: true}}\n"},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.yaml")
-			if err := os.WriteFile(path, []byte(tc.raw), 0600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := config.LoadConfig(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			h := &Handler{cfg: cfg, configFilePath: path}
-			r := gin.New()
-			r.PUT("/v8/management/config/*path", h.ConfigV8)
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/v8/management/config/"+tc.path, strings.NewReader(`{}`)))
-			if w.Code != http.StatusOK {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-			}
-			loaded, err := config.LoadConfig(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if loaded.RequestRetry != 0 || !loaded.WebsocketAuth || loaded.Debug {
-				t.Fatal("empty replacement did not restore defaults")
-			}
-		})
-	}
-}
-
 func TestConfigV8EmptyExcludedModelsSurvivesSave(t *testing.T) {
 	for _, tc := range []struct {
 		name, rules, path, body string
 	}{
-		{"unrelated v0 write", "{}", "/v0/management/debug", `{"value":true}`},
 		{"unrelated v8 write", "{}", "/v8/management/config/observability/logs/debug", `true`},
 		{"explicit v8 empty write", "{codex: [blocked-model]}", "/v8/management/config/oauth/excluded-models", `{}`},
-		{"v0 clears migrated rules", "{codex: [blocked-model]}", "/v0/management/oauth-excluded-models", `{}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
@@ -504,8 +252,6 @@ func TestConfigV8EmptyExcludedModelsSurvivesSave(t *testing.T) {
 			}
 			h := &Handler{cfg: cfg, configFilePath: path}
 			router := gin.New()
-			router.PUT("/v0/management/debug", h.PutDebug)
-			router.PUT("/v0/management/oauth-excluded-models", h.PutOAuthExcludedModels)
 			router.PUT("/v8/management/config/*path", h.ConfigV8)
 			router.GET("/v8/management/config/*path", h.ConfigV8)
 			response := httptest.NewRecorder()
@@ -634,13 +380,6 @@ routing:
   retry:
     request-retry: 3
     max-retry-interval: 30
-plugins:
-  configs:
-    sample:
-      enabled: false
-      options: {} # Keep empty mapping
-      custom-null: null # Keep explicit null
-      custom-tree: {unknown: [one, {two: 2}]}
 `
 	if err := os.WriteFile(file, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
@@ -649,7 +388,6 @@ plugins:
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Home = config.HomeConfig{Enabled: true, Host: "runtime.example"}
 	h := &Handler{cfg: cfg, configFilePath: file}
 	reloads := make(chan *config.Config, 8)
 	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) { reloads <- cfg })
@@ -682,7 +420,6 @@ plugins:
 		if errLoad != nil {
 			t.Fatal(errLoad)
 		}
-		loaded.Home = cfg.Home
 		// SourceHash is runtime-only metadata of a file load, not persisted config.
 		loaded.SourceHash = ""
 		select {
@@ -733,29 +470,10 @@ plugins:
 	if !reflect.DeepEqual(expectedValue, actualValue) {
 		t.Fatal("DELETE changed unrelated document fields or their presence")
 	}
-	pluginPath := []string{"plugins", "configs", "sample"}
-	var beforePlugin, afterPlugin any
-	if err = configV8Node(original, pluginPath).Decode(&beforePlugin); err != nil {
-		t.Fatal(err)
-	}
-	if err = configV8Node(root, pluginPath).Decode(&afterPlugin); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(beforePlugin, afterPlugin) {
-		t.Fatal("opaque plugin settings changed")
-	}
-	for _, comment := range []string{"# Keep document comment", "# Keep empty mapping", "# Keep explicit null", "# Keep new sibling"} {
+	for _, comment := range []string{"# Keep document comment", "# Keep new sibling"} {
 		if !strings.Contains(string(data), comment) {
 			t.Fatalf("lost comment %s", comment)
 		}
-	}
-	for _, tc := range []struct{ name, body string }{{"options", "{}"}, {"custom-null", "null"}} {
-		path := "plugins/configs/sample/" + tc.name
-		request(http.MethodGet, path, http.StatusOK, tc.body)
-		request(http.MethodDelete, path, http.StatusOK, "")
-		checkReload()
-		request(http.MethodGet, path, http.StatusNotFound, "")
-		request(http.MethodDelete, path, http.StatusNotFound, "")
 	}
 }
 
@@ -890,5 +608,53 @@ api-keys:
 	}
 	if loaded.OpenAICompatibility[0].Headers["User-Agent"] != "$User-Agent-3" {
 		t.Fatalf("unexpected loaded headers: %+v", loaded.OpenAICompatibility[0].Headers)
+	}
+}
+
+// A config still holding groups for removed providers must not block unrelated
+// v8 management writes.
+func TestConfigV8WriteSucceedsWithRemovedProviderGroups(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `config-version: 8
+server: {port: 8317}
+api-keys:
+  claude:
+    - name: kept
+      keys:
+        - api-key: sk-claude
+  gemini:
+    - name: removed
+      keys:
+        - api-key: gemini-key
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.PATCH("/v8/management/config", h.ConfigV8)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/v8/management/config", strings.NewReader(`{"server":{"port":8318}}`)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("unrelated write failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = config.ValidateV8Config(saved); err != nil {
+		t.Fatalf("saved config is invalid: %v", err)
+	}
+	if !strings.Contains(string(saved), "# api-keys.gemini:") {
+		t.Fatalf("removed provider group was not archived:\n%s", saved)
+	}
+	loaded, err := config.LoadConfig(path)
+	if err != nil || loaded.Port != 8318 || len(loaded.ClaudeKey) != 1 {
+		t.Fatalf("write not applied or retained group lost: err=%v cfg=%+v", err, loaded)
 	}
 }

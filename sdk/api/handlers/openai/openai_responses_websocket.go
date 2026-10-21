@@ -370,23 +370,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	passthroughModelName := ""
 	upstreamMode := responsesWebsocketUpstreamModeUnknown
 	upstreamWebsocketAuthID := ""
-	sessionAuthByIDWithSource := func(authID string) (*coreauth.Auth, bool, bool) {
-		if h == nil || h.AuthManager == nil {
-			return nil, false, false
-		}
-		// Prefer the current manager view so hot-reloaded transport eligibility is
-		// observed even when the execution session still holds an older auth snapshot.
-		if auth, ok := h.AuthManager.GetByID(authID); ok {
-			return auth, false, true
-		}
-		if auth, ok := h.AuthManager.GetExecutionSessionAuthByID(passthroughSessionID, authID); ok {
-			return auth, true, true
-		}
-		return nil, false, false
-	}
 	sessionAuthByID := func(authID string) (*coreauth.Auth, bool) {
-		auth, _, ok := sessionAuthByIDWithSource(authID)
-		return auth, ok
+		if h == nil || h.AuthManager == nil {
+			return nil, false
+		}
+		return h.AuthManager.GetByID(authID)
 	}
 	upstreamModeForAuth := func(auth *coreauth.Auth) string {
 		if auth != nil && websocketUpstreamSupportsIncrementalInput(auth.Attributes, auth.Metadata) {
@@ -467,22 +455,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			requestModelName = strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
 		}
 		executionParent := context.WithValue(c.Request.Context(), "gin", c)
-		executionParent, routeOverridesModelResolution := h.PrepareStreamModelRoute(
-			executionParent,
-			h.HandlerType(),
-			requestModelName,
-			payload,
-		)
-		pluginExecutorID := handlers.PreparedStreamPluginExecutor(executionParent)
-		isPluginExecutorRoute := pluginExecutorID != ""
 		if pinnedAuthID != "" {
-			pinnedAuth, homeRuntime, ok := sessionAuthByIDWithSource(pinnedAuthID)
+			pinnedAuth, ok := sessionAuthByID(pinnedAuthID)
 			providerKey := ""
 			if pinnedAuth != nil {
 				providerKey = strings.ToLower(strings.TrimSpace(pinnedAuth.Provider))
 			}
 			state, hasState := pinnedAuthByProvider[providerKey]
-			if !ok || !hasState || state.authID != pinnedAuthID || !responsesWebsocketPinnedAuthMatchesModel(pinnedAuth, requestModelName, state.modelKey, homeRuntime) {
+			if !ok || !hasState || state.authID != pinnedAuthID || !responsesWebsocketPinnedAuthMatchesModel(pinnedAuth, requestModelName) {
 				pinnedAuthID = ""
 			}
 		}
@@ -491,8 +471,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			if len(providerSet) == 1 {
 				for providerKey := range providerSet {
 					state, ok := pinnedAuthByProvider[providerKey]
-					candidateAuth, homeRuntime, okAuth := sessionAuthByIDWithSource(state.authID)
-					if ok && okAuth && responsesWebsocketPinnedAuthMatchesModel(candidateAuth, requestModelName, state.modelKey, homeRuntime) {
+					candidateAuth, okAuth := sessionAuthByID(state.authID)
+					if ok && okAuth && responsesWebsocketPinnedAuthMatchesModel(candidateAuth, requestModelName) {
 						pinnedAuthID = state.authID
 					} else {
 						delete(pinnedAuthByProvider, providerKey)
@@ -507,7 +487,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				useUpstreamWebsocketPassthrough = provider == "codex" || provider == "xai"
 			}
 		}
-		nativeWebsocketPassthrough := !routeOverridesModelResolution && responsesWebsocketNativePassthroughAllowed(
+		nativeWebsocketPassthrough := responsesWebsocketNativePassthroughAllowed(
 			upstreamMode,
 			useUpstreamWebsocketPassthrough,
 			pinnedAuthID,
@@ -533,49 +513,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			passthroughModelName = ""
 		}
 
-		// A completed compaction response is direct evidence that the active target
-		// (whether a specific plugin executor, a specific auth on standard route, or a specific auth on provider route)
+		// A completed compaction response is direct evidence that the active auth
 		// supports compaction replay.
 		observedCompactionReplayAuthID := ""
 		observedCompactionSupported := false
-		if observedCompaction.modelName != "" &&
+		if observedCompaction.modelName != "" && observedCompaction.authID != "" &&
 			responsesWebsocketResolvedModelName(observedCompaction.modelName) == responsesWebsocketResolvedModelName(requestModelName) {
-			if isPluginExecutorRoute {
-				if observedCompaction.pluginID != "" && observedCompaction.pluginID == pluginExecutorID {
+			if pinnedAuthID != "" {
+				if pinnedAuthID == observedCompaction.authID {
 					observedCompactionSupported = true
+					observedCompactionReplayAuthID = observedCompaction.authID
 				}
-			} else if observedCompaction.pluginID == "" {
-				currentProvider, currentTargetModel := handlers.PreparedStreamProviderRoute(executionParent)
-				providerRouteMatches := (observedCompaction.provider == currentProvider && observedCompaction.targetModel == currentTargetModel)
-				if providerRouteMatches && observedCompaction.authID != "" {
-					if currentProvider != "" {
-						// Provider route override: validate against the auth that observed compaction on this provider route.
-						// A leftover pinnedAuthID from an earlier unrouted turn must not veto the routed compaction auth.
-						if compactionAuth, _, ok := sessionAuthByIDWithSource(observedCompaction.authID); ok && compactionAuth != nil {
-							if compactionAuth.Status == coreauth.StatusActive {
-								observedCompactionSupported = true
-								observedCompactionReplayAuthID = observedCompaction.authID
-							}
-						}
-					} else {
-						// Standard auth route:
-						if pinnedAuthID != "" {
-							if pinnedAuthID == observedCompaction.authID {
-								observedCompactionSupported = true
-								observedCompactionReplayAuthID = observedCompaction.authID
-							}
-						} else if compactionAuth, homeRuntime, ok := sessionAuthByIDWithSource(observedCompaction.authID); ok && compactionAuth != nil {
-							if homeRuntime {
-								if compactionAuth.Status == coreauth.StatusActive {
-									observedCompactionSupported = true
-									observedCompactionReplayAuthID = observedCompaction.authID
-								}
-							} else if responsesWebsocketPinnedAuthMatchesModel(compactionAuth, requestModelName, observedCompaction.modelKey, false) {
-								observedCompactionSupported = true
-								observedCompactionReplayAuthID = observedCompaction.authID
-							}
-						}
-					}
+			} else if compactionAuth, ok := sessionAuthByID(observedCompaction.authID); ok && compactionAuth != nil {
+				if responsesWebsocketPinnedAuthMatchesModel(compactionAuth, requestModelName) {
+					observedCompactionSupported = true
+					observedCompactionReplayAuthID = observedCompaction.authID
 				}
 			}
 		}
@@ -735,19 +687,16 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 			preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 		})
-		executionAuthID := ""
-		if !routeOverridesModelResolution {
-			executionAuthID = pinnedAuthID
-		}
+		executionAuthID := pinnedAuthID
 		if executionAuthID == "" {
 			executionAuthID = observedCompactionReplayAuthID
 		}
-		if executionAuthID != "" && !isPluginExecutorRoute {
+		if executionAuthID != "" {
 			cliCtx = handlers.WithPinnedAuthID(cliCtx, executionAuthID)
 		}
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 		if !selectedAuthObserved {
-			// Plugin/alternate routes bypass auth selection. Keep canonical HTTP-mode
+			// No auth was selected (for example an early failure). Keep canonical HTTP-mode
 			// state instead of inheriting the previous pinned websocket mode.
 			attemptedUpstreamMode = responsesWebsocketUpstreamModeHTTP
 		}
@@ -825,34 +774,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastResponseOutput = completedOutput
 			if inputContainsFullTranscript(gjson.ParseBytes(completedOutput)) {
 				_, modelKey := responsesWebsocketProviderSetForModel(responsesWebsocketResolvedModelName(modelName))
-				if isPluginExecutorRoute {
-					observedCompaction = responsesWebsocketObservedCompactionState{
-						modelName: modelName,
-						modelKey:  modelKey,
-						pluginID:  pluginExecutorID,
-					}
-				} else {
-					currentProvider, currentTargetModel := handlers.PreparedStreamProviderRoute(executionParent)
-					observedCompaction = responsesWebsocketObservedCompactionState{
-						modelName:   modelName,
-						modelKey:    modelKey,
-						provider:    currentProvider,
-						targetModel: currentTargetModel,
-						authID:      lastAttemptedAuthID,
-					}
+				observedCompaction = responsesWebsocketObservedCompactionState{
+					modelName: modelName,
+					modelKey:  modelKey,
+					authID:    lastAttemptedAuthID,
 				}
 			} else if observedCompaction.modelName != "" {
 				targetMismatch := false
-				currentProvider, currentTargetModel := handlers.PreparedStreamProviderRoute(executionParent)
 				if responsesWebsocketResolvedModelName(observedCompaction.modelName) != responsesWebsocketResolvedModelName(modelName) {
-					targetMismatch = true
-				} else if isPluginExecutorRoute {
-					if pluginExecutorID != observedCompaction.pluginID {
-						targetMismatch = true
-					}
-				} else if observedCompaction.pluginID != "" {
-					targetMismatch = true
-				} else if currentProvider != observedCompaction.provider || currentTargetModel != observedCompaction.targetModel {
 					targetMismatch = true
 				} else if observedCompaction.authID != "" && lastAttemptedAuthID != "" && observedCompaction.authID != lastAttemptedAuthID {
 					targetMismatch = true
@@ -868,12 +797,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 }
 
 type responsesWebsocketObservedCompactionState struct {
-	modelName   string
-	modelKey    string
-	authID      string
-	pluginID    string
-	provider    string
-	targetModel string
+	modelName string
+	modelKey  string
+	authID    string
 }
 
 func (s *responsesWebsocketObservedCompactionState) clear() {

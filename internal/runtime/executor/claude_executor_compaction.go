@@ -24,10 +24,6 @@ func expandClaudeResponsesCompaction(req *cliproxyexecutor.Request, opts *clipro
 	return helps.ExpandResponsesCompactionCapsules(req, opts, "claude")
 }
 
-func dropForeignClaudeCompactionItems(payload []byte) []byte {
-	return helps.DropForeignResponsesCompactionItems(payload, "claude")
-}
-
 func claudeResponsesCompactionRequested(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) bool {
 	return opts.Alt == "responses/compact" || helps.HasResponsesCompactionTriggerRequest(req, opts)
 }
@@ -56,17 +52,17 @@ func (e *ClaudeExecutor) executeClaudeCompaction(ctx context.Context, auth *clip
 	if errSummary != nil {
 		return resp, errSummary
 	}
-	summaryText, errExtract := helps.ExtractAntigravitySummaryText(summaryResp.Payload)
+	summaryText, errExtract := helps.ExtractCompactionSummaryText(summaryResp.Payload)
 	if errExtract != nil {
 		return resp, fmt.Errorf("extract summary: %w", errExtract)
 	}
-	capsule, errSeal := helps.SealAntigravityCompaction(summaryText, baseModel)
+	capsule, errSeal := helps.SealCompaction(summaryText, baseModel)
 	if errSeal != nil {
 		return resp, fmt.Errorf("seal compaction capsule: %w", errSeal)
 	}
 
 	inputTokens, outputTokens, totalTokens, cachedTokens := claudeCompactionResponsesUsage(summaryResp.Payload)
-	respPayload := helps.BuildAntigravityCompactionResponse(baseModel, capsule, inputTokens, outputTokens, totalTokens)
+	respPayload := helps.BuildCompactionResponse(baseModel, capsule, inputTokens, outputTokens, totalTokens)
 	respPayload, _ = sjson.SetBytes(respPayload, "usage.input_tokens_details.cached_tokens", cachedTokens)
 	return cliproxyexecutor.Response{
 		Payload: respPayload,
@@ -90,7 +86,7 @@ func (e *ClaudeExecutor) executeClaudeCompactionStream(ctx context.Context, auth
 	outputTokens := int(gjson.GetBytes(summaryResp.Payload, "usage.output_tokens").Int())
 	totalTokens := int(gjson.GetBytes(summaryResp.Payload, "usage.total_tokens").Int())
 	cachedTokens := int(gjson.GetBytes(summaryResp.Payload, "usage.input_tokens_details.cached_tokens").Int())
-	chunks := helps.BuildAntigravityCompactionStreamChunks(baseModel, capsule, inputTokens, outputTokens, totalTokens)
+	chunks := helps.BuildCompactionStreamChunks(baseModel, capsule, inputTokens, outputTokens, totalTokens)
 	for i := range chunks {
 		chunks[i] = patchClaudeCompactionStreamUsage(chunks[i], inputTokens, outputTokens, totalTokens, cachedTokens)
 	}
@@ -128,7 +124,7 @@ func claudeCompactionSummaryFromContext(ctx context.Context) bool {
 func prepareClaudeCompactionSummaryPayload(payload []byte, modelName string) []byte {
 	tools := gjson.GetBytes(payload, "tools")
 	additionalTools := gjson.GetBytes(payload, "additional_tools")
-	out := helps.PrepareAntigravityCompactionSummaryPayload(payload, modelName)
+	out := helps.PrepareCompactionSummaryPayload(payload, modelName)
 	if tools.Exists() {
 		out, _ = sjson.SetRawBytes(out, "tools", []byte(tools.Raw))
 	}

@@ -18,8 +18,6 @@ type CodexWebSearchResultCacheConfig = internalconfig.CodexWebSearchResultCacheC
 type StreamingConfig = internalconfig.StreamingConfig
 type ClaudeCodeConfig = internalconfig.ClaudeCodeConfig
 type TLSConfig = internalconfig.TLSConfig
-type DiscoveryConfig = internalconfig.DiscoveryConfig
-type DiscoveryInterfacesConfig = internalconfig.DiscoveryInterfacesConfig
 type RemoteManagement = internalconfig.RemoteManagement
 type OAuthModelAlias = internalconfig.OAuthModelAlias
 type OAuthModelSetting = internalconfig.OAuthModelSetting
@@ -28,30 +26,19 @@ type PayloadRule = internalconfig.PayloadRule
 type PayloadFilterRule = internalconfig.PayloadFilterRule
 type PayloadModelRule = internalconfig.PayloadModelRule
 
-type GeminiKey = internalconfig.GeminiKey
 type CodexKey = internalconfig.CodexKey
 type XAIKey = internalconfig.XAIKey
 type XAIModel = internalconfig.XAIModel
 type MetaKey = internalconfig.MetaKey
 type MetaModel = internalconfig.MetaModel
 type ClaudeKey = internalconfig.ClaudeKey
-type VertexCompatKey = internalconfig.VertexCompatKey
-type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 
 type TLS = internalconfig.TLSConfig
 
-const (
-	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository
-)
-
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }
-
-func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
-	return internalconfig.LoadConfigOptional(configFile, optional)
-}
 
 func ResolveOAuthModelSetting(settings []OAuthModelSetting, modelID, metadataModelID, modelName string) *OAuthModelSetting {
 	return internalconfig.ResolveOAuthModelSetting(settings, modelID, metadataModelID, modelName)

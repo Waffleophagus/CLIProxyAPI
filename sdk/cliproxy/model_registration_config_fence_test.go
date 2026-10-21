@@ -9,16 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-// Without a watcher (Home mode), a registration dropped for obsolete global exclusions
+// Without a watcher, a registration dropped for obsolete global exclusions
 // must still be replaced by the re-registration that runs when the config is applied.
 func TestModelRegistrationDroppedForGlobalExclusionsIsReplacedWithoutWatcher(t *testing.T) {
 	models := registry.GetClaudeModels()
@@ -28,12 +25,8 @@ func TestModelRegistrationDroppedForGlobalExclusionsIsReplacedWithoutWatcher(t *
 	modelA, modelB := models[0].ID, models[1].ID
 	oldCfg := &config.Config{OAuthExcludedModels: map[string][]string{"claude": {modelA}}}
 	newCfg := &config.Config{OAuthExcludedModels: map[string][]string{"claude": {modelB}}}
-	service := &Service{cfg: oldCfg, coreManager: coreauth.NewManager(nil, nil, nil), pluginHost: pluginhost.New()}
+	service := &Service{cfg: oldCfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	service.applyPprofConfigContextFn = func(context.Context, *config.Config) bool { return true }
-	t.Cleanup(func() {
-		sdkAuth.RegisterPluginAuthParser(nil)
-		sdktranslator.SetPluginHooks(nil)
-	})
 
 	var reads atomic.Int32
 	oldStarted, oldRelease, oldDone := make(chan struct{}), make(chan struct{}), make(chan struct{})

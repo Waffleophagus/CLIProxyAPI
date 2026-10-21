@@ -554,10 +554,6 @@ func responsesInputAudioToChatPart(contentItem gjson.Result) ([]byte, bool) {
 	return part, true
 }
 
-func convertResponsesToolChoiceToChatCompletions(toolChoice gjson.Result, inputRawJSON []byte) []byte {
-	return convertResponsesToolChoiceWithIndex(toolChoice, newResponsesToolIndex(gjson.ParseBytes(inputRawJSON)))
-}
-
 func convertResponsesToolChoiceWithIndex(toolChoice gjson.Result, toolIndex *responsesToolIndex) []byte {
 	if !toolChoice.IsObject() {
 		return []byte(toolChoice.Raw)

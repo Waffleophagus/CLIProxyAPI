@@ -25,15 +25,8 @@ func WithDecorator(ctx context.Context, decorator Decorator) context.Context {
 	return context.WithValue(ctx, decoratorKey{}, decorator)
 }
 
-// WithoutDecorator suppresses intermediate helper decoration. A specialized
-// executor that further configures its helper's transport must apply Decorate
-// once, after its own protocol/pool policy is complete.
-func WithoutDecorator(ctx context.Context) context.Context {
-	return WithDecorator(ctx, nil)
-}
-
 // InheritDecorator copies a decorator from fallback into ctx when ctx does not
-// already specify a decorator or explicit suppression via WithoutDecorator.
+// already specify a decorator or an explicit nil decorator (suppression).
 func InheritDecorator(ctx, fallback context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()

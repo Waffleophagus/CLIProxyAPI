@@ -22,7 +22,7 @@ func TestAuthChangeWatchCoversNativeMutationsAndReload(t *testing.T) {
 		default:
 		}
 	}
-	auth, err := manager.Register(t.Context(), &Auth{ID: "watched", Provider: "antigravity", Metadata: map[string]any{"access_token": "initial"}})
+	auth, err := manager.Register(t.Context(), &Auth{ID: "watched", Provider: "acme", Metadata: map[string]any{"access_token": "initial"}})
 	if err != nil {
 		t.Fatal(err)
 	}

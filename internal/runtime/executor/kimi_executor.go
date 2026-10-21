@@ -778,7 +778,7 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 func (e *KimiExecutor) executeKimiResponsesCompaction(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	var resp cliproxyexecutor.Response
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	summaryPayload := helps.PrepareAntigravityCompactionSummaryPayload(helps.ResponsesCompactionSourcePayload(req, opts), baseModel)
+	summaryPayload := helps.PrepareCompactionSummaryPayload(helps.ResponsesCompactionSourcePayload(req, opts), baseModel)
 	summaryReq := cliproxyexecutor.Request{
 		Model:    req.Model,
 		Payload:  summaryPayload,
@@ -1123,9 +1123,6 @@ func fallbackAssistantReasoning(msg gjson.Result, hasLatest bool, latest string)
 // Refresh refreshes the Kimi token using the refresh token.
 func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	log.Debugf("kimi executor: refresh called")
-	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
-		return refreshed, err
-	}
 	if auth == nil {
 		return nil, fmt.Errorf("kimi executor: auth is nil")
 	}

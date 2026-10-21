@@ -16,13 +16,4 @@ func init() {
 			NonStream: ConvertInteractionsResponseToOpenAIResponsesNonStream,
 		},
 	)
-	translator.Register(
-		Interactions,
-		OpenaiResponse,
-		ConvertInteractionsRequestToOpenAIResponses,
-		interfaces.TranslateResponse{
-			Stream:    ConvertOpenAIResponsesResponseToInteractions,
-			NonStream: ConvertOpenAIResponsesResponseToInteractionsNonStream,
-		},
-	)
 }

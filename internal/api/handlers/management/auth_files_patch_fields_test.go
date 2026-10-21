@@ -586,39 +586,6 @@ func TestNormalizeAuthFilePatchFieldsCanonicalizesLegacyRoots(t *testing.T) {
 	}
 }
 
-func TestSetSourceAuthFileDisabledNormalizesLegacyMetadata(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.json")
-	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","request-retry":2,"disable-cooling":true}`), 0o600); errWrite != nil {
-		t.Fatalf("write legacy auth file: %v", errWrite)
-	}
-
-	if errDisable := setSourceAuthFileDisabled(path, true); errDisable != nil {
-		t.Fatalf("setSourceAuthFileDisabled() error = %v", errDisable)
-	}
-	persistedData, errRead := os.ReadFile(path)
-	if errRead != nil {
-		t.Fatalf("read persisted auth file: %v", errRead)
-	}
-	var persisted map[string]any
-	if errUnmarshal := json.Unmarshal(persistedData, &persisted); errUnmarshal != nil {
-		t.Fatalf("decode persisted auth file: %v", errUnmarshal)
-	}
-	if got := persisted["request_retry"]; got != float64(2) {
-		t.Fatalf("persisted request_retry = %#v, want 2", got)
-	}
-	if got := persisted["disable_cooling"]; got != true {
-		t.Fatalf("persisted disable_cooling = %#v, want true", got)
-	}
-	if got := persisted["disabled"]; got != true {
-		t.Fatalf("persisted disabled = %#v, want true", got)
-	}
-	for _, legacy := range []string{"request-retry", "disable-cooling"} {
-		if _, exists := persisted[legacy]; exists {
-			t.Fatalf("persisted metadata retained %q: %#v", legacy, persisted)
-		}
-	}
-}
-
 func TestPatchAuthFileFields_SyncsPlanTypeAndInvokesHook(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 
@@ -1511,4 +1478,67 @@ func mustGetAuthByID(t *testing.T, manager *coreauth.Manager, id string) *coreau
 		t.Fatalf("expected auth %q in manager", id)
 	}
 	return got
+}
+
+func TestPatchAuthFileFields_RejectsRemovedProviderType(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	for _, removedType := range []string{"GeMiNi-ClI", " vertex ", "ANTIGRAVITY"} {
+		t.Run(strings.TrimSpace(removedType), func(t *testing.T) {
+			authDir := t.TempDir()
+			fileName := "review.json"
+			filePath := filepath.Join(authDir, fileName)
+			store := fileauth.NewFileTokenStore()
+			store.SetBaseDir(authDir)
+			manager := coreauth.NewManager(store, nil, nil)
+			record := &coreauth.Auth{
+				ID:         fileName,
+				FileName:   fileName,
+				Provider:   "codex",
+				Attributes: map[string]string{"path": filePath},
+				Metadata:   map[string]any{"type": "codex"},
+			}
+			if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+				t.Fatalf("failed to register auth record: %v", errRegister)
+			}
+			before, errBefore := os.ReadFile(filePath)
+			if errBefore != nil && !os.IsNotExist(errBefore) {
+				t.Fatalf("failed to read auth file: %v", errBefore)
+			}
+
+			h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+			hookCalls := 0
+			h.SetPostAuthPersistHook(func(context.Context, *coreauth.Auth) error {
+				hookCalls++
+				return nil
+			})
+
+			typeJSON, _ := json.Marshal(removedType)
+			body := `{"name":"review.json","type":` + string(typeJSON) + `}`
+			rec := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rec)
+			req := httptest.NewRequest(http.MethodPatch, "/v8/management/credentials/fields", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			ctx.Request = req
+			h.PatchAuthFileFields(ctx)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			after, errAfter := os.ReadFile(filePath)
+			if errAfter != nil && !os.IsNotExist(errAfter) {
+				t.Fatalf("failed to read auth file: %v", errAfter)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("auth file changed on rejected patch:\nbefore: %s\nafter:  %s", before, after)
+			}
+			updated := mustGetAuthByID(t, manager, fileName)
+			if got, _ := updated.Metadata["type"].(string); got != "codex" {
+				t.Fatalf("registered type = %q, want %q", got, "codex")
+			}
+			if hookCalls != 0 {
+				t.Fatalf("post-auth persist hook called %d times on rejected patch", hookCalls)
+			}
+		})
+	}
 }

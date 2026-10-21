@@ -96,7 +96,6 @@ func setupSIWCFlow(t *testing.T, blocked bool) *siwcFixture {
 	router.POST("/bind", h.StartSIWCBind)
 	router.POST("/callback", h.PostOAuthCallbackV8)
 	router.GET("/callback", h.GetOAuthCallbackV8)
-	router.POST("/legacy-callback", h.PostOAuthCallback)
 	router.GET("/status", h.GetAuthStatus)
 	router.DELETE("/session", h.CancelAuthSession)
 	t.Cleanup(func() {
@@ -393,27 +392,6 @@ func TestSIWCBindOAuthErrorAndEligibility(t *testing.T) {
 	if status := performOAuthStatusRequest(t, f.router, state); status.Status != "error" || strings.Contains(status.Error, "secret-data") {
 		t.Fatalf("unsafe OAuth error: %#v", status)
 	}
-}
-
-func TestSIWCBindRejectsLegacyCallback(t *testing.T) {
-	f := setupSIWCFlow(t, false)
-	state, flow := f.start(t)
-	w := siwcRequest(t, f.router, http.MethodPost, "/legacy-callback", map[string]any{"state": state, "code": "issued-code"})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("legacy callback: %d %s", w.Code, w.Body.String())
-	}
-	path := filepath.Join(filepath.Dir(f.path), ".oauth-codex-"+state+".oauth")
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("legacy callback created a file: %v", err)
-	}
-	if !f.store.IsPending(state, "codex") || f.service.calls.Load() != 0 {
-		t.Fatal("legacy callback consumed the SIWC session")
-	}
-	w = siwcRequest(t, f.router, http.MethodPost, "/callback", map[string]any{"redirect_url": siwcCallbackURL(state)})
-	if w.Code != http.StatusOK {
-		t.Fatalf("v8 retry: %d %s", w.Code, w.Body.String())
-	}
-	waitSIWCExchange(t, flow)
 }
 
 func TestSIWCBindRejectsCredentialSymlinkAtStart(t *testing.T) {

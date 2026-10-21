@@ -1,15 +1,12 @@
 package config
 
 import (
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
-	"gopkg.in/yaml.v3"
 )
 
 // RequestScopedErrorRule configures custom classification and handling for upstream errors.
@@ -22,93 +19,6 @@ type RequestScopedErrorRule struct {
 	MatchRegexr []string `yaml:"match-regexr,omitempty" json:"match-regexr,omitempty"`
 	// Action specifies the handling behavior: "stop", "stop-and-cooldown", "continue", "continue-and-cooldown".
 	Action string `yaml:"action,omitempty" json:"action,omitempty"`
-}
-
-// PluginsConfig holds dynamic plugin system settings.
-type PluginsConfig struct {
-	// Enabled toggles dynamic plugin loading.
-	Enabled bool `yaml:"enabled" json:"enabled"`
-	// Dir is the plugin discovery directory.
-	Dir string `yaml:"dir" json:"dir"`
-	// StoreSources appends third-party plugin store registries to the built-in official source.
-	StoreSources []string `yaml:"store-sources,omitempty" json:"store-sources,omitempty"`
-	// StoreAuth defines optional auth rules for plugin store registry, metadata, and artifact requests.
-	StoreAuth []sdkpluginstore.AuthConfig `yaml:"store-auth,omitempty" json:"store-auth,omitempty"`
-	// AuthRevision changes when Home-managed plugin credentials change.
-	AuthRevision int64 `yaml:"auth-revision,omitempty" json:"auth-revision,omitempty"`
-	// Configs stores per-plugin instance configuration by plugin ID.
-	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs"`
-}
-
-// PluginInstanceConfig stores host-owned plugin settings and the original plugin YAML subtree.
-type PluginInstanceConfig struct {
-	// Enabled toggles this plugin instance. Nil is normalized to false during YAML parsing.
-	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	// Priority controls plugin startup and routing order.
-	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
-	// Raw preserves the full original plugin configuration YAML subtree.
-	Raw yaml.Node `yaml:"-" json:"-"`
-}
-
-// UnmarshalYAML extracts host-owned fields while preserving the full original YAML node.
-func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
-	if c == nil {
-		return nil
-	}
-
-	c.Priority = 0
-	defaultEnabled := false
-	c.Enabled = &defaultEnabled
-
-	if value == nil || value.Kind == 0 {
-		c.Raw = *defaultPluginInstanceConfigNode()
-		return nil
-	}
-
-	c.Raw = *deepCopyNode(value)
-	if value.Kind != yaml.MappingNode {
-		return nil
-	}
-
-	for i := 0; i+1 < len(value.Content); i += 2 {
-		key := value.Content[i]
-		node := value.Content[i+1]
-		if key == nil {
-			continue
-		}
-		switch key.Value {
-		case "enabled":
-			var enabled bool
-			if errDecodeEnabled := node.Decode(&enabled); errDecodeEnabled != nil {
-				return fmt.Errorf("parse plugin enabled: %w", errDecodeEnabled)
-			}
-			c.Enabled = &enabled
-		case "priority":
-			var priority int
-			if errDecodePriority := node.Decode(&priority); errDecodePriority != nil {
-				return fmt.Errorf("parse plugin priority: %w", errDecodePriority)
-			}
-			c.Priority = priority
-		}
-	}
-
-	return nil
-}
-
-// MarshalYAML returns the preserved raw plugin YAML subtree for lossless config output.
-func (c PluginInstanceConfig) MarshalYAML() (any, error) {
-	if c.Raw.Kind == 0 {
-		return defaultPluginInstanceConfigNode(), nil
-	}
-	return deepCopyNode(&c.Raw), nil
-}
-
-func defaultPluginInstanceConfigNode() *yaml.Node {
-	return &yaml.Node{
-		Kind:    yaml.MappingNode,
-		Tag:     "!!map",
-		Content: []*yaml.Node{},
-	}
 }
 
 // ClaudeConfig configures provider-wide Claude request behavior.
@@ -200,30 +110,6 @@ type XAIConfig struct {
 type DevinConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system prompts and messages.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
-}
-
-// AntigravityConfig configures provider-wide Antigravity request behavior.
-type AntigravityConfig struct {
-	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
-	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
-
-	// ConnectionPool configures upstream HTTP connection pooling behavior for Antigravity.
-	ConnectionPool AntigravityConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
-}
-
-// AntigravityConnectionPoolConfig controls upstream HTTP/1.1 connection pooling behavior for Antigravity.
-type AntigravityConnectionPoolConfig struct {
-	// Enabled controls whether upstream connection pooling is enabled.
-	// Defaults to false (short-lived connection mode). Set to true to enable connection pooling.
-	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-
-	// IdleConnTimeout specifies how long an idle connection stays in the pool before expiring.
-	// Defaults to "30s". Capped at 210s to prevent exceeding Google Frontend (GFE) 240s cutoff.
-	IdleConnTimeout string `yaml:"idle-conn-timeout,omitempty" json:"idle-conn-timeout,omitempty"`
-
-	// MaxIdleConnsPerHost specifies the maximum number of idle connections to retain per host per credential.
-	// Defaults to 2.
-	MaxIdleConnsPerHost *int `yaml:"max-idle-conns-per-host,omitempty" json:"max-idle-conns-per-host,omitempty"`
 }
 
 // CodexConfig configures provider-wide Codex request behavior.
@@ -350,34 +236,37 @@ type PprofConfig struct {
 	Addr string `yaml:"addr" json:"addr"`
 }
 
-// DiscoveryInterfacesConfig specifies interface inclusion and exclusion rules.
-type DiscoveryInterfacesConfig struct {
-	Include []string `yaml:"include" json:"include"`
-	Exclude []string `yaml:"exclude" json:"exclude"`
+// DefaultUsageRetentionDays is the usage store retention when none is configured.
+const DefaultUsageRetentionDays = 90
+
+// UsageTrackingConfig holds persistent usage tracking settings.
+type UsageTrackingConfig struct {
+	// Enabled toggles usage persistence; nil means enabled.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Path is the SQLite database file. Empty means <data dir>/usage.db, where the
+	// data dir is $WRITABLE_PATH/data or a data/ directory next to the config file.
+	// Relative paths are resolved against the config file directory.
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+	// RetentionDays prunes records older than this many days. 0 means the default
+	// (90); a negative value keeps records forever.
+	RetentionDays int `yaml:"retention-days,omitempty" json:"retention-days,omitempty"`
 }
 
-// DiscoveryConfig controls local network mDNS / DNS-SD service advertising.
-type DiscoveryConfig struct {
-	// Enabled toggles mDNS service advertising on the local network (default: false).
-	Enabled bool `yaml:"enabled" json:"enabled"`
+// IsEnabled reports whether usage tracking is enabled (default true).
+func (c UsageTrackingConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
 
-	// ServiceName is the optional custom instance name. When empty, defaults to CPA-<ShortID>.
-	ServiceName string `yaml:"service-name" json:"service-name"`
-
-	// ServiceType is the DNS-SD service type (default: _ai-gateway._tcp).
-	ServiceType string `yaml:"service-type" json:"service-type"`
-
-	// Subtypes specifies DNS-SD API protocol subtypes to advertise (e.g. _responses, _messages, _generate-content).
-	Subtypes []string `yaml:"subtypes" json:"subtypes"`
-
-	// Interfaces specifies network interface filtering rules.
-	Interfaces DiscoveryInterfacesConfig `yaml:"interfaces" json:"interfaces"`
-
-	// AuthRequired indicates whether authentication is required for client calls (default: true).
-	AuthRequired *bool `yaml:"auth-required" json:"auth-required"`
-
-	// AdvertiseManagement explicitly controls whether management endpoints are exposed (default: false).
-	AdvertiseManagement bool `yaml:"advertise-management" json:"advertise-management"`
+// EffectiveRetentionDays returns the retention with the default applied; a
+// value <= 0 disables pruning.
+func (c UsageTrackingConfig) EffectiveRetentionDays() int {
+	if c.RetentionDays == 0 {
+		return DefaultUsageRetentionDays
+	}
+	if c.RetentionDays < 0 {
+		return 0
+	}
+	return c.RetentionDays
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
@@ -386,31 +275,8 @@ type RemoteManagement struct {
 	AllowRemote bool `yaml:"allow-remote"`
 	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
 	SecretKey string `yaml:"secret-key"`
-	// DisableControlPanel skips serving and syncing the bundled management UI when true.
-	DisableControlPanel bool `yaml:"disable-control-panel"`
-	// DisableAutoUpdatePanel disables automatic periodic background updates of the management panel asset from GitHub.
-	// When false (the default), the background updater remains enabled; when true, the panel is only downloaded on first access if missing.
-	DisableAutoUpdatePanel bool `yaml:"disable-auto-update-panel"`
-	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
-	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
-	PanelGitHubRepository string `yaml:"panel-github-repository"`
-	// BaseURL specifies the base URL of the remote management API for TUI client mode (e.g. "https://proxy.example.com").
-	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
-}
-
-// QuotaExceeded defines the behavior when API quota limits are exceeded.
-// It provides configuration options for automatic failover mechanisms.
-type QuotaExceeded struct {
-	// SwitchProject indicates whether to automatically switch to another project when a quota is exceeded.
-	SwitchProject bool `yaml:"switch-project" json:"switch-project"`
-
-	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
-	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
-
-	// AntigravityCredits enables credits-based last-resort fallback for Claude models.
-	// When all free-tier auths are exhausted (429/503), the conductor retries with
-	// an auth that has available Google One AI credits.
-	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+	// DisableUI turns off the embedded web UI served under /ui/.
+	DisableUI bool `yaml:"disable-ui,omitempty"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -432,7 +298,7 @@ type RoutingConfig struct {
 
 	// SessionAffinitySubagents controls whether subagents (child sessions with parent references)
 	// inherit and bind to the parent's upstream credential across all providers (Claude, Codex,
-	// Antigravity, Gemini), maximizing prompt and KV cache reuse.
+	// xAI, Devin), maximizing prompt and KV cache reuse.
 	// When false, subagents are distributed across the credential pool via the fallback selector.
 	// Default: true. Ignored when SessionAffinity is false.
 	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
@@ -545,11 +411,11 @@ type PayloadRule struct {
 type PayloadModelRule struct {
 	// Name is the model name or wildcard pattern (e.g., "gpt-*", "*-5", "gemini-*-pro").
 	Name string `yaml:"name" json:"name"`
-	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
+	// Protocol restricts the rule to a specific translator format (e.g., "claude", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
 	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.
 	Headers map[string]string `yaml:"headers" json:"headers"`
-	// FromProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
+	// FromProtocol restricts the rule to a specific source protocol (e.g., "claude", "responses").
 	FromProtocol string `yaml:"from-protocol" json:"from-protocol"`
 	// Match requires payload JSON paths to equal the configured values.
 	Match []map[string]any `yaml:"match" json:"match"`
@@ -823,94 +689,6 @@ type MetaKey = CodexKey
 // MetaModel uses the Codex model mapping structure for Meta Muse models.
 type MetaModel = CodexModel
 
-// GeminiKey represents the configuration for a Gemini API key,
-// including optional overrides for upstream base URL, proxy routing, and headers.
-type GeminiKey struct {
-	// APIKey is the authentication key for accessing Gemini API services.
-	APIKey string `yaml:"api-key" json:"api-key"`
-
-	// Priority controls selection preference when multiple credentials match.
-	// Higher values are preferred; defaults to 0.
-	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
-
-	// Weight controls proportional selection under weighted-round-robin.
-	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
-	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
-
-	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
-	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
-
-	// BaseURL optionally overrides the Gemini API endpoint.
-	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
-
-	// ProxyURL optionally overrides the global proxy for this API key.
-	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
-
-	// Models defines upstream model names and aliases for request routing.
-	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
-
-	// Headers optionally adds extra HTTP headers for requests sent with this key.
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-
-	// ExcludedModels lists model IDs that should be excluded for this provider.
-	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
-
-	// DisableCooling overrides the global cooling policy for this credential when set.
-	// True disables auth/model cooldowns; false explicitly enables them.
-	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
-
-	// RequestRetry optionally overrides the global request-retry for this credential.
-	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
-	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
-
-	// RequestScopedErrors configures custom classification rules for upstream errors.
-	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
-}
-
-func (k GeminiKey) GetAPIKey() string { return k.APIKey }
-
-func (k GeminiKey) GetBaseURL() string { return k.BaseURL }
-
-func (k GeminiKey) GetPrefix() string { return k.Prefix }
-
-func (k GeminiKey) GetProxyURL() string { return k.ProxyURL }
-
-// GeminiModel describes a mapping between an alias and the actual upstream model name.
-type GeminiModel struct {
-	// Name is the upstream model identifier used when issuing requests.
-	Name string `yaml:"name" json:"name"`
-
-	// Alias is the client-facing model name that maps to Name.
-	Alias string `yaml:"alias" json:"alias"`
-
-	// DisplayName is the optional human-readable name shown in model catalogs.
-	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
-
-	// MaxContextLength overrides the context window advertised to Codex clients.
-	MaxContextLength int `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
-
-	// ForceMapping rewrites upstream response model fields back to Alias.
-	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
-
-	// IsCompat preserves thinking blocks with empty signatures for compatible upstreams.
-	// Default false keeps the normal signature validation behavior.
-	IsCompat bool `yaml:"is-compat,omitempty" json:"is-compat,omitempty"`
-
-	// Thinking configures the thinking/reasoning capability for this model.
-	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
-}
-
-func (m GeminiModel) GetName() string { return m.Name }
-
-func (m GeminiModel) GetAlias() string { return m.Alias }
-
-func (m GeminiModel) GetDisplayName() string   { return m.DisplayName }
-func (m GeminiModel) GetMaxContextLength() int { return m.MaxContextLength }
-func (m GeminiModel) GetForceMapping() bool    { return m.ForceMapping }
-func (m GeminiModel) GetIsCompat() bool        { return m.IsCompat }
-
-func (m GeminiModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
-
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
 type OpenAICompatibility struct {
@@ -952,6 +730,10 @@ type OpenAICompatibility struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// FollowInterval sets how often follow-mode models poll GET {base-url}/models
+	// (Go duration, default 30s, minimum 5s).
+	FollowInterval string `yaml:"follow-interval,omitempty" json:"follow-interval,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -1006,6 +788,20 @@ type OpenAICompatibilityModel struct {
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+
+	// Follow resolves the upstream model name at runtime from GET {base-url}/models,
+	// so Alias keeps working when the endpoint swaps the model it serves.
+	// Requires Alias. A non-empty Name pins the upstream model and disables polling
+	// for this entry. Follow entries always rewrite response model fields to Alias.
+	Follow bool `yaml:"follow,omitempty" json:"follow,omitempty"`
+
+	// Match optionally selects the followed model with a "*" glob when the endpoint
+	// lists several models. Without it the first listed model is used.
+	Match string `yaml:"match,omitempty" json:"match,omitempty"`
+
+	// FollowPending is runtime-only. It marks a follow entry whose upstream model
+	// has not been resolved yet; Name then holds the alias as a placeholder.
+	FollowPending bool `yaml:"-" json:"-"`
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }

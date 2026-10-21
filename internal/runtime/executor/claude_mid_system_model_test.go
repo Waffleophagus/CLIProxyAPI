@@ -347,59 +347,6 @@ func TestClaudeExecutor_LegacyMidSystemMessageOptInStillRebuilds(t *testing.T) {
 	}
 }
 
-// The pairing must never originate inside CPA. A non-Claude caller reaches the
-// Claude executor through a translator, and every translator hoists system
-// content into the top-level system field, so no translated body can carry a
-// role=system turn to a legacy model. This pins that guarantee: the guard is for
-// callers that speak Claude natively, never for a translated request.
-func TestTranslatedRequestNeverPairsLegacyModelWithMidSystemMessage(t *testing.T) {
-	const legacyModel = "claude-haiku-4-5-20251001"
-	for _, test := range []struct {
-		name    string
-		format  sdktranslator.Format
-		payload string
-	}{
-		{name: "openai chat with a mid conversation system message", format: sdktranslator.FormatOpenAI,
-			payload: `{"model":"` + legacyModel + `","messages":[{"role":"system","content":"Top rule"},{"role":"user","content":"hi"},{"role":"system","content":"Mid rule"},{"role":"assistant","content":"ok"},{"role":"user","content":"go"}]}`},
-		{name: "openai chat ending on a system message", format: sdktranslator.FormatOpenAI,
-			payload: `{"model":"` + legacyModel + `","messages":[{"role":"user","content":"hi"},{"role":"system","content":"Mid rule"}]}`},
-		{name: "gemini with a system instruction", format: sdktranslator.FormatGemini,
-			payload: `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"systemInstruction":{"parts":[{"text":"Top rule"}]}}`},
-		{name: "openai responses with instructions", format: sdktranslator.FormatOpenAIResponse,
-			payload: `{"model":"` + legacyModel + `","instructions":"Top rule","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`},
-		{name: "interactions with a system instruction", format: sdktranslator.FormatInteractions,
-			payload: `{"model":"` + legacyModel + `","system_instruction":"Top rule","input":[{"type":"user_input","content":[{"type":"text","text":"hi"}]}]}`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			upstream := &midSystemUpstream{}
-			ex := NewClaudeExecutor(midSystemConfig())
-
-			if _, err := ex.Execute(upstream.context(t, nil), midSystemAuth(), cliproxyexecutor.Request{
-				Model: legacyModel, Payload: []byte(test.payload),
-			}, cliproxyexecutor.Options{SourceFormat: test.format}); err != nil {
-				t.Fatalf("Execute() error = %v, want the translated request forwarded", err)
-			}
-			if !upstream.called {
-				t.Fatal("expected the translated request to reach the upstream")
-			}
-			// Without these the subject under test could drift away: a body that
-			// no longer addresses the legacy model, or that lost the caller's
-			// turns, would satisfy the role assertions for the wrong reason.
-			if got := gjson.GetBytes(upstream.body, "model").String(); got != legacyModel {
-				t.Fatalf("upstream model = %q, want the legacy model %q under test", got, legacyModel)
-			}
-			if got := len(gjson.GetBytes(upstream.body, "messages").Array()); got == 0 {
-				t.Fatalf("upstream messages are empty, so the role assertions prove nothing; body=%s", upstream.body)
-			}
-			for _, role := range gjson.GetBytes(upstream.body, "messages.#.role").Array() {
-				if strings.EqualFold(role.String(), "system") {
-					t.Fatalf("translated body carries a system role; body=%s", upstream.body)
-				}
-			}
-		})
-	}
-}
-
 func TestClaudePayloadHasMidSystemMessage(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -523,5 +470,54 @@ func TestClaudeExecutorPayloadRepairsLegacyMidSystemMessage(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The pairing must never originate inside CPA. A non-Claude caller reaches the
+// Claude executor through a translator, and every translator hoists system
+// content into the top-level system field, so no translated body can carry a
+// role=system turn to a legacy model. This pins that guarantee: the guard is for
+// callers that speak Claude natively, never for a translated request.
+func TestTranslatedRequestNeverPairsLegacyModelWithMidSystemMessage(t *testing.T) {
+	const legacyModel = "claude-haiku-4-5-20251001"
+	for _, test := range []struct {
+		name    string
+		format  sdktranslator.Format
+		payload string
+	}{
+		{name: "openai chat with a mid conversation system message", format: sdktranslator.FormatOpenAI,
+			payload: `{"model":"` + legacyModel + `","messages":[{"role":"system","content":"Top rule"},{"role":"user","content":"hi"},{"role":"system","content":"Mid rule"},{"role":"assistant","content":"ok"},{"role":"user","content":"go"}]}`},
+		{name: "openai chat ending on a system message", format: sdktranslator.FormatOpenAI,
+			payload: `{"model":"` + legacyModel + `","messages":[{"role":"user","content":"hi"},{"role":"system","content":"Mid rule"}]}`},
+		{name: "openai responses with instructions", format: sdktranslator.FormatOpenAIResponse,
+			payload: `{"model":"` + legacyModel + `","instructions":"Top rule","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := &midSystemUpstream{}
+			ex := NewClaudeExecutor(midSystemConfig())
+
+			if _, err := ex.Execute(upstream.context(t, nil), midSystemAuth(), cliproxyexecutor.Request{
+				Model: legacyModel, Payload: []byte(test.payload),
+			}, cliproxyexecutor.Options{SourceFormat: test.format}); err != nil {
+				t.Fatalf("Execute() error = %v, want the translated request forwarded", err)
+			}
+			if !upstream.called {
+				t.Fatal("expected the translated request to reach the upstream")
+			}
+			// Without these the subject under test could drift away: a body that
+			// no longer addresses the legacy model, or that lost the caller's
+			// turns, would satisfy the role assertions for the wrong reason.
+			if got := gjson.GetBytes(upstream.body, "model").String(); got != legacyModel {
+				t.Fatalf("upstream model = %q, want the legacy model %q under test", got, legacyModel)
+			}
+			if got := len(gjson.GetBytes(upstream.body, "messages").Array()); got == 0 {
+				t.Fatalf("upstream messages are empty, so the role assertions prove nothing; body=%s", upstream.body)
+			}
+			for _, role := range gjson.GetBytes(upstream.body, "messages.#.role").Array() {
+				if strings.EqualFold(role.String(), "system") {
+					t.Fatalf("translated body carries a system role; body=%s", upstream.body)
+				}
+			}
+		})
 	}
 }

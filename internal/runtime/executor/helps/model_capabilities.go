@@ -15,7 +15,7 @@ func APIKeyModelIsCompat(req cliproxyexecutor.Request) bool {
 
 // ApplyRequestThinking preserves the registry lookup path unless the auth
 // manager bound authoritative model capabilities to this execution attempt.
-func ApplyRequestThinking(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string, normalizedUpdatesChanged ...bool) ([]byte, error) {
+func ApplyRequestThinking(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, fromFormat, toFormat, provider string) ([]byte, error) {
 	originalSource := opts.OriginalRequest
 	if len(originalSource) == 0 {
 		originalSource = req.Payload
@@ -26,7 +26,7 @@ func ApplyRequestThinking(body []byte, req cliproxyexecutor.Request, opts clipro
 	}
 	summaryConfig := translatedRequestSummaryConfig(body, req.Payload, originalSource, req.Model, fromFormat, toFormat)
 	if modelInfo, ok := cliproxyauth.ResolvedModelInfo(req); ok {
-		return thinking.ApplyThinkingWithModelInfoAndSummary(body, source, req.Model, fromFormat, toFormat, provider, modelInfo, summaryConfig, normalizedUpdatesChanged...)
+		return thinking.ApplyThinkingWithModelInfoAndSummary(body, source, req.Model, fromFormat, toFormat, provider, modelInfo, summaryConfig)
 	}
-	return thinking.ApplyThinkingWithSourceAndSummary(body, source, req.Model, fromFormat, toFormat, provider, summaryConfig, normalizedUpdatesChanged...)
+	return thinking.ApplyThinkingWithSourceAndSummary(body, source, req.Model, fromFormat, toFormat, provider, summaryConfig)
 }

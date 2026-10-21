@@ -3,7 +3,6 @@ package management
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,10 +14,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type refreshRecordExecutor struct {
@@ -62,28 +59,28 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	authDir := t.TempDir()
 
-	fileA := filepath.Join(authDir, "antigravity-1.json")
-	fileB := filepath.Join(authDir, "antigravity-2.json")
-	_ = os.WriteFile(fileA, []byte(`{"type":"antigravity","refresh_token":"ref-1","access_token":"old-1"}`), 0o600)
-	_ = os.WriteFile(fileB, []byte(`{"type":"antigravity","refresh_token":"ref-2","access_token":"old-2"}`), 0o600)
+	fileA := filepath.Join(authDir, "acme-1.json")
+	fileB := filepath.Join(authDir, "acme-2.json")
+	_ = os.WriteFile(fileA, []byte(`{"type":"acme","refresh_token":"ref-1","access_token":"old-1"}`), 0o600)
+	_ = os.WriteFile(fileB, []byte(`{"type":"acme","refresh_token":"ref-2","access_token":"old-2"}`), 0o600)
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	exec := &refreshRecordExecutor{provider: "antigravity"}
+	exec := &refreshRecordExecutor{provider: "acme"}
 	manager.RegisterExecutor(exec)
 
 	auth1 := &coreauth.Auth{
-		ID:       "antigravity-1.json",
-		Provider: "antigravity",
+		ID:       "acme-1.json",
+		Provider: "acme",
 		Status:   coreauth.StatusActive,
-		Metadata: map[string]any{"type": "antigravity", "refresh_token": "ref-1", "access_token": "old-1"},
+		Metadata: map[string]any{"type": "acme", "refresh_token": "ref-1", "access_token": "old-1"},
 	}
 	auth2 := &coreauth.Auth{
-		ID:          "antigravity-2.json",
-		Provider:    "antigravity",
+		ID:          "acme-2.json",
+		Provider:    "acme",
 		Status:      coreauth.StatusError,
 		Unavailable: true,
 		LastError:   &coreauth.Error{Message: "unauthorized"},
-		Metadata:    map[string]any{"type": "antigravity", "refresh_token": "ref-2", "access_token": "old-2"},
+		Metadata:    map[string]any{"type": "acme", "refresh_token": "ref-2", "access_token": "old-2"},
 	}
 	_, _ = manager.Register(context.Background(), auth1)
 	_, _ = manager.Register(context.Background(), auth2)
@@ -117,14 +114,14 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 	}
 
 	// 2. Auth2 was in StatusError, now should be active/recovering
-	a2, exists := manager.GetByID("antigravity-2.json")
+	a2, exists := manager.GetByID("acme-2.json")
 	if !exists || a2.Status == coreauth.StatusError {
 		t.Fatalf("expected auth2 status to be recovered from error, got %+v", a2)
 	}
 
 	// 3. Refresh single file by name
 	prevCnt := exec.refreshCnt.Load()
-	reqSingle := httptest.NewRequest(http.MethodPost, "/auth-files/refresh?name=antigravity-1.json", nil)
+	reqSingle := httptest.NewRequest(http.MethodPost, "/auth-files/refresh?name=acme-1.json", nil)
 	wSingle := httptest.NewRecorder()
 	engine.ServeHTTP(wSingle, reqSingle)
 
@@ -145,7 +142,7 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 	}
 
 	// 5. Refresh via chunked JSON request body (ContentLength = -1)
-	chunkedBody := strings.NewReader(`{"name":"antigravity-1.json"}`)
+	chunkedBody := strings.NewReader(`{"name":"acme-1.json"}`)
 	reqChunked := httptest.NewRequest(http.MethodPost, "/auth-files/refresh", chunkedBody)
 	reqChunked.Header.Set("Content-Type", "application/json")
 	reqChunked.TransferEncoding = []string{"chunked"}
@@ -168,149 +165,110 @@ func TestRefreshAuthFiles_AllAndSpecific(t *testing.T) {
 	}
 }
 
-func TestRefreshAuthFiles_PreservesPathInList_Issue6119(t *testing.T) {
+// The refresh response must describe the credential without any token,
+// API key or proxy secret.
+func TestRefreshAuthFiles_ResponseOmitsSecrets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	authDir := t.TempDir()
-	filePath := filepath.Join(authDir, "custom-plugin.json")
-	_ = os.WriteFile(filePath, []byte(`{"type":"custom-plugin","token":"test"}`), 0o600)
-
-	host := pluginhost.New()
-	provider := &pluginRefreshSimProvider{
-		identifier: "custom-plugin",
-		refreshAuth: func(ctx context.Context, req pluginapi.AuthRefreshRequest) (pluginapi.AuthRefreshResponse, error) {
-			// Plugin returns custom attributes without repeating path
-			return pluginapi.AuthRefreshResponse{
-				Auth: pluginapi.AuthData{
-					Metadata:   map[string]any{"type": "custom-plugin", "token": "refreshed-token"},
-					Attributes: map[string]string{"priority": "1"},
-				},
-			}, nil
-		},
+	path := filepath.Join(authDir, "acme-secret.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"acme","refresh_token":"ref-secret-1","access_token":"old-secret-1"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
 	}
-	host.RegisterPluginForTest("custom-plugin", pluginapi.Plugin{
-		Capabilities: pluginapi.Capabilities{
-			AuthProvider: provider,
-		},
-	})
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	exec := &pluginRefreshHostExecutor{provider: "custom-plugin", host: host}
-	manager.RegisterExecutor(exec)
-
-	auth := &coreauth.Auth{
-		ID:       "custom-plugin.json",
-		FileName: "custom-plugin.json",
-		Provider: "custom-plugin",
+	manager.RegisterExecutor(&refreshRecordExecutor{provider: "acme"})
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "acme-secret.json",
+		FileName: "acme-secret.json",
+		Provider: "acme",
+		Label:    "Acme work",
 		Status:   coreauth.StatusActive,
+		ProxyURL: "http://proxyuser:proxy-pass-secret@127.0.0.1:3128",
 		Attributes: map[string]string{
-			coreauth.AttributePath:          filePath,
-			coreauth.AttributeSource:        filePath,
-			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+			"path":    path,
+			"api_key": "sk-attr-secret-key-123456",
 		},
-		Metadata: map[string]any{"type": "custom-plugin", "token": "test"},
+		Metadata: map[string]any{
+			"type":          "acme",
+			"email":         "dev@example.com",
+			"refresh_token": "ref-secret-1",
+			"access_token":  "old-secret-1",
+			"id_token":      "id-secret-token",
+		},
+	}); errRegister != nil {
+		t.Fatalf("register: %v", errRegister)
 	}
-	_, _ = manager.Register(context.Background(), auth)
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
 	engine := gin.New()
-	engine.POST("/auth-files/refresh", h.RefreshAuthFiles)
-	engine.GET("/auth-files", h.ListAuthFiles)
+	engine.POST("/credentials/refresh", h.RefreshAuthFiles)
 
-	// Refresh the auth file
-	reqRefresh := httptest.NewRequest(http.MethodPost, "/auth-files/refresh?name=custom-plugin.json", nil)
-	wRefresh := httptest.NewRecorder()
-	engine.ServeHTTP(wRefresh, reqRefresh)
-	if wRefresh.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", wRefresh.Code, wRefresh.Body.String())
+	req := httptest.NewRequest(http.MethodPost, "/credentials/refresh", strings.NewReader(`{"name":"acme-secret.json"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-
-	// Verify it still appears in GET /auth-files
-	reqList := httptest.NewRequest(http.MethodGet, "/auth-files", nil)
-	wList := httptest.NewRecorder()
-	engine.ServeHTTP(wList, reqList)
-	if wList.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", wList.Code, wList.Body.String())
-	}
-	var listResp map[string]any
-	if err := json.Unmarshal(wList.Body.Bytes(), &listResp); err != nil {
-		t.Fatalf("unmarshal list response: %v", err)
-	}
-	files, _ := listResp["files"].([]any)
-	found := false
-	for _, f := range files {
-		m, ok := f.(map[string]any)
-		if ok && m["name"] == "custom-plugin.json" {
-			found = true
-			if fmt.Sprint(m["priority"]) != "1" {
-				t.Errorf("expected priority '1' in auth file entry, got %v", m["priority"])
-			}
-			break
+	body := w.Body.String()
+	for _, secret := range []string{
+		"refreshed-token", "refresh-token", "ref-secret-1", "old-secret-1", "id-secret-token",
+		"sk-attr-secret-key-123456", "proxy-pass-secret",
+		"access_token", "refresh_token", "id_token", "metadata", "attributes", "proxy_url",
+	} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("refresh response leaks %q: %s", secret, body)
 		}
 	}
-	if !found {
-		t.Fatalf("expected custom-plugin.json to appear in /auth-files list, but got: %v", listResp)
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var resp struct {
+		OK   bool           `json:"ok"`
+		Auth map[string]any `json:"auth"`
+	}
+	if errDecode := json.Unmarshal(w.Body.Bytes(), &resp); errDecode != nil {
+		t.Fatalf("decode: %v", errDecode)
+	}
+	if !resp.OK || resp.Auth["id"] != "acme-secret.json" || resp.Auth["provider"] != "acme" || resp.Auth["email"] != "dev@example.com" || resp.Auth["label"] != "Acme work" {
+		t.Fatalf("unexpected summary: %s", body)
+	}
+	if _, ok := resp.Auth["expires_at"]; !ok {
+		t.Fatalf("summary lacks expires_at: %s", body)
+	}
+	if _, ok := resp.Auth["last_refresh"]; !ok {
+		t.Fatalf("summary lacks last_refresh: %s", body)
 	}
 }
 
-type pluginRefreshSimProvider struct {
-	identifier  string
-	refreshAuth func(context.Context, pluginapi.AuthRefreshRequest) (pluginapi.AuthRefreshResponse, error)
-}
-
-func (p *pluginRefreshSimProvider) Identifier() string {
-	return p.identifier
-}
-
-func (p *pluginRefreshSimProvider) ParseAuth(context.Context, pluginapi.AuthParseRequest) (pluginapi.AuthParseResponse, error) {
-	return pluginapi.AuthParseResponse{}, nil
-}
-
-func (p *pluginRefreshSimProvider) StartLogin(context.Context, pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
-	return pluginapi.AuthLoginStartResponse{}, nil
-}
-
-func (p *pluginRefreshSimProvider) PollLogin(context.Context, pluginapi.AuthLoginPollRequest) (pluginapi.AuthLoginPollResponse, error) {
-	return pluginapi.AuthLoginPollResponse{}, nil
-}
-
-func (p *pluginRefreshSimProvider) RefreshAuth(ctx context.Context, req pluginapi.AuthRefreshRequest) (pluginapi.AuthRefreshResponse, error) {
-	if p.refreshAuth != nil {
-		return p.refreshAuth(ctx, req)
+// API-key credentials expose the key as their account; the list masks it.
+func TestListAuthFiles_MasksAPIKeyAccount(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	manager := coreauth.NewManager(nil, nil, nil)
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
+		ID:       "claude-key",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"runtime_only": "true",
+			"api_key":      "sk-ant-list-secret-998877",
+		},
+	})
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/credentials", nil)
+	h.ListAuthFiles(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	return pluginapi.AuthRefreshResponse{}, nil
-}
-
-type pluginRefreshHostExecutor struct {
-	provider string
-	host     *pluginhost.Host
-}
-
-func (e *pluginRefreshHostExecutor) Identifier() string {
-	return e.provider
-}
-
-func (e *pluginRefreshHostExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
-	if e.host != nil {
-		refreshed, handled, errRefresh := e.host.RefreshAuth(ctx, auth)
-		if handled {
-			return refreshed, errRefresh
-		}
+	if strings.Contains(rec.Body.String(), "sk-ant-list-secret-998877") {
+		t.Fatalf("list leaks the API key: %s", rec.Body.String())
 	}
-	return auth, nil
-}
-
-func (e *pluginRefreshHostExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, nil
-}
-
-func (e *pluginRefreshHostExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	return nil, nil
-}
-
-func (e *pluginRefreshHostExecutor) CountTokens(ctx context.Context, auth *coreauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, nil
-}
-
-func (e *pluginRefreshHostExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
-	return nil, nil
+	if !strings.Contains(rec.Body.String(), "8877") {
+		t.Fatalf("list lacks the masked account: %s", rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 }

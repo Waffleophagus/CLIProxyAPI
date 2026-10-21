@@ -145,7 +145,7 @@ func isMetaMuseModelName(lower string) bool {
 //
 //	'C' -> 0x08..0x0b : Claude CAIS (0x08)
 //	'E' -> 0x10..0x13 : Claude single-layer (0x12), Gemini protobuf_field_2 (0x12)
-//	'Q' -> 0x40..0x43 : Antigravity double-layer CAQS (0x43, inner 'C'), Meta Muse (0x43)
+//	'Q' -> 0x40..0x43 : Meta Muse (0x43)
 //	'R' -> 0x44..0x47 : Claude double-layer R (0x45, inner 'E')
 //	'g' -> 0x80..0x83 : GPT Fernet reasoning (0x80)
 //
@@ -333,15 +333,6 @@ func DecideSignatureCompatibilityForModel(targetProvider SignatureProvider, targ
 		BlockKind:        blockKind,
 	}
 
-	// Recognizing a Claude envelope does not authorize a Google transport
-	// wrapper on native Claude endpoints. Antigravity has its own replay gate.
-	if targetProvider == SignatureProviderClaude && detected == SignatureProviderClaude &&
-		strings.HasPrefix(SignaturePayloadWithoutProviderPrefix(rawSignature), "Q") {
-		decision.Action = SignatureActionDropBlock
-		decision.Reason = "Antigravity CAQS wrapper requires Antigravity replay"
-		return decision
-	}
-
 	if signatureProviderMatchesTarget(targetProvider, detected) {
 		// A matching family is not sufficient: replay also requires successful
 		// normalization. Otherwise sanitizers could preserve the original input.
@@ -455,24 +446,6 @@ func CompatibleSignatureForProviderBlock(targetProvider SignatureProvider, rawSi
 		return "", false
 	}
 	return decision.NormalizedSignature, true
-}
-
-// CompatibleAntigravityClaudeThinkingSignature returns the double-layer R or Q form
-// required by Antigravity Claude replay. It only accepts signatures that are
-// strictly identifiable as Claude, so Gemini E-prefixed envelopes cannot slip
-// through the looser Antigravity bypass normalization path.
-func CompatibleAntigravityClaudeThinkingSignature(rawSignature string) (string, bool) {
-	if DetectSignatureProviderForBlock(rawSignature, SignatureBlockKindClaudeThinking) != SignatureProviderClaude {
-		return "", false
-	}
-	normalized, err := NormalizeClaudeThinkingSignature(
-		SignaturePayloadWithoutProviderPrefix(rawSignature),
-		ClaudeSignatureValidationOptions{Strict: true},
-	)
-	if err != nil {
-		return "", false
-	}
-	return normalized, true
 }
 
 // claudeCompatibleSignatureReason explains why a matching signature is

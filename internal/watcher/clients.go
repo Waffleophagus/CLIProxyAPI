@@ -3,11 +3,9 @@
 package watcher
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -15,7 +13,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
@@ -61,8 +58,8 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 		w.clientsMutex.Unlock()
 	}
 
-	geminiAPIKeyCount, vertexCompatAPIKeyCount, claudeAPIKeyCount, codexAPIKeyCount, xaiAPIKeyCount, metaAPIKeyCount, openAICompatCount := BuildAPIKeyClients(cfg)
-	totalAPIKeyClients := geminiAPIKeyCount + vertexCompatAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + metaAPIKeyCount + openAICompatCount
+	claudeAPIKeyCount, codexAPIKeyCount, xaiAPIKeyCount, metaAPIKeyCount, openAICompatCount := BuildAPIKeyClients(cfg)
+	totalAPIKeyClients := claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + metaAPIKeyCount + openAICompatCount
 	log.Debugf("loaded %d API key clients", totalAPIKeyClients)
 
 	var authFileCount int
@@ -88,7 +85,6 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 		var incompleteRescanPaths map[string]struct{}
 
 		w.clientsMutex.RLock()
-		parser := w.pluginAuthParser
 		w.clientsMutex.RUnlock()
 
 		if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
@@ -129,11 +125,10 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 						}
 					}
 					ctx := &synthesizer.SynthesisContext{
-						Config:           cfg,
-						AuthDir:          resolvedAuthDir,
-						Now:              time.Now(),
-						IDGenerator:      synthesizer.NewStableIDGenerator(),
-						PluginAuthParser: parser,
+						Config:      cfg,
+						AuthDir:     resolvedAuthDir,
+						Now:         time.Now(),
+						IDGenerator: synthesizer.NewStableIDGenerator(),
 					}
 					generated, errSynthesize := synthesizer.SynthesizeAuthFile(ctx, fullPath, data)
 					if errSynthesize != nil {
@@ -182,7 +177,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 		w.authRescanMu.Unlock()
 	}
 
-	totalNewClients := authFileCount + geminiAPIKeyCount + vertexCompatAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + metaAPIKeyCount + openAICompatCount
+	totalNewClients := authFileCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + metaAPIKeyCount + openAICompatCount
 
 	if w.reloadCallback != nil {
 		log.Debugf("triggering server update callback before auth refresh")
@@ -190,13 +185,10 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 	}
 
 	w.refreshAuthState(forceAuthRefresh)
-	redisqueue.NotifyUsageRefresh()
 
-	log.Infof("full client load complete - %d clients (%d auth files + %d Gemini API keys + %d Vertex API keys + %d Claude API keys + %d Codex keys + %d xAI keys + %d Meta API keys + %d OpenAI-compat)",
+	log.Infof("full client load complete - %d clients (%d auth files + %d Claude API keys + %d Codex keys + %d xAI keys + %d Meta API keys + %d OpenAI-compat)",
 		totalNewClients,
 		authFileCount,
-		geminiAPIKeyCount,
-		vertexCompatAPIKeyCount,
 		claudeAPIKeyCount,
 		codexAPIKeyCount,
 		xaiAPIKeyCount,
@@ -244,7 +236,6 @@ func (w *Watcher) addOrUpdateClientLocked(path string) {
 	}
 	cfg := w.config
 	authDir := w.authDir
-	parser := w.pluginAuthParser
 	if w.fileAuthsByPath == nil {
 		w.fileAuthsByPath = make(map[string]map[string]*coreauth.Auth)
 	}
@@ -292,11 +283,10 @@ func (w *Watcher) addOrUpdateClientLocked(path string) {
 
 	// Build synthesized auth entries for this single file only.
 	sctx := &synthesizer.SynthesisContext{
-		Config:           cfg,
-		AuthDir:          authDir,
-		Now:              time.Now(),
-		IDGenerator:      synthesizer.NewStableIDGenerator(),
-		PluginAuthParser: parser,
+		Config:      cfg,
+		AuthDir:     authDir,
+		Now:         time.Now(),
+		IDGenerator: synthesizer.NewStableIDGenerator(),
 	}
 	generated, errSynthesize := synthesizer.SynthesizeAuthFile(sctx, path, data)
 	if errSynthesize != nil {
@@ -312,11 +302,7 @@ func (w *Watcher) addOrUpdateClientLocked(path string) {
 	updates := w.computePerPathUpdatesLocked(oldByID, newByID)
 	w.clientsMutex.Unlock()
 
-	if errSynthesize == nil {
-		w.persistAuthAsync(fmt.Sprintf("Sync auth %s", filepath.Base(path)), path)
-	}
 	w.dispatchAuthUpdates(updates)
-	redisqueue.NotifyUsageRefresh()
 }
 
 func (w *Watcher) removeClient(path string) {
@@ -340,7 +326,7 @@ func (w *Watcher) removeClientLocked(path string) {
 
 	updates := w.computePerPathUpdatesLocked(oldByID, map[string]*coreauth.Auth{})
 	// Only the whole-file removal path gets this mark. Content diffs may drop
-	// individual plugin auth IDs while their source file still exists.
+	// individual auth IDs while their source file still exists.
 	for index := range updates {
 		if updates[index].Action == AuthUpdateActionDelete {
 			updates[index].SetFileRemoval(true)
@@ -348,9 +334,7 @@ func (w *Watcher) removeClientLocked(path string) {
 	}
 	w.clientsMutex.Unlock()
 
-	w.persistAuthAsync(fmt.Sprintf("Remove auth %s", filepath.Base(path)), path)
 	w.dispatchAuthUpdates(updates)
-	redisqueue.NotifyUsageRefresh()
 }
 
 func (w *Watcher) computePerPathUpdatesLocked(oldByID, newByID map[string]*coreauth.Auth) []AuthUpdate {
@@ -440,24 +424,13 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
 	return authFileCount
 }
 
-func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
-	geminiAPIKeyCount := 0
-	vertexCompatAPIKeyCount := 0
+func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int) {
 	claudeAPIKeyCount := 0
 	codexAPIKeyCount := 0
 	xaiAPIKeyCount := 0
 	metaAPIKeyCount := 0
 	openAICompatCount := 0
 
-	if len(cfg.GeminiKey) > 0 {
-		geminiAPIKeyCount += len(cfg.GeminiKey)
-	}
-	if len(cfg.InteractionsKey) > 0 {
-		geminiAPIKeyCount += len(cfg.InteractionsKey)
-	}
-	if len(cfg.VertexCompatAPIKey) > 0 {
-		vertexCompatAPIKeyCount += len(cfg.VertexCompatAPIKey)
-	}
 	if len(cfg.ClaudeKey) > 0 {
 		claudeAPIKeyCount += len(cfg.ClaudeKey)
 	}
@@ -478,42 +451,7 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) 
 			openAICompatCount += len(compatConfig.APIKeyEntries)
 		}
 	}
-	return geminiAPIKeyCount, vertexCompatAPIKeyCount, claudeAPIKeyCount, codexAPIKeyCount, xaiAPIKeyCount, metaAPIKeyCount, openAICompatCount
-}
-
-func (w *Watcher) persistConfigAsync() {
-	if w == nil || w.storePersister == nil {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := w.storePersister.PersistConfig(ctx); err != nil {
-			log.Errorf("failed to persist config change: %v", err)
-		}
-	}()
-}
-
-func (w *Watcher) persistAuthAsync(message string, paths ...string) {
-	if w == nil || w.storePersister == nil {
-		return
-	}
-	filtered := make([]string, 0, len(paths))
-	for _, p := range paths {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {
-			filtered = append(filtered, trimmed)
-		}
-	}
-	if len(filtered) == 0 {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := w.storePersister.PersistAuthFiles(ctx, message, filtered...); err != nil {
-			log.Errorf("failed to persist auth changes: %v", err)
-		}
-	}()
+	return claudeAPIKeyCount, codexAPIKeyCount, xaiAPIKeyCount, metaAPIKeyCount, openAICompatCount
 }
 
 func (w *Watcher) stopServerUpdateTimer() {

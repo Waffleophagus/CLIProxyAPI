@@ -14,15 +14,6 @@ func String(value string) string {
 	return html.EscapeString(value)
 }
 
-// Strings escapes each string in values while preserving order.
-func Strings(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		out = append(out, String(value))
-	}
-	return out
-}
-
 // JSONBody escapes all string values in a JSON document.
 func JSONBody(body []byte) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(body)

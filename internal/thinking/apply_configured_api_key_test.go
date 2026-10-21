@@ -322,12 +322,11 @@ func TestApplyConfigurationUpdateInvalidTarget(t *testing.T) {
 	const invalidTarget = `{"reasoning":{"effort":"xhigh"},"input":[`
 	const updateSource = `{"reasoning":{"effort":"medium"},"input":[{"type":"configuration_update","reasoning":{"effort":"low"}},{"role":"user","content":"ok"}]}`
 	tests := []struct {
-		name       string
-		model      string
-		source     string
-		bound      bool
-		normalized bool
-		want       string
+		name   string
+		model  string
+		source string
+		bound  bool
+		want   string
 	}{
 		{
 			name: "bound model does not rebuild invalid target from source update", model: "private-codex", source: updateSource, bound: true,
@@ -338,15 +337,11 @@ func TestApplyConfigurationUpdateInvalidTarget(t *testing.T) {
 			want: invalidTarget,
 		},
 		{
-			name: "normalized updates cannot rebuild invalid target", model: "private-codex", source: updateSource, bound: true, normalized: true,
-			want: invalidTarget,
-		},
-		{
 			name: "suffix alone still rebuilds invalid target", model: "private-codex(high)", bound: true,
 			want: `{"reasoning":{"effort":"high"}}`,
 		},
 		{
-			name: "suffix takes priority over source update for invalid target", model: "private-codex(high)", source: updateSource, bound: true, normalized: true,
+			name: "suffix takes priority over source update for invalid target", model: "private-codex(high)", source: updateSource, bound: true,
 			want: `{"reasoning":{"effort":"high"}}`,
 		},
 	}
@@ -357,9 +352,9 @@ func TestApplyConfigurationUpdateInvalidTarget(t *testing.T) {
 			var out []byte
 			var err error
 			if tc.bound {
-				out, err = thinking.ApplyThinkingWithModelInfoAndSummary(body, []byte(tc.source), tc.model, "codex", "codex", "codex", info, thinking.SummaryConfig{}, tc.normalized)
+				out, err = thinking.ApplyThinkingWithModelInfoAndSummary(body, []byte(tc.source), tc.model, "codex", "codex", "codex", info, thinking.SummaryConfig{})
 			} else {
-				out, err = thinking.ApplyThinkingWithSourceAndSummary(body, []byte(tc.source), tc.model, "codex", "codex", "codex", thinking.SummaryConfig{}, tc.normalized)
+				out, err = thinking.ApplyThinkingWithSourceAndSummary(body, []byte(tc.source), tc.model, "codex", "codex", "codex", thinking.SummaryConfig{})
 			}
 			if err != nil {
 				t.Fatalf("ApplyThinking() error = %v", err)

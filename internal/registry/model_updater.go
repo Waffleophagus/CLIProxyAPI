@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -66,16 +65,8 @@ func init() {
 	}
 }
 
-// StartModelsUpdater starts a background updater that fetches models
-// immediately on startup and then refreshes the model catalog every 3 hours.
-// Safe to call multiple times; only one updater will run.
-func StartModelsUpdater(ctx context.Context) {
-	generalCatalogUpdater.configure(ctx, "")
-}
-
 // detectChangedProviders compares two model catalogs and returns provider names
-// whose model definitions differ. Gemini changes affect both Gemini protocols,
-// while Codex tiers (free/team/plus/pro) are grouped under one "codex" provider.
+// whose model definitions differ. Codex tiers (free/team/plus/pro) are grouped under one "codex" provider.
 func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 	if oldData == nil || newData == nil {
 		return nil
@@ -89,10 +80,6 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 
 	sections := []section{
 		{"claude", oldData.Claude, newData.Claude},
-		{"gemini", oldData.Gemini, newData.Gemini},
-		{"gemini-interactions", oldData.Gemini, newData.Gemini},
-		{"vertex", oldData.Vertex, newData.Vertex},
-		{"aistudio", oldData.AIStudio, newData.AIStudio},
 		{"codex", oldData.CodexFree, newData.CodexFree},
 		{"codex", oldData.CodexTeam, newData.CodexTeam},
 		{"codex", oldData.CodexPlus, newData.CodexPlus},
@@ -101,7 +88,6 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"kimi-ai", oldData.Kimi, newData.Kimi},
 		{"kimi.ai", oldData.Kimi, newData.Kimi},
 		{"kimi.com", oldData.Kimi, newData.Kimi},
-		{"antigravity", oldData.Antigravity, newData.Antigravity},
 		{"xai", oldData.XAI, newData.XAI},
 		{"devin", oldData.Devin, newData.Devin},
 		{"meta", oldData.Meta, newData.Meta},
@@ -223,15 +209,11 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		models []*ModelInfo
 	}{
 		{name: "claude", models: data.Claude},
-		{name: "gemini", models: data.Gemini},
-		{name: "vertex", models: data.Vertex},
-		{name: "aistudio", models: data.AIStudio},
 		{name: "codex-free", models: data.CodexFree},
 		{name: "codex-team", models: data.CodexTeam},
 		{name: "codex-plus", models: data.CodexPlus},
 		{name: "codex-pro", models: data.CodexPro},
 		{name: "kimi", models: data.Kimi},
-		{name: "antigravity", models: data.Antigravity},
 		{name: "xai", models: data.XAI},
 		{name: "meta", models: data.Meta},
 	}

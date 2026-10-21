@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	applypatch "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/apply-patch"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -427,16 +426,6 @@ func resolveResponsesQualifiedToolIdentity(root gjson.Result, qualifiedName stri
 	return d.localName, d.namespace, found
 }
 
-// chatNameForResponsesNamespaceToolCall returns the Chat Completions name the
-// request's declarations assign to the (namespace, localName) identity of a
-// replayed or forced tool call. Declaration-derived names carry the same
-// 64-character cap and disambiguation as the outgoing tools array, so replayed
-// calls stay consistent with their declarations even when a collision renamed
-// the tool. Unknown identities fall back to plain namespace qualification.
-func chatNameForResponsesNamespaceToolCall(requestRawJSON []byte, namespace, localName string) string {
-	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).namespaceName(namespace, localName)
-}
-
 // canonicalResponsesToolName resolves a name carried by a replayed call or
 // tool_choice that omits the namespace. Exact emitted names win, then the
 // declarations' uncapped qualified names are checked, then an omitted namespace
@@ -448,15 +437,6 @@ func chatNameForResponsesNamespaceToolCall(requestRawJSON []byte, namespace, loc
 // rather than being dispatched to another tool.
 func canonicalResponsesToolName(requestRawJSON []byte, name string) string {
 	return newResponsesToolIndex(gjson.ParseBytes(requestRawJSON)).canonicalName(name)
-}
-
-// avoidResponsesDeclaredChatAliases keeps a fallback name (the blind cap of an
-// unresolved or ambiguous name) from colliding with any alias the request's
-// declarations actually emit. Dispatching such a call to a real declaration
-// would silently invoke the wrong tool; a distinct name keeps the identity
-// unresolved instead, which upstreams and clients can surface properly.
-func avoidResponsesDeclaredChatAliases(root gjson.Result, candidate string) string {
-	return newResponsesToolIndex(root).avoidAlias(candidate)
 }
 
 func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
@@ -479,9 +459,4 @@ func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
 		return requestRawJSON
 	}
 	return nil
-}
-
-func applyResponsesFunctionCallNamespaceFields(item []byte, requestRawJSON []byte, qualifiedName string, itemPath string) []byte {
-	name, namespace := splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON, qualifiedName)
-	return translatorcommon.SetResponsesToolCallIdentity(item, name, namespace, itemPath)
 }

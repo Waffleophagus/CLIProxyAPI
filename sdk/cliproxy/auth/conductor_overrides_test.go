@@ -71,21 +71,6 @@ func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testi
 	}
 }
 
-func TestManager_ShouldRetryAfterError_SkipsWrappedHomeConcurrencyBusy(t *testing.T) {
-	m := NewManager(nil, nil, nil)
-	m.SetRetryConfig(1, 30*time.Second, 0)
-	if _, errRegister := m.Register(context.Background(), &Auth{ID: "retry-auth", Provider: "codex"}); errRegister != nil {
-		t.Fatalf("register auth: %v", errRegister)
-	}
-
-	_, _, maxWait := m.retrySettings()
-	errBusy := fmt.Errorf("outer retry: %w", NewHomeConcurrencyBusyError("busy", 20*time.Second))
-	wait, shouldRetry := m.shouldRetryAfterError(errBusy, 0, []string{"codex"}, "gpt", maxWait)
-	if shouldRetry || wait != 0 {
-		t.Fatalf("wrapped Home busy retry = (%v, %t), want (0, false)", wait, shouldRetry)
-	}
-}
-
 func TestManager_ShouldRetryAfterError_RetriesLocalRoundWithoutCooldown(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(1, 0, 0)
@@ -271,7 +256,7 @@ func TestManager_ShouldRetryAfterError_IgnoresRequestIneligibleOverrides(t *test
 				}
 			}
 
-			wait, shouldRetry := manager.shouldRetryAfterErrorWithHomeRetryLimit(test.ctx, test.opts, &Error{HTTPStatus: http.StatusBadGateway, Message: "retryable failure"}, 0, []string{"codex"}, model, 0, -1, 0)
+			wait, shouldRetry := manager.shouldRetryAfterErrorWithOptions(test.ctx, test.opts, &Error{HTTPStatus: http.StatusBadGateway, Message: "retryable failure"}, 0, []string{"codex"}, model, 0, 0)
 			if shouldRetry || wait != 0 {
 				t.Fatalf("request-ineligible override retry = (%v, %t), want (0, false)", wait, shouldRetry)
 			}
@@ -733,14 +718,14 @@ func TestManager_ModelSupportBadRequest_FallsBackAndSuspendsAuth(t *testing.T) {
 	}
 }
 
-func TestManagerExecute_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testing.T) {
+func TestManagerExecute_AcmeInvalidGrantFallsBackAndSuspendsAuth(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	invalidGrantErr := &Error{
 		HTTPStatus: http.StatusBadRequest,
 		Message:    `bad response status code 400, message: {"error":"invalid_grant","error_description":"Bad Request"}, body: {"type":"error","error":{"type":"invalid_request_error","message":"{\"error\":\"invalid_grant\"}"}}`,
 	}
 	executor := &authFallbackExecutor{
-		id: "antigravity",
+		id: "acme",
 		executeErrors: map[string]error{
 			"aa-bad-auth": invalidGrantErr,
 		},
@@ -748,12 +733,12 @@ func TestManagerExecute_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testi
 	m.RegisterExecutor(executor)
 
 	model := "gemini-3-pro-preview"
-	badAuth := &Auth{ID: "aa-bad-auth", Provider: "antigravity"}
-	goodAuth := &Auth{ID: "bb-good-auth", Provider: "antigravity"}
+	badAuth := &Auth{ID: "aa-bad-auth", Provider: "acme"}
+	goodAuth := &Auth{ID: "bb-good-auth", Provider: "acme"}
 
 	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(badAuth.ID, "antigravity", []*registry.ModelInfo{{ID: model}})
-	reg.RegisterClient(goodAuth.ID, "antigravity", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(badAuth.ID, "acme", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(goodAuth.ID, "acme", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() {
 		reg.UnregisterClient(badAuth.ID)
 		reg.UnregisterClient(goodAuth.ID)
@@ -768,7 +753,7 @@ func TestManagerExecute_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testi
 
 	request := cliproxyexecutor.Request{Model: model}
 	for i := 0; i < 2; i++ {
-		resp, errExecute := m.Execute(context.Background(), []string{"antigravity"}, request, cliproxyexecutor.Options{})
+		resp, errExecute := m.Execute(context.Background(), []string{"acme"}, request, cliproxyexecutor.Options{})
 		if errExecute != nil {
 			t.Fatalf("execute %d error = %v, want success", i, errExecute)
 		}
@@ -807,14 +792,14 @@ func TestManagerExecute_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testi
 	}
 }
 
-func TestManagerExecuteStream_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testing.T) {
+func TestManagerExecuteStream_AcmeInvalidGrantFallsBackAndSuspendsAuth(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	invalidGrantErr := &Error{
 		HTTPStatus: http.StatusBadRequest,
 		Message:    `bad response status code 400, message: {"error":"invalid_grant","error_description":"Bad Request"}, body: {"type":"error","error":{"type":"invalid_request_error","message":"{\"error\":\"invalid_grant\"}"}}`,
 	}
 	executor := &authFallbackExecutor{
-		id: "antigravity",
+		id: "acme",
 		streamFirstErrors: map[string]error{
 			"aa-bad-auth": invalidGrantErr,
 		},
@@ -822,12 +807,12 @@ func TestManagerExecuteStream_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t 
 	m.RegisterExecutor(executor)
 
 	model := "gemini-3-pro-preview"
-	badAuth := &Auth{ID: "aa-bad-auth", Provider: "antigravity"}
-	goodAuth := &Auth{ID: "bb-good-auth", Provider: "antigravity"}
+	badAuth := &Auth{ID: "aa-bad-auth", Provider: "acme"}
+	goodAuth := &Auth{ID: "bb-good-auth", Provider: "acme"}
 
 	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(badAuth.ID, "antigravity", []*registry.ModelInfo{{ID: model}})
-	reg.RegisterClient(goodAuth.ID, "antigravity", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(badAuth.ID, "acme", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(goodAuth.ID, "acme", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() {
 		reg.UnregisterClient(badAuth.ID)
 		reg.UnregisterClient(goodAuth.ID)
@@ -842,7 +827,7 @@ func TestManagerExecuteStream_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t 
 
 	request := cliproxyexecutor.Request{Model: model}
 	for i := 0; i < 2; i++ {
-		streamResult, errExecute := m.ExecuteStream(context.Background(), []string{"antigravity"}, request, cliproxyexecutor.Options{})
+		streamResult, errExecute := m.ExecuteStream(context.Background(), []string{"acme"}, request, cliproxyexecutor.Options{})
 		if errExecute != nil {
 			t.Fatalf("execute stream %d error = %v, want success", i, errExecute)
 		}

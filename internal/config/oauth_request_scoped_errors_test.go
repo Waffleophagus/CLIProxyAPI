@@ -7,7 +7,7 @@ import (
 func TestParseConfigOAuthRequestScopedErrors(t *testing.T) {
 	const yamlConfig = `
 oauth-request-scoped-errors:
-  vertex:
+  vendora:
     - status: 400
       match:
         - "maximum_context_length"
@@ -16,12 +16,12 @@ oauth-request-scoped-errors:
         - "maximum_context_length$"
         - "^context_length_exceeded"
       action: "stop"
-  aistudio:
+  acmestudio:
     - status: 400
       match:
         - "invalid_argument"
       action: "continue"
-  antigravity:
+  acme:
     - status: 500
       match:
         - "internal_server_error"
@@ -62,23 +62,23 @@ oauth-request-scoped-errors:
 		t.Fatalf("cfg.OAuthRequestScopedErrors len = %d, want 8", len(cfg.OAuthRequestScopedErrors))
 	}
 
-	vertexRules, ok := cfg.OAuthRequestScopedErrors["vertex"]
-	if !ok || len(vertexRules) != 1 {
-		t.Fatalf("vertex rules missing or len != 1: %#v", vertexRules)
+	vendoraRules, ok := cfg.OAuthRequestScopedErrors["vendora"]
+	if !ok || len(vendoraRules) != 1 {
+		t.Fatalf("vendora rules missing or len != 1: %#v", vendoraRules)
 	}
-	rule := vertexRules[0]
+	rule := vendoraRules[0]
 	if rule.Status != 400 || rule.Action != "stop" {
-		t.Errorf("unexpected vertex rule: %+v", rule)
+		t.Errorf("unexpected vendora rule: %+v", rule)
 	}
 	if len(rule.Match) != 2 || len(rule.MatchRegexr) != 2 {
-		t.Errorf("unexpected vertex match len: %+v", rule)
+		t.Errorf("unexpected vendora match len: %+v", rule)
 	}
 }
 
 func TestSanitizeOAuthRequestScopedErrors(t *testing.T) {
 	cfg := &Config{
 		OAuthRequestScopedErrors: map[string][]RequestScopedErrorRule{
-			" Vertex ": {
+			" Vendora ": {
 				{
 					Status:      400,
 					Match:       []string{"  context_length  ", ""},
@@ -104,9 +104,9 @@ func TestSanitizeOAuthRequestScopedErrors(t *testing.T) {
 		t.Fatalf("expected 1 sanitized channel, got %d", len(cfg.OAuthRequestScopedErrors))
 	}
 
-	rules := cfg.OAuthRequestScopedErrors["vertex"]
+	rules := cfg.OAuthRequestScopedErrors["vendora"]
 	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule for vertex, got %d", len(rules))
+		t.Fatalf("expected 1 rule for vendora, got %d", len(rules))
 	}
 	if rules[0].Status != 400 || rules[0].Action != "stop" {
 		t.Errorf("unexpected sanitized rule: %+v", rules[0])

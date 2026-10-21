@@ -132,88 +132,12 @@ func TestTransportCacheConcurrentCallersShareOneInstance(t *testing.T) {
 	}
 }
 
-func TestTransportCachePurgeAndNilSafety(t *testing.T) {
-	cache := NewTransportCache[cacheKey](4)
-	build := func() (*http.Transport, error) { return &http.Transport{}, nil }
-	cache.Get(cacheKey{"a", ""}, build)
-	cache.Get(cacheKey{"b", ""}, build)
-	if got := cache.Len(); got != 2 {
-		t.Fatalf("Len() = %d, want 2", got)
-	}
-	cache.Purge()
-	if got := cache.Len(); got != 0 {
-		t.Fatalf("Len() after Purge() = %d, want 0", got)
-	}
-	// The cache stays usable after a purge.
-	if transport, err := cache.Get(cacheKey{"a", ""}, build); err != nil || transport == nil {
-		t.Fatalf("Get() after Purge() = (%p, %v)", transport, err)
-	}
-
-	var nilCache *TransportCache[cacheKey]
-	if _, err := nilCache.Get(cacheKey{}, build); err == nil {
-		t.Fatal("expected an error from a nil cache")
-	}
-	if got := nilCache.Len(); got != 0 {
-		t.Fatalf("nil cache Len() = %d, want 0", got)
-	}
-	nilCache.Purge() // must not panic
-
-	if _, err := cache.Get(cacheKey{"nil-build", ""}, nil); err == nil {
-		t.Fatal("expected an error for a nil build function")
-	}
-}
-
 func TestNewTransportCacheDefaultsCapacity(t *testing.T) {
 	for _, capacity := range []int{0, -1} {
 		cache := NewTransportCache[cacheKey](capacity)
 		if cache.capacity != DefaultTransportCacheCapacity {
 			t.Fatalf("NewTransportCache(%d).capacity = %d, want %d", capacity, cache.capacity, DefaultTransportCacheCapacity)
 		}
-	}
-}
-
-func TestTransportCacheCloseKeyAndCloseMatching(t *testing.T) {
-	cache := NewTransportCache[cacheKey](8)
-	build := func() (*http.Transport, error) { return &http.Transport{}, nil }
-
-	cache.Get(cacheKey{"auth-1", "p1"}, build)
-	cache.Get(cacheKey{"auth-1", "p2"}, build)
-	cache.Get(cacheKey{"auth-2", "p1"}, build)
-	if got := cache.Len(); got != 3 {
-		t.Fatalf("Len() = %d, want 3", got)
-	}
-
-	// Close non-existent key
-	if closed := cache.CloseKey(cacheKey{"auth-nonexistent", ""}); closed {
-		t.Fatal("expected CloseKey on missing entry to return false")
-	}
-
-	// Close specific key
-	if closed := cache.CloseKey(cacheKey{"auth-2", "p1"}); !closed {
-		t.Fatal("expected CloseKey on existing entry to return true")
-	}
-	if got := cache.Len(); got != 2 {
-		t.Fatalf("Len() after CloseKey = %d, want 2", got)
-	}
-
-	// Close matching all auth-1
-	closedCount := cache.CloseMatching(func(key cacheKey) bool {
-		return key.scope == "auth-1"
-	})
-	if closedCount != 2 {
-		t.Fatalf("CloseMatching closed %d entries, want 2", closedCount)
-	}
-	if got := cache.Len(); got != 0 {
-		t.Fatalf("Len() after CloseMatching = %d, want 0", got)
-	}
-
-	// Nil cache safety
-	var nilCache *TransportCache[cacheKey]
-	if nilCache.CloseKey(cacheKey{}) {
-		t.Fatal("expected CloseKey on nil cache to return false")
-	}
-	if nilCache.CloseMatching(func(cacheKey) bool { return true }) != 0 {
-		t.Fatal("expected CloseMatching on nil cache to return 0")
 	}
 }
 

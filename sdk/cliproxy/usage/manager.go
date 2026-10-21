@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,7 +64,9 @@ type Record struct {
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
 	Generate *bool
 	// Stream reports whether the request was executed in streaming mode.
-	Stream      bool
+	Stream bool
+	// Endpoint stores the inbound route (e.g. "/v1/chat/completions") when known.
+	Endpoint    string
 	RequestedAt time.Time
 	Latency     time.Duration
 	TTFT        time.Duration
@@ -103,6 +106,7 @@ type executionTraceIDContextKey struct{}
 type apiKeyContextKey struct{}
 type accessProviderContextKey struct{}
 type isNativeKeyContextKey struct{}
+type endpointContextKey struct{}
 
 // WithExecutionRequestID attaches a specific execution instance request ID to the context.
 func WithExecutionRequestID(ctx context.Context, requestID string) context.Context {
@@ -305,17 +309,28 @@ func WithAPIKey(ctx context.Context, apiKey string) context.Context {
 	return context.WithValue(ctx, apiKeyContextKey{}, apiKey)
 }
 
-// APIKeyFromContext returns the client API key stored in ctx or gin.Context.
-func APIKeyFromContext(ctx context.Context) string {
+// stringContextValue returns a trimmed string (or []byte) context value.
+func stringContextValue(ctx context.Context, key any) string {
 	if ctx == nil {
 		return ""
 	}
-	raw := ctx.Value(apiKeyContextKey{})
-	switch value := raw.(type) {
+	switch value := ctx.Value(key).(type) {
 	case string:
 		return strings.TrimSpace(value)
 	case []byte:
 		return strings.TrimSpace(string(value))
+	}
+	return ""
+}
+
+// APIKeyFromContext returns the client API key stored in ctx or gin.Context.
+// The gin fallback must only be used on the request goroutine.
+func APIKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if key := stringContextValue(ctx, apiKeyContextKey{}); key != "" {
+		return key
 	}
 	if ginCtx, ok := ctx.Value("gin").(interface{ Get(string) (any, bool) }); ok && ginCtx != nil {
 		if v, exists := ginCtx.Get("userApiKey"); exists {
@@ -332,17 +347,41 @@ func APIKeyFromContext(ctx context.Context) string {
 	return ""
 }
 
-// AccessProviderFromContext returns the client authentication provider stored in ctx.
+// WithEndpoint stores the inbound route template (e.g. "/v1/chat/completions")
+// for usage sinks. Call it on the request goroutine, before any asynchronous
+// work, with the value read from the gin context.
+func WithEndpoint(ctx context.Context, endpoint string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, endpointContextKey{}, endpoint)
+}
+
+// EndpointFromContext returns the route template stored by WithEndpoint. It
+// deliberately never reads the gin.Context carried by ctx: usage records are
+// often published from streaming goroutines after the handler returned and the
+// pooled gin.Context was reset for another request.
+func EndpointFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	endpoint, _ := ctx.Value(endpointContextKey{}).(string)
+	return endpoint
+}
+
+// AccessProviderFromContext returns the client authentication provider stored
+// in ctx or gin.Context. The gin fallback must only be used on the request
+// goroutine.
 func AccessProviderFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	raw := ctx.Value(accessProviderContextKey{})
-	switch value := raw.(type) {
-	case string:
-		return strings.TrimSpace(value)
-	case []byte:
-		return strings.TrimSpace(string(value))
+	if provider := stringContextValue(ctx, accessProviderContextKey{}); provider != "" {
+		return provider
 	}
 	if ginCtx, ok := ctx.Value("gin").(interface{ Get(string) (any, bool) }); ok && ginCtx != nil {
 		if v, exists := ginCtx.Get("accessProvider"); exists {
@@ -408,15 +447,20 @@ type queueItem struct {
 }
 
 // Manager maintains a queue of usage records and delivers them to registered plugins.
+//
+// Lifecycle: the first Publish lazily starts the dispatcher if Start was never
+// called. Stop closes the manager: it stops accepting records (later
+// publications are dropped and counted), and the dispatcher delivers what is
+// already queued and exits. A stopped manager stays stopped until an explicit
+// Start, e.g. by a new service in the same process; publications never restart it.
 type Manager struct {
-	once     sync.Once
-	stopOnce sync.Once
-	cancel   context.CancelFunc
-
-	mu     sync.Mutex
-	cond   *sync.Cond
-	queue  []queueItem
-	closed bool
+	mu      sync.Mutex
+	cond    *sync.Cond
+	queue   []queueItem
+	closed  bool
+	running bool
+	done    chan struct{}
+	dropped atomic.Int64
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -430,35 +474,70 @@ func NewManager(buffer int) *Manager {
 	return m
 }
 
-// Start launches the background dispatcher. Calling Start multiple times is safe.
+// Start (re)opens the manager and launches the background dispatcher. If a
+// stopped dispatcher is still draining, it keeps running as the active one.
 func (m *Manager) Start(ctx context.Context) {
 	if m == nil {
 		return
 	}
-	m.once.Do(func() {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		var workerCtx context.Context
-		workerCtx, m.cancel = context.WithCancel(ctx)
-		go m.run(workerCtx)
-	})
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = false
+	m.startLocked()
 }
 
-// Stop stops the dispatcher and drains the queue.
+// startLocked launches a dispatcher unless one is running. m.mu must be held.
+func (m *Manager) startLocked() {
+	if m.running {
+		return
+	}
+	m.running = true
+	done := make(chan struct{})
+	m.done = done
+	go m.run(done)
+}
+
+// Stop closes the manager: new publications are dropped, and the dispatcher
+// delivers the queued records and exits. It does not wait; use Wait to block
+// until the queue is drained.
 func (m *Manager) Stop() {
 	if m == nil {
 		return
 	}
-	m.stopOnce.Do(func() {
-		if m.cancel != nil {
-			m.cancel()
-		}
-		m.mu.Lock()
-		m.closed = true
-		m.mu.Unlock()
-		m.cond.Broadcast()
-	})
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	m.cond.Broadcast()
+}
+
+// Dropped returns how many records were published while the manager was stopped.
+func (m *Manager) Dropped() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.dropped.Load()
+}
+
+// Wait blocks until the current dispatcher has exited after Stop, or ctx ends.
+func (m *Manager) Wait(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	done := m.done
+	m.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Register appends a plugin to the delivery list.
@@ -515,13 +594,15 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 			record.TraceID = trID
 		}
 	}
+	// Publish may run on a streaming goroutine after the handler returned, so
+	// only immutable context values are read here, never the pooled gin.Context.
 	if strings.TrimSpace(record.APIKey) == "" {
-		if key := APIKeyFromContext(ctx); key != "" {
+		if key := stringContextValue(ctx, apiKeyContextKey{}); key != "" {
 			record.APIKey = key
 		}
 	}
 	if strings.TrimSpace(record.AccessProvider) == "" {
-		if provider := AccessProviderFromContext(ctx); provider != "" {
+		if provider := stringContextValue(ctx, accessProviderContextKey{}); provider != "" {
 			record.AccessProvider = provider
 		}
 	}
@@ -532,25 +613,33 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 			record.IsNativeKey = IsNativeAccessProvider(record.AccessProvider)
 		}
 	}
-	// ensure worker is running even if Start was not called explicitly
-	m.Start(context.Background())
+	if strings.TrimSpace(record.Endpoint) == "" {
+		record.Endpoint = EndpointFromContext(ctx)
+	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		dropped := m.dropped.Add(1)
+		log.Debugf("usage: manager stopped; dropping usage record (provider=%s model=%s dropped=%d)", record.Provider, record.Model, dropped)
 		return
 	}
+	// Lazily start the dispatcher if Start was never called; a stopped manager
+	// is closed above and is never restarted implicitly.
+	m.startLocked()
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
 	m.mu.Unlock()
 	m.cond.Signal()
 }
 
-func (m *Manager) run(ctx context.Context) {
+func (m *Manager) run(done chan struct{}) {
+	defer close(done)
 	for {
 		m.mu.Lock()
 		for !m.closed && len(m.queue) == 0 {
 			m.cond.Wait()
 		}
 		if len(m.queue) == 0 && m.closed {
+			m.running = false
 			m.mu.Unlock()
 			return
 		}
@@ -605,3 +694,6 @@ func StartDefault(ctx context.Context) { DefaultManager().Start(ctx) }
 
 // StopDefault stops the default manager's dispatcher.
 func StopDefault() { DefaultManager().Stop() }
+
+// WaitDefault blocks until the default manager's dispatcher has drained after StopDefault.
+func WaitDefault(ctx context.Context) error { return DefaultManager().Wait(ctx) }

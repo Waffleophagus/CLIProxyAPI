@@ -30,9 +30,9 @@ type NativeCapabilities struct {
 	// WebSearch reports explicit per-model support for native web search.
 	// nil means the catalog has not established support either way.
 	WebSearch *bool `json:"web_search,omitempty"`
-	// ToolSearch reports whether every credential behind a Home route can take
-	// Codex tool_search as Anthropic native tool search. Home computes it per
-	// route; nil means unknown and is treated as unsupported.
+	// ToolSearch reports whether every credential behind a route can take
+	// Codex tool_search as Anthropic native tool search; nil means unknown and
+	// is treated as unsupported.
 	ToolSearch *bool `json:"tool_search,omitempty"`
 }
 
@@ -53,11 +53,11 @@ type ModelInfo struct {
 	Created int64 `json:"created"`
 	// OwnedBy indicates the organization that owns the model
 	OwnedBy string `json:"owned_by"`
-	// Type indicates the model type (e.g., "claude", "gemini", "openai")
+	// Type indicates the model type (e.g., "claude", "codex", "openai")
 	Type string `json:"type"`
 	// DisplayName is the human-readable name for the model
 	DisplayName string `json:"display_name,omitempty"`
-	// Name is used for Gemini-style model names
+	// Name is an optional alternate model name (used by Devin catalog entries)
 	Name string `json:"name,omitempty"`
 	// Version is the model version
 	Version string `json:"version,omitempty"`
@@ -82,19 +82,14 @@ type ModelInfo struct {
 	SupportedInputModalities []string `json:"supportedInputModalities,omitempty"`
 	// SupportedOutputModalities lists supported output modalities (e.g., TEXT, IMAGE)
 	SupportedOutputModalities []string `json:"supportedOutputModalities,omitempty"`
-	// SupportsWebSearch indicates this Antigravity model is listed by
-	// fetchAvailableModels.webSearchModelIds and can execute native googleSearch.
-	SupportsWebSearch bool `json:"supports_web_search,omitempty"`
-
 	// SupportConfigurationUpdate reports internal support for configuration_update.
 	SupportConfigurationUpdate bool `json:"-"`
 
 	// NativeCapabilities contains internal, static per-model capability metadata.
-	// It is intentionally separate from Antigravity's dynamically probed capability.
 	NativeCapabilities *NativeCapabilities `json:"-"`
 
 	// Thinking holds provider-specific reasoning/thinking budget capabilities.
-	// This is optional and currently used for Gemini thinking budget normalization.
+	// This is optional and used for thinking budget/level normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
 
 	// Config holds model-specific runtime overrides loaded from models.json.
@@ -318,9 +313,9 @@ func ResolveResponsesWebSearchCapability(routes []NativeCapabilityRoute) *bool {
 func responsesWebSearchProviderPathSupport(provider string) *bool {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	switch provider {
-	case "codex", "xai", "claude", "antigravity":
+	case "codex", "xai", "claude":
 		return boolPointer(true)
-	case "openai", "openai-compatibility", "gemini", "aistudio", "vertex", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "interactions", "gemini-interactions":
+	case "openai", "openai-compatibility", "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		return boolPointer(false)
 	default:
 		if strings.HasPrefix(provider, "openai-compatible-") {
@@ -436,7 +431,7 @@ func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
 // RegisterClient registers a client and its supported models
 // Parameters:
 //   - clientID: Unique identifier for the client
-//   - clientProvider: Provider name (e.g., "gemini", "claude", "openai")
+//   - clientProvider: Provider name (e.g., "codex", "claude", "openai")
 //   - models: List of models that this client can provide
 func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) {
 	r.mutex.Lock()
@@ -611,9 +606,6 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 						}
 					} else {
 						reg.Providers[oldProvider] = count - toRemove
-						if reg.InfoByProvider != nil && reg.InfoByProvider[oldProvider] != nil {
-							reg.InfoByProvider[oldProvider].SupportsWebSearch = r.hasClientSupportingWebSearchLocked(id, oldProvider, clientID)
-						}
 					}
 				}
 			}
@@ -660,19 +652,12 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 	for _, id := range uniqueModelIDs {
 		model := newModels[id]
 		if reg, ok := r.models[id]; ok {
-			hasWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(id, "", clientID)
 			reg.Info = cloneModelInfo(model)
-			reg.Info.SupportsWebSearch = hasWebSearch
 			if provider != "" {
 				if reg.InfoByProvider == nil {
 					reg.InfoByProvider = make(map[string]*ModelInfo)
 				}
-				hasProvWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(id, provider, clientID)
 				reg.InfoByProvider[provider] = cloneModelInfo(model)
-				reg.InfoByProvider[provider].SupportsWebSearch = hasProvWebSearch
-			}
-			if providerChanged && oldProvider != "" && reg.InfoByProvider != nil && reg.InfoByProvider[oldProvider] != nil {
-				reg.InfoByProvider[oldProvider].SupportsWebSearch = r.hasClientSupportingWebSearchLocked(id, oldProvider, clientID)
 			}
 			reg.LastUpdated = now
 			// Only conditional replacements preserve scheduling state for retained
@@ -734,9 +719,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 	if existing, exists := r.models[modelID]; exists {
 		existing.Count++
 		existing.LastUpdated = now
-		hasWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(modelID, "", excludeClientID)
 		existing.Info = cloneModelInfo(model)
-		existing.Info.SupportsWebSearch = hasWebSearch
 		if existing.SuspendedClients == nil {
 			existing.SuspendedClients = make(map[string]string)
 		}
@@ -748,9 +731,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 				existing.Providers = make(map[string]int)
 			}
 			existing.Providers[provider]++
-			hasProvWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(modelID, provider, excludeClientID)
 			existing.InfoByProvider[provider] = cloneModelInfo(model)
-			existing.InfoByProvider[provider].SupportsWebSearch = hasProvWebSearch
 		}
 		log.Debugf("Incremented count for model %s, now %d clients", modelID, existing.Count)
 		return
@@ -803,13 +784,6 @@ func (r *ModelRegistry) removeModelRegistration(clientID, modelID, provider stri
 	if registration.Count <= 0 {
 		delete(r.models, modelID)
 		log.Debugf("Removed model %s as no clients remain", modelID)
-	} else {
-		if registration.Info != nil {
-			registration.Info.SupportsWebSearch = r.hasClientSupportingWebSearchLocked(modelID, "", clientID)
-		}
-		if provider != "" && registration.InfoByProvider != nil && registration.InfoByProvider[provider] != nil {
-			registration.InfoByProvider[provider].SupportsWebSearch = r.hasClientSupportingWebSearchLocked(modelID, provider, clientID)
-		}
 	}
 }
 
@@ -939,13 +913,6 @@ func (r *ModelRegistry) unregisterClientInternal(clientID string) {
 			if registration.Count <= 0 {
 				delete(r.models, modelID)
 				log.Debugf("Removed model %s as no clients remain", modelID)
-			} else {
-				if registration.Info != nil {
-					registration.Info.SupportsWebSearch = r.hasClientSupportingWebSearchLocked(modelID, "", clientID)
-				}
-				if hasProvider && registration.InfoByProvider != nil && registration.InfoByProvider[provider] != nil {
-					registration.InfoByProvider[provider].SupportsWebSearch = r.hasClientSupportingWebSearchLocked(modelID, provider, clientID)
-				}
 			}
 		}
 	}
@@ -1128,62 +1095,6 @@ func (r *ModelRegistry) ApplyClientModelProjections(clientID string, epoch uint6
 	return true
 }
 
-// ApplyClientModelCapabilities applies capability mutations to matching models of clientID
-// if the client is currently registered and its registration epoch matches expectedEpoch.
-// Returns true if applied, false if client is unregistered or epoch changed.
-func (r *ModelRegistry) ApplyClientModelCapabilities(clientID string, expectedEpoch uint64, mutate func(modelID string, info *ModelInfo)) bool {
-	if r == nil || mutate == nil {
-		return false
-	}
-	clientID = strings.TrimSpace(clientID)
-	if clientID == "" {
-		return false
-	}
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-
-	if r.clientEpochs == nil || r.clientEpochs[clientID] != expectedEpoch {
-		return false
-	}
-	clientInfos, exists := r.clientModelInfos[clientID]
-	if !exists || len(clientInfos) == 0 {
-		return false
-	}
-
-	provider := r.clientProviders[clientID]
-	for id, info := range clientInfos {
-		if info != nil {
-			mutate(id, info)
-			if reg, okReg := r.models[id]; okReg && reg != nil {
-				hasWebSearch := r.hasClientSupportingWebSearchLocked(id, "", "")
-				if reg.Info != nil {
-					reg.Info.SupportsWebSearch = hasWebSearch
-				}
-				if provider != "" && reg.InfoByProvider != nil && reg.InfoByProvider[provider] != nil {
-					reg.InfoByProvider[provider].SupportsWebSearch = r.hasClientSupportingWebSearchLocked(id, provider, "")
-				}
-			}
-		}
-	}
-	r.invalidateAvailableModelsCacheLocked()
-	return true
-}
-
-func (r *ModelRegistry) hasClientSupportingWebSearchLocked(modelID, provider, excludeClientID string) bool {
-	for cID, infos := range r.clientModelInfos {
-		if cID == excludeClientID {
-			continue
-		}
-		if provider != "" && r.clientProviders[cID] != provider {
-			continue
-		}
-		if info, ok := infos[modelID]; ok && info != nil && info.SupportsWebSearch {
-			return true
-		}
-	}
-	return false
-}
-
 // SuspendClientModel marks a client's model as temporarily unavailable until explicitly resumed.
 // Parameters:
 //   - clientID: The client to suspend
@@ -1307,7 +1218,7 @@ func (r *ModelRegistry) IsModelQuotaExceededForClient(clientID, modelID string) 
 
 // GetAvailableModels returns all models that have at least one available client
 // Parameters:
-//   - handlerType: The handler type to filter models for (e.g., "openai", "claude", "gemini")
+//   - handlerType: The handler type to filter models for (e.g., "openai", "claude")
 //
 // Returns:
 //   - []map[string]any: List of available models in the requested format
@@ -1478,7 +1389,7 @@ func cloneModelMapValue(value any) any {
 
 // GetAvailableModelsByProvider returns models available for the given provider identifier.
 // Parameters:
-//   - provider: Provider identifier (e.g., "codex", "gemini", "antigravity")
+//   - provider: Provider identifier (e.g., "codex", "claude", "xai")
 //
 // Returns:
 //   - []*ModelInfo: List of available models for the provider
@@ -1787,39 +1698,6 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		result["max_tokens"] = maxOutput
 		return result
 
-	case "gemini":
-		result := map[string]any{}
-		if model.Name != "" {
-			result["name"] = model.Name
-		} else {
-			result["name"] = model.ID
-		}
-		if model.Version != "" {
-			result["version"] = model.Version
-		}
-		if model.DisplayName != "" {
-			result["displayName"] = model.DisplayName
-		}
-		if model.Description != "" {
-			result["description"] = model.Description
-		}
-		if model.InputTokenLimit > 0 {
-			result["inputTokenLimit"] = model.InputTokenLimit
-		}
-		if model.OutputTokenLimit > 0 {
-			result["outputTokenLimit"] = model.OutputTokenLimit
-		}
-		if len(model.SupportedGenerationMethods) > 0 {
-			result["supportedGenerationMethods"] = append([]string(nil), model.SupportedGenerationMethods...)
-		}
-		if len(model.SupportedInputModalities) > 0 {
-			result["supportedInputModalities"] = append([]string(nil), model.SupportedInputModalities...)
-		}
-		if len(model.SupportedOutputModalities) > 0 {
-			result["supportedOutputModalities"] = append([]string(nil), model.SupportedOutputModalities...)
-		}
-		return result
-
 	default:
 		// Generic format
 		result := map[string]any{
@@ -1866,7 +1744,7 @@ func (r *ModelRegistry) CleanupExpiredQuotas() {
 // available clients that are not suspended or over quota.
 //
 // Parameters:
-//   - handlerType: The API handler type (e.g., "openai", "claude", "gemini")
+//   - handlerType: The API handler type (e.g., "openai", "claude")
 //
 // Returns:
 //   - string: The model ID of the first available model, or empty string if none available

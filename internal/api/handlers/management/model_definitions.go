@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
@@ -24,7 +23,7 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 
 	models := registry.GetStaticModelDefinitionsByChannel(channel)
 	if len(models) == 0 {
-		models = h.pluginModelDefinitionsByChannel(channel)
+		models = registryModelDefinitionsByChannel(channel)
 	}
 	if len(models) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown channel", "channel": channel})
@@ -37,18 +36,7 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 	})
 }
 
-func (h *Handler) pluginModelDefinitionsByChannel(channel string) []*registry.ModelInfo {
-	var host *pluginhost.Host
-	if h != nil {
-		h.mu.Lock()
-		host = h.pluginHost
-		h.mu.Unlock()
-	}
-	if host != nil {
-		if models := host.ModelsForProvider(channel); len(models) > 0 {
-			return models
-		}
-	}
+func registryModelDefinitionsByChannel(channel string) []*registry.ModelInfo {
 	models := registry.GetGlobalRegistry().GetAvailableModelsByProvider(channel)
 	if len(models) > 1 {
 		sort.Slice(models, func(i, j int) bool {

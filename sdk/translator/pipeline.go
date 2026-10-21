@@ -13,8 +13,6 @@ type RequestEnvelope struct {
 	Stream    bool
 	Body      []byte
 	ModelInfo *registry.ModelInfo
-	// ConfigurationUpdatesChanged reports that a plugin normalizer modified Responses updates.
-	ConfigurationUpdatesChanged bool
 	// Err is a request-scoped translation failure. Callers must not send Body upstream when it is set.
 	Err error
 }

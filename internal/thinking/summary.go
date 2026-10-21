@@ -68,24 +68,6 @@ func ExtractSummaryConfig(body []byte, format string) SummaryConfig {
 		if config, ok := claudeSummaryConfig(body, "thinking.display"); ok {
 			return config
 		}
-	case "gemini":
-		if config, ok := firstSummaryBoolConfig(body, []string{
-			"generationConfig.thinkingConfig.includeThoughts",
-			"generationConfig.thinkingConfig.include_thoughts",
-			"generation_config.thinking_config.include_thoughts",
-			"generation_config.thinking_config.includeThoughts",
-		}); ok {
-			return config
-		}
-	case "antigravity":
-		if config, ok := firstSummaryBoolConfig(body, []string{
-			"request.generationConfig.thinkingConfig.includeThoughts",
-			"request.generationConfig.thinkingConfig.include_thoughts",
-			"request.generationConfig.thinking_config.includeThoughts",
-			"request.generationConfig.thinking_config.include_thoughts",
-		}); ok {
-			return config
-		}
 	case "interactions":
 		for _, path := range []string{
 			"generation_config.thinking_summaries",
@@ -153,11 +135,6 @@ func ApplyTranslatedSummaryToClaude(out, source []byte, sourceFormat, model stri
 	return ApplySummaryConfigForModel(out, "claude", model, config)
 }
 
-// ApplySummaryConfig writes canonical summary intent in the target protocol.
-func ApplySummaryConfig(body []byte, format string, config SummaryConfig) []byte {
-	return ApplySummaryConfigForModel(body, format, "", config)
-}
-
 // ApplySummaryConfigForModel writes canonical summary intent in the target
 // protocol and uses target model capabilities when a valid target request must
 // activate thinking before it can request summaries.
@@ -209,26 +186,8 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 			value = "summarized"
 		}
 		body, _ = sjson.SetBytes(body, "thinking.display", value)
-	case "gemini":
-		body, _ = sjson.SetBytes(body, "generationConfig.thinkingConfig.includeThoughts", enabled)
-		for _, path := range []string{
-			"generationConfig.thinkingConfig.include_thoughts",
-			"generation_config.thinking_config.include_thoughts",
-			"generation_config.thinking_config.includeThoughts",
-		} {
-			body, _ = sjson.DeleteBytes(body, path)
-		}
-	case "antigravity":
-		body, _ = sjson.SetBytes(body, "request.generationConfig.thinkingConfig.includeThoughts", enabled)
-		for _, path := range []string{
-			"request.generationConfig.thinkingConfig.include_thoughts",
-			"request.generationConfig.thinking_config.include_thoughts",
-			"request.generationConfig.thinking_config.includeThoughts",
-		} {
-			body, _ = sjson.DeleteBytes(body, path)
-		}
 	case "interactions":
-		// Google Interactions only accepts auto or none. OpenAI's concise and
+		// The Interactions format (used by Devin) only accepts auto or none. OpenAI's concise and
 		// detailed selectors therefore collapse to the supported enabled value.
 		value := "none"
 		if enabled {
@@ -257,7 +216,7 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 // intent that this package can read or write.
 func summaryFormatSupported(format string) bool {
 	switch format {
-	case "openai", "openai-response", "codex", "claude", "gemini", "antigravity", "interactions":
+	case "openai", "openai-response", "codex", "claude", "interactions":
 		return true
 	default:
 		return false

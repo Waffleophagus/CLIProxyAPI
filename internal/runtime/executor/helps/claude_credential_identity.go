@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
-	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/sjson"
@@ -115,19 +114,8 @@ func mergeClaudeSessionMetadata(metadataSets ...map[string]any) map[string]any {
 	return merged
 }
 
-type claudeCredentialDevicePoolKVClient interface {
-	KVGet(context.Context, string) ([]byte, bool, error)
-	KVSet(context.Context, string, []byte, homekv.KVSetOptions) (bool, error)
-}
-
-var currentClaudeCredentialDevicePoolKVClient = func() (claudeCredentialDevicePoolKVClient, bool, error) {
-	client, homeMode, errClient := homekv.CurrentKVClient()
-	return client, homeMode, errClient
-}
-
-// EnsureClaudeCredentialDevicePoolRequired initializes a credential pool locally,
-// or coordinates it through Home KV when the selected auth is a remote dispatch clone.
-func EnsureClaudeCredentialDevicePoolRequired(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+// EnsureClaudeCredentialDevicePoolRequired initializes a credential device pool locally.
+func EnsureClaudeCredentialDevicePoolRequired(_ context.Context, auth *cliproxyauth.Auth) ([]string, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("ensure Claude credential device pool: auth is nil")
 	}
@@ -135,81 +123,8 @@ func EnsureClaudeCredentialDevicePoolRequired(ctx context.Context, auth *cliprox
 	if claudeauth.HasCanonicalDeviceIDPool(rawCredentialDeviceIDs) {
 		return claudeauth.NormalizeDeviceIDPool(rawCredentialDeviceIDs), nil
 	}
-	credentialCandidate := claudeauth.NormalizeDeviceIDPool(rawCredentialDeviceIDs)
-
-	client, homeMode, errClient := currentClaudeCredentialDevicePoolKVClient()
-	if !homeMode {
-		deviceIDs, _, errEnsure := claudeauth.EnsureDeviceIDPoolFor(&auth.Metadata)
-		return deviceIDs, errEnsure
-	}
-	if errClient != nil {
-		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV client: %w", errClient)
-	}
-	identity := strings.TrimSpace(auth.EnsureIndex())
-	if identity == "" {
-		identity = strings.TrimSpace(auth.ID)
-	}
-	if identity == "" {
-		return nil, fmt.Errorf("ensure Claude credential device pool: credential identity is empty")
-	}
-	key := "cpa:claude:credential-device-pool:" + homekv.HashKeyPart(identity)
-	if raw, found, errGet := client.KVGet(ctx, key); errGet != nil {
-		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV get: %w", errGet)
-	} else if found {
-		var stored []string
-		if errUnmarshal := json.Unmarshal(raw, &stored); errUnmarshal == nil {
-			if deviceIDs := claudeauth.NormalizeDeviceIDPool(stored); len(deviceIDs) == claudeauth.ClaudeDevicePoolSize {
-				if !claudeauth.HasCanonicalDeviceIDPool(stored) {
-					canonicalRaw, errMarshal := json.Marshal(deviceIDs)
-					if errMarshal != nil {
-						return nil, fmt.Errorf("ensure Claude credential device pool: marshal canonical Home KV value: %w", errMarshal)
-					}
-					written, errSet := client.KVSet(ctx, key, canonicalRaw, homekv.KVSetOptions{XX: true})
-					if errSet != nil {
-						return nil, fmt.Errorf("ensure Claude credential device pool: canonicalize Home KV value: %w", errSet)
-					}
-					if !written {
-						return nil, fmt.Errorf("ensure Claude credential device pool: canonical Home KV value was not written")
-					}
-				}
-				claudeauth.StoreDeviceIDPool(&auth.Metadata, deviceIDs)
-				return deviceIDs, nil
-			}
-		}
-	}
-
-	deviceIDs := credentialCandidate
-	if len(deviceIDs) != claudeauth.ClaudeDevicePoolSize {
-		var errGenerate error
-		deviceIDs, errGenerate = claudeauth.GenerateDeviceIDPool()
-		if errGenerate != nil {
-			return nil, errGenerate
-		}
-	}
-	raw, errMarshal := json.Marshal(deviceIDs)
-	if errMarshal != nil {
-		return nil, fmt.Errorf("ensure Claude credential device pool: marshal Home KV value: %w", errMarshal)
-	}
-	if _, errSet := client.KVSet(ctx, key, raw, homekv.KVSetOptions{NX: true}); errSet != nil {
-		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV set: %w", errSet)
-	}
-	raw, found, errGet := client.KVGet(ctx, key)
-	if errGet != nil {
-		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV reread: %w", errGet)
-	}
-	if !found {
-		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV value missing after set")
-	}
-	var stored []string
-	if errUnmarshal := json.Unmarshal(raw, &stored); errUnmarshal != nil {
-		return nil, fmt.Errorf("ensure Claude credential device pool: decode Home KV value: %w", errUnmarshal)
-	}
-	deviceIDs = claudeauth.NormalizeDeviceIDPool(stored)
-	if len(deviceIDs) != claudeauth.ClaudeDevicePoolSize {
-		return nil, fmt.Errorf("ensure Claude credential device pool: Home KV pool has %d entries, want %d", len(deviceIDs), claudeauth.ClaudeDevicePoolSize)
-	}
-	claudeauth.StoreDeviceIDPool(&auth.Metadata, deviceIDs)
-	return deviceIDs, nil
+	deviceIDs, _, errEnsure := claudeauth.EnsureDeviceIDPoolFor(&auth.Metadata)
+	return deviceIDs, errEnsure
 }
 
 // ClaudeCredentialAccountUUID returns the selected upstream credential's account UUID.

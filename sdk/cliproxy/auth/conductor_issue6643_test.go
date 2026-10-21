@@ -48,7 +48,7 @@ type issue6643ConcurrentExecutor struct {
 
 const issue6643ConcurrentRequests = 6
 
-func (*issue6643ConcurrentExecutor) Identifier() string { return "antigravity" }
+func (*issue6643ConcurrentExecutor) Identifier() string { return "acme" }
 
 func (e *issue6643ConcurrentExecutor) Execute(ctx context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if e.exhausted.Load() {
@@ -98,7 +98,7 @@ func issue6643SeqTestAuth(t *testing.T, authID string) *Manager {
 	manager := NewManager(nil, nil, nil)
 	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), &Auth{
 		ID:       authID,
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 	}); errRegister != nil {
 		t.Fatalf("Register returned error: %v", errRegister)
@@ -109,7 +109,7 @@ func issue6643SeqTestAuth(t *testing.T, authID string) *Manager {
 func issue6643QuotaFailure(authID, model string, seq uint64) Result {
 	return Result{
 		AuthID:       authID,
-		Provider:     "antigravity",
+		Provider:     "acme",
 		Model:        model,
 		Success:      false,
 		ExecutionSeq: seq,
@@ -146,14 +146,14 @@ func TestManager_Issue6643_SuccessDispatchedAfterCooldownClearsIt(t *testing.T) 
 
 	// The earlier dispatch now completes successfully. It predates the
 	// cooldown, so the cooldown must survive.
-	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "antigravity", Model: model, Success: true, ExecutionSeq: staleSeq})
+	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "acme", Model: model, Success: true, ExecutionSeq: staleSeq})
 	if state := issue6643ModelState(t, manager, authID, model); !state.Unavailable || !state.Quota.Exceeded || !state.NextRetryAfter.After(time.Now()) {
 		t.Fatalf("stale success cleared the quota cooldown: state = %+v", state)
 	}
 
 	// A request dispatched after the cooldown was recorded (for example a
 	// probe just before the reset boundary) succeeds and clears it.
-	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "antigravity", Model: model, Success: true, ExecutionSeq: manager.nextExecutionSeq()})
+	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "acme", Model: model, Success: true, ExecutionSeq: manager.nextExecutionSeq()})
 	if state := issue6643ModelState(t, manager, authID, model); state.Unavailable || state.Quota.Exceeded || !state.NextRetryAfter.IsZero() {
 		t.Fatalf("post-cooldown success did not clear the cooldown: state = %+v", state)
 	}
@@ -177,7 +177,7 @@ func TestManager_Issue6643_UnstampedSuccessKeepsLegacyClearBehavior(t *testing.T
 
 	// An unstamped success cannot be ordered against the cooldown, so it
 	// still clears it like any legacy caller would.
-	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "antigravity", Model: model, Success: true})
+	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "acme", Model: model, Success: true})
 	if state := issue6643ModelState(t, manager, authID, model); state.Unavailable || state.Quota.Exceeded {
 		t.Fatalf("unstamped success should clear the cooldown: state = %+v", state)
 	}
@@ -193,7 +193,7 @@ func TestManager_Issue6643_StaleAuthLevelSuccessKeepsCooldown(t *testing.T) {
 	staleSeq := manager.nextExecutionSeq()
 	manager.MarkResult(context.Background(), Result{
 		AuthID:       authID,
-		Provider:     "antigravity",
+		Provider:     "acme",
 		Success:      false,
 		ExecutionSeq: manager.nextExecutionSeq(),
 		Error:        &Error{Code: "quota_exhausted", Message: "QUOTA_EXHAUSTED", Retryable: true, HTTPStatus: http.StatusTooManyRequests},
@@ -203,13 +203,13 @@ func TestManager_Issue6643_StaleAuthLevelSuccessKeepsCooldown(t *testing.T) {
 		t.Fatalf("expected auth-level quota cooldown after failure, got %+v", updated)
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "antigravity", Success: true, ExecutionSeq: staleSeq})
+	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "acme", Success: true, ExecutionSeq: staleSeq})
 	updated, ok = manager.GetByID(authID)
 	if !ok || updated == nil || !updated.Quota.Exceeded || !updated.NextRetryAfter.After(time.Now()) {
 		t.Fatalf("stale auth-level success cleared the cooldown: auth = %+v", updated)
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "antigravity", Success: true, ExecutionSeq: manager.nextExecutionSeq()})
+	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "acme", Success: true, ExecutionSeq: manager.nextExecutionSeq()})
 	updated, ok = manager.GetByID(authID)
 	if !ok || updated == nil || updated.Quota.Exceeded || !updated.NextRetryAfter.IsZero() {
 		t.Fatalf("post-cooldown auth-level success did not clear the cooldown: auth = %+v", updated)
@@ -246,7 +246,7 @@ func TestManager_Issue6643_RestoreKeepsCooldownWatermark(t *testing.T) {
 		t.Fatalf("RestoreCooldownStates returned error: %v", errRestore)
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "antigravity", Model: model, Success: true, ExecutionSeq: staleSeq})
+	manager.MarkResult(context.Background(), Result{AuthID: authID, Provider: "acme", Model: model, Success: true, ExecutionSeq: staleSeq})
 	if state := issue6643ModelState(t, manager, authID, model); !state.Unavailable || !state.Quota.Exceeded || !state.NextRetryAfter.After(time.Now()) {
 		t.Fatalf("stale success cleared the cooldown after runtime restore: state = %+v", state)
 	}
@@ -263,7 +263,7 @@ func TestManager_Issue6643_InFlightSuccessesKeepFreshQuotaCooldown(t *testing.T)
 		authID = "issue6643-auth"
 		model  = "gemini-4-argon-high"
 	)
-	registry.GetGlobalRegistry().RegisterClient(authID, "antigravity", []*registry.ModelInfo{{ID: model}})
+	registry.GetGlobalRegistry().RegisterClient(authID, "acme", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
 
 	executor := &issue6643ConcurrentExecutor{
@@ -283,7 +283,7 @@ func TestManager_Issue6643_InFlightSuccessesKeepFreshQuotaCooldown(t *testing.T)
 	manager.RegisterExecutor(executor)
 	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), &Auth{
 		ID:       authID,
-		Provider: "antigravity",
+		Provider: "acme",
 		Status:   StatusActive,
 	}); errRegister != nil {
 		t.Fatalf("Register returned error: %v", errRegister)
@@ -294,7 +294,7 @@ func TestManager_Issue6643_InFlightSuccessesKeepFreshQuotaCooldown(t *testing.T)
 	results := make(chan issue6643Result, issue6643ConcurrentRequests)
 	for i := 0; i < issue6643ConcurrentRequests; i++ {
 		go func() {
-			_, errExecute := manager.Execute(execCtx, []string{"antigravity"}, cliproxyexecutor.Request{Model: model, Payload: []byte("ping")}, cliproxyexecutor.Options{})
+			_, errExecute := manager.Execute(execCtx, []string{"acme"}, cliproxyexecutor.Request{Model: model, Payload: []byte("ping")}, cliproxyexecutor.Options{})
 			results <- issue6643Result{err: errExecute}
 		}()
 	}

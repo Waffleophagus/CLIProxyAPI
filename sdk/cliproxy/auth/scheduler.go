@@ -359,20 +359,6 @@ func (s *authScheduler) recordRemovalTombstoneLocked(authID string, tombstoneEpo
 	s.removeAuthFromProvidersLocked(authID)
 }
 
-// removeAuth deletes one auth from every scheduler shard that references it.
-func (s *authScheduler) removeAuth(authID string) {
-	if s == nil {
-		return
-	}
-	authID = strings.TrimSpace(authID)
-	if authID == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.removeAuthLocked(authID)
-}
-
 // ResetAuthGeneration clears recorded generation/tombstone metadata for authID.
 func (s *authScheduler) ResetAuthGeneration(authID string) {
 	if s == nil {
@@ -773,11 +759,6 @@ func (s *authScheduler) isStaleScheduledAuth(authID string, incomingEpoch, incom
 	return false
 }
 
-// upsertAuthLocked updates one auth in-place while the scheduler mutex is held.
-func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
-	s.upsertAuthLifecycleLocked(auth, now)
-}
-
 // upsertAuthRebuildLocked inserts an auth during a scheduler rebuild.
 // It respects removal tombstones (existing.epoch > incomingEpoch), but does not drop
 // an active credential simply because an in-flight MarkResult advanced its Generation.
@@ -997,27 +978,6 @@ func (s *authScheduler) removeAuthFromProvidersLocked(authID string) {
 	}
 }
 
-// removeAuthLocked removes one auth from the scheduler while the scheduler mutex is held.
-func (s *authScheduler) removeAuthLocked(authID string) {
-	if authID == "" {
-		return
-	}
-	if s.authGenerations == nil {
-		s.authGenerations = make(map[string]scheduledGenerationMeta)
-	}
-	now := time.Now()
-	epoch := uint64(1)
-	if existing, ok := s.authGenerations[authID]; ok {
-		epoch = existing.epoch + 1
-	}
-	s.authGenerations[authID] = scheduledGenerationMeta{
-		epoch:      epoch,
-		generation: 0,
-		updatedAt:  now,
-	}
-	s.removeAuthFromProvidersLocked(authID)
-}
-
 // ensureProviderLocked returns the provider scheduler for providerKey, creating it when needed.
 func (s *authScheduler) ensureProviderLocked(providerKey string) *providerScheduler {
 	if s.providers == nil {
@@ -1033,16 +993,6 @@ func (s *authScheduler) ensureProviderLocked(providerKey string) *providerSchedu
 		s.providers[providerKey] = providerState
 	}
 	return providerState
-}
-
-// buildScheduledAuthMeta extracts the scheduling metadata needed for shard bookkeeping.
-func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
-	var authID string
-	if auth != nil {
-		authID = auth.ID
-	}
-	regEpoch := registry.GetGlobalRegistry().ClientRegistrationEpoch(authID)
-	return buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(authID), regEpoch)
 }
 
 func buildScheduledAuthMetaWithModelSet(auth *Auth, modelSet map[string]struct{}, regEpoch uint64) *scheduledAuthMeta {
@@ -1084,11 +1034,6 @@ func supportedModelSetForAuth(authID string) map[string]struct{} {
 		set[modelKey] = struct{}{}
 	}
 	return set
-}
-
-// upsertAuthLocked updates every existing model shard that can reference the auth metadata.
-func (p *providerScheduler) upsertAuthLocked(meta *scheduledAuthMeta, now time.Time) {
-	p.upsertAuthForModelsLocked(meta, nil, true, now)
 }
 
 // upsertAuthForModelsLocked updates one auth entry in specified model shards or all shards.

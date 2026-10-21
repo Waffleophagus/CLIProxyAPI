@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -477,11 +476,6 @@ func IsClaudeNewPromptTurn(body []byte) bool {
 	return true
 }
 
-var (
-	claudePrevReqBillingPattern  = regexp.MustCompile(`\s*cc_prev_req=[^;]+;`)
-	claudePromptIDBillingPattern = regexp.MustCompile(`\s*cc_prompt_id=[^;]+;`)
-)
-
 func isClaudeProbeRequest(body []byte) bool {
 	maxTokens := gjson.GetBytes(body, "max_tokens")
 	if !maxTokens.Exists() || maxTokens.Int() != 1 {
@@ -707,56 +701,6 @@ func ClaudeSubagentRequests1h(headers http.Header, body []byte) bool {
 	}
 	betas := strings.Join(HeaderValuesCaseInsensitive(headers, "Anthropic-Beta"), ",")
 	return strings.Contains(betas, "extended-cache-ttl-2025-04-11")
-}
-
-// StripClaudeBillingTags removes cc_prev_req and cc_prompt_id from the billing header in body.
-func StripClaudeBillingTags(body []byte) []byte {
-	system := gjson.GetBytes(body, "system")
-	if !system.IsArray() || len(system.Array()) == 0 {
-		return body
-	}
-	billingText := system.Array()[0].Get("text").String()
-	if !strings.HasPrefix(billingText, "x-anthropic-billing-header:") {
-		return body
-	}
-	cleaned := claudePrevReqBillingPattern.ReplaceAllString(billingText, "")
-	cleaned = claudePromptIDBillingPattern.ReplaceAllString(cleaned, "")
-	if cleaned != billingText {
-		updated, err := sjson.SetBytes(body, "system.0.text", cleaned)
-		if err == nil {
-			return updated
-		}
-	}
-	return body
-}
-
-// InjectClaudeBillingTags appends cc_prev_req and cc_prompt_id to the billing header in body if present.
-func InjectClaudeBillingTags(body []byte, prevReq, promptID string) []byte {
-	system := gjson.GetBytes(body, "system")
-	if !system.IsArray() || len(system.Array()) == 0 {
-		return body
-	}
-	billingText := system.Array()[0].Get("text").String()
-	if !strings.HasPrefix(billingText, "x-anthropic-billing-header:") {
-		return body
-	}
-	cleaned := claudePrevReqBillingPattern.ReplaceAllString(billingText, "")
-	cleaned = claudePromptIDBillingPattern.ReplaceAllString(cleaned, "")
-	cleaned = strings.TrimSpace(cleaned)
-	if !strings.HasSuffix(cleaned, ";") {
-		cleaned += ";"
-	}
-	if prevReq != "" {
-		cleaned += " cc_prev_req=" + prevReq + ";"
-	}
-	if promptID != "" {
-		cleaned += " cc_prompt_id=" + promptID + ";"
-	}
-	updated, err := sjson.SetBytes(body, "system.0.text", cleaned)
-	if err == nil {
-		return updated
-	}
-	return body
 }
 
 // ExtractClaudeBillingTags extracts existing cc_prev_req and cc_prompt_id values

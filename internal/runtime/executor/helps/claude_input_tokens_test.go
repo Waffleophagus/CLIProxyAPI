@@ -294,34 +294,6 @@ func TestClaudeInputTokenStatePatchesMissingAndPreservesNonZero(t *testing.T) {
 	})
 }
 
-func TestClaudeInputTokenStateSkipsUnsupportedFlows(t *testing.T) {
-	originalRequest := []byte(`{"messages":[{"role":"user","content":"Hello."}]}`)
-	testCases := []struct {
-		name           string
-		sourceFormat   sdktranslator.Format
-		upstreamFormat sdktranslator.Format
-		responseFormat sdktranslator.Format
-	}{
-		{name: "non-Claude source", sourceFormat: sdktranslator.FormatOpenAI, upstreamFormat: sdktranslator.FormatGemini, responseFormat: sdktranslator.FormatClaude},
-		{name: "Claude passthrough", sourceFormat: sdktranslator.FormatClaude, upstreamFormat: sdktranslator.FormatClaude, responseFormat: sdktranslator.FormatClaude},
-		{name: "non-Claude response", sourceFormat: sdktranslator.FormatClaude, upstreamFormat: sdktranslator.FormatOpenAI, responseFormat: sdktranslator.FormatOpenAI},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			state := NewClaudeInputTokenState(tc.sourceFormat, tc.upstreamFormat, tc.responseFormat, originalRequest)
-			chunks := [][]byte{[]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0}}}\n\n")}
-			got := state.apply(context.Background(), chunks)
-			if tokens := messageStartInputTokens(got); tokens != 0 {
-				t.Fatalf("input_tokens = %d, want unchanged 0", tokens)
-			}
-			if !state.handled {
-				t.Fatal("state.handled = false, want disabled flow handled at initialization")
-			}
-		})
-	}
-}
-
 func TestClaudeInputTokenStateCountErrorKeepsZero(t *testing.T) {
 	originalLogOutput := log.StandardLogger().Out
 	log.SetOutput(io.Discard)

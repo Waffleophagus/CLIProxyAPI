@@ -102,8 +102,6 @@ func ExtractCanonicalTurns(format sdktranslator.Format, payload []byte) []Canoni
 	switch {
 	case formatEqual(format, sdktranslator.FormatClaude):
 		appendMessagesTurns(&turns, root, true)
-	case formatEqual(format, sdktranslator.FormatGemini), formatEqual(format, sdktranslator.FormatAntigravity):
-		appendGeminiTurns(&turns, root)
 	case formatEqual(format, sdktranslator.FormatInteractions):
 		appendInteractionTurns(&turns, root)
 	case formatEqual(format, sdktranslator.FormatOpenAIResponse), formatEqual(format, sdktranslator.FormatCodex):
@@ -115,12 +113,6 @@ func ExtractCanonicalTurns(format sdktranslator.Format, payload []byte) []Canoni
 }
 
 func inferCanonicalFormat(root gjson.Result) sdktranslator.Format {
-	if req := root.Get("request"); req.Exists() && !root.Get("contents").Exists() {
-		root = req
-	}
-	if root.Get("contents").IsArray() || root.Get("systemInstruction").Exists() || root.Get("system_instruction").Exists() {
-		return sdktranslator.FormatGemini
-	}
 	if root.Get("instructions").Exists() {
 		return sdktranslator.FormatOpenAIResponse
 	}
@@ -210,40 +202,6 @@ func appendResponsesTurns(turns *[]CanonicalTurn, root gjson.Result) {
 		parts := canonicalPartsFromJSON(content)
 		if len(parts) == 0 && !content.Exists() {
 			parts = canonicalPartsFromJSON(item)
-		}
-		appendTurn(turns, role, parts)
-		return true
-	})
-}
-
-func appendGeminiTurns(turns *[]CanonicalTurn, root gjson.Result) {
-	if req := root.Get("request"); req.Exists() && !root.Get("contents").Exists() {
-		root = req
-	}
-	cached := root.Get("cachedContent")
-	if !cached.Exists() {
-		cached = root.Get("cached_content")
-	}
-	if cached.Exists() {
-		appendTurn(turns, "system", []CanonicalPart{canonicalResourcePart(cached)})
-	}
-	if system := root.Get("systemInstruction"); system.Exists() {
-		appendTurn(turns, "system", canonicalPartsFromJSON(system))
-	} else if system := root.Get("system_instruction"); system.Exists() {
-		appendTurn(turns, "system", canonicalPartsFromJSON(system))
-	}
-	root.Get("contents").ForEach(func(_, content gjson.Result) bool {
-		if !hasCanonicalTurnCapacity(turns) {
-			return false
-		}
-		role := canonicalRole(content.Get("role").String())
-		if role == "" {
-			role = "unknown"
-		}
-		contentParts := content.Get("parts")
-		parts := canonicalPartsFromJSON(contentParts)
-		if len(parts) == 0 && !contentParts.Exists() {
-			parts = canonicalPartsFromJSON(content)
 		}
 		appendTurn(turns, role, parts)
 		return true
@@ -377,9 +335,6 @@ func canonicalPartsFromJSON(value gjson.Result) []CanonicalPart {
 		if isToolPartType(typ) {
 			return []CanonicalPart{canonicalJSONPart("tool:"+typ, value)}
 		}
-		if kind := geminiToolPartKind(value); kind != "" {
-			return []CanonicalPart{canonicalJSONPart(kind, value)}
-		}
 		if value.Get("image_url").Exists() || value.Get("inlineData").Exists() || value.Get("inline_data").Exists() || value.Get("fileData").Exists() || value.Get("file_data").Exists() || value.Get("source").Exists() {
 			return []CanonicalPart{canonicalJSONPart("media", value)}
 		}
@@ -401,12 +356,6 @@ func canonicalTextPart(value gjson.Result) CanonicalPart {
 		}
 	}
 	return CanonicalPart{Kind: "text", Value: text, OriginalSize: len(text)}
-}
-
-func canonicalResourcePart(value gjson.Result) CanonicalPart {
-	part := canonicalTextPart(value)
-	part.Kind = "resource"
-	return part
 }
 
 func canonicalJSONPart(kind string, value gjson.Result) CanonicalPart {
@@ -499,20 +448,6 @@ func isReasoningJSONPart(value gjson.Result) bool {
 
 func isToolPartType(value string) bool {
 	return strings.Contains(value, "tool") || strings.Contains(value, "function_call") || value == "function"
-}
-
-func geminiToolPartKind(value gjson.Result) string {
-	for _, field := range []string{"functionCall", "function_call"} {
-		if value.Get(field).Exists() {
-			return "tool:function_call"
-		}
-	}
-	for _, field := range []string{"functionResponse", "function_response"} {
-		if value.Get(field).Exists() {
-			return "tool:function_response"
-		}
-	}
-	return ""
 }
 
 func canonicalRole(role string) string {
@@ -1168,7 +1103,7 @@ func (m *MerklePrefixMatcher) touchLocked(namespace string, fingerprints, tailFi
 			return true
 		}
 		if existing.authID != authID {
-			if existing.authID == "home-pending" || existing.authID == "" {
+			if existing.authID == "" {
 				existing.authID = authID
 			} else {
 				// Sequence was already rebound to a different auth (e.g. after failover).

@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -44,7 +45,6 @@ var (
 	errAuthFileMustBeJSON = errors.New("auth file must be .json")
 	errInvalidAuthFile    = errors.New("invalid auth file")
 	errAuthFileNotFound   = errors.New("auth file not found")
-	errPluginVirtualAuth  = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
 	newCodexOAuthService  = func(cfg *config.Config) codexOAuthService { return codex.NewCodexAuth(cfg) }
 )
 
@@ -111,22 +111,16 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		c.JSON(400, gin.H{"error": errPagination.Error()})
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 	if h.authManager == nil {
 		h.listAuthFilesFromDisk(c, pagination)
 		return
 	}
 	nameFilter := strings.TrimSpace(c.Query("name"))
 	authIndexFilter := strings.TrimSpace(c.Query("auth_index"))
-	h.mu.Lock()
-	host := h.pluginHost
-	h.mu.Unlock()
 	quota := authFileQuotaContext{v8: c.GetBool(ConfigV8ContextKey)}
-	if host != nil {
-		quota.pluginIDs = host.QuotaProviderPluginIDs(c.Request.Context())
-	}
 	auths := h.authManager.List()
 	observedAt := time.Now().UTC()
-	cooldownsKnown := !h.authManager.HomeEnabled()
 	if pagination.enabled {
 		matching := make([]*coreauth.Auth, 0, len(auths))
 		for _, auth := range auths {
@@ -143,10 +137,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		files := make([]gin.H, 0, end-start)
 		for _, auth := range matching[start:end] {
 			if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
-				entry["cooldowns"] = nil
-				if cooldownsKnown {
-					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
-				}
+				entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
 				files = append(files, entry)
 			}
 		}
@@ -159,10 +150,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 			continue
 		}
 		if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
-			entry["cooldowns"] = nil
-			if cooldownsKnown {
-				entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
-			}
+			entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(auth, observedAt)
 			files = append(files, entry)
 		}
 	}
@@ -481,10 +469,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagi
 
 // authFileQuotaContext carries request-scoped quota capability data for auth file entries.
 type authFileQuotaContext struct {
-	// pluginIDs maps normalized provider keys to the quota plugin selected for them.
-	// A nil map means no quota plugins are available.
-	pluginIDs map[string]string
-	// v8 hides declarative quota_probe support because v8 only serves plugin quota routes.
+	// v8 hides declarative quota_probe support because v8 does not serve the v0 quota/fetch route.
 	v8 bool
 }
 
@@ -684,13 +669,6 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
-	if pluginID := quota.pluginIDs[strings.ToLower(strings.TrimSpace(auth.Provider))]; pluginID != "" {
-		entry["supports_quota"] = true
-		entry["quota_provider"] = auth.Provider
-		if quota.v8 {
-			entry["quota_plugin_id"] = pluginID
-		}
-	}
 	// Declarative quota_probe is only executed by the v0 quota/fetch route.
 	if !quota.v8 && auth.Metadata != nil {
 		if probe, okProbe := auth.Metadata["quota_probe"]; okProbe && probe != nil {
@@ -709,6 +687,11 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 			entry["account_type"] = accountType
 		}
 		if account != "" {
+			// API-key credentials report the key itself as the account; list
+			// only a masked form.
+			if accountType == "api_key" {
+				account = usagestore.MaskSecret(account)
+			}
 			entry["account"] = account
 		}
 	}

@@ -19,13 +19,13 @@ func TestFileTokenStoreList_LoadsProxyURLAndPrefix(t *testing.T) {
 	store.SetBaseDir(dir)
 
 	content := []byte(`{
-		"type": "antigravity",
+		"type": "acme",
 		"proxy_url": "http://127.0.0.1:7890",
 		"prefix": "custom-prefix",
 		"project_id": "test-project",
 		"access_token": "ya29.test-token"
 	}`)
-	err := os.WriteFile(filepath.Join(dir, "antigravity.json"), content, 0o600)
+	err := os.WriteFile(filepath.Join(dir, "acme.json"), content, 0o600)
 	if err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestFileTokenStoreList_LoadsProxyURLAndPrefix(t *testing.T) {
 }
 
 // TestFileTokenStoreList_DoesNotBlockColdStartWithUnproxiedNetworkRequest verifies that
-// loading auth files on cold start does not trigger unproxied network requests (e.g. FetchAntigravityProjectID).
+// loading auth files on cold start does not trigger unproxied network requests (e.g. FetchAcmeProjectID).
 func TestFileTokenStoreList_DoesNotBlockColdStartWithUnproxiedNetworkRequest(t *testing.T) {
 	var httpDefaultCalled atomic.Bool
 	origTransport := http.DefaultTransport
@@ -65,11 +65,11 @@ func TestFileTokenStoreList_DoesNotBlockColdStartWithUnproxiedNetworkRequest(t *
 
 	// Auth file without project_id, but with proxy_url
 	content := []byte(`{
-		"type": "antigravity",
+		"type": "acme",
 		"proxy_url": "http://127.0.0.1:9999",
 		"access_token": "ya29.test-token"
 	}`)
-	err := os.WriteFile(filepath.Join(dir, "antigravity.json"), content, 0o600)
+	err := os.WriteFile(filepath.Join(dir, "acme.json"), content, 0o600)
 	if err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}

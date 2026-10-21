@@ -10,10 +10,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // pauseAuthSnapshot suspends a real scan after reading files, before publishing them.
@@ -23,8 +21,8 @@ func pauseAuthSnapshot(t *testing.T, w *Watcher, force bool) func() {
 	scanned := make(chan struct{})
 	resume := make(chan struct{})
 	finished := make(chan struct{})
-	snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
-		auths, incomplete := originalSnapshot(cfg, authDir, parser)
+	snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string) ([]*coreauth.Auth, map[string]struct{}) {
+		auths, incomplete := originalSnapshot(cfg, authDir)
 		close(scanned)
 		<-resume
 		return auths, incomplete
@@ -79,7 +77,7 @@ func TestRefreshAuthStatePreservesConcurrentFileLifecycle(t *testing.T) {
 					t.Fatal(errWrite)
 				}
 				if action == "persisted" {
-					auths := snapshotCoreAuths(w.config, dir, nil)
+					auths := snapshotCoreAuths(w.config, dir)
 					for _, auth := range auths {
 						if auth.ID == "account.json" {
 							w.dispatchPersistedAuthUpdate(AuthUpdate{Action: AuthUpdateActionModify, ID: auth.ID, Auth: auth})
@@ -130,13 +128,13 @@ func TestRefreshAuthStatePreservesConcurrentRoundTrip(t *testing.T) {
 			w.authQueue = make(chan AuthUpdate, 10)
 			originalSnapshot := snapshotCoreAuthsFunc
 			t.Cleanup(func() { snapshotCoreAuthsFunc = originalSnapshot })
-			snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
+			snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string) ([]*coreauth.Auth, map[string]struct{}) {
 				// Deliver two events during the scan, ending at the starting content.
 				if errWrite := os.WriteFile(path, []byte(`{"type":"codex","proxy_url":"http://intermediate.proxy:8080"}`), 0o600); errWrite != nil {
 					t.Fatal(errWrite)
 				}
 				w.addOrUpdateClient(path)
-				auths, incomplete := originalSnapshot(cfg, authDir, parser)
+				auths, incomplete := originalSnapshot(cfg, authDir)
 				if initiallyPresent {
 					if errWrite := os.WriteFile(path, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
 						t.Fatal(errWrite)
@@ -190,8 +188,8 @@ func TestRefreshAuthStatePreservesUnchangedFileObservation(t *testing.T) {
 			}
 			originalSnapshot := snapshotCoreAuthsFunc
 			t.Cleanup(func() { snapshotCoreAuthsFunc = originalSnapshot })
-			snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
-				auths, incomplete := originalSnapshot(cfg, authDir, parser)
+			snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string) ([]*coreauth.Auth, map[string]struct{}) {
+				auths, incomplete := originalSnapshot(cfg, authDir)
 				latest := original
 				if testCase.formatted {
 					latest = []byte(`{ "type": "codex", "proxy_url": "http://latest.proxy:8080" }`)
@@ -234,8 +232,8 @@ func TestRefreshAuthStateAppliesHashCachedFileObservation(t *testing.T) {
 			}
 			originalSnapshot := snapshotCoreAuthsFunc
 			t.Cleanup(func() { snapshotCoreAuthsFunc = originalSnapshot })
-			snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
-				auths, incomplete := originalSnapshot(cfg, authDir, parser)
+			snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string) ([]*coreauth.Auth, map[string]struct{}) {
+				auths, incomplete := originalSnapshot(cfg, authDir)
 				// reloadClients cached the new hash before publishing its matching auth.
 				if phase == "after_scan" {
 					// Suspend the event after observation, before content processing.
@@ -267,8 +265,8 @@ func TestRefreshAuthStateDoesNotResurrectUnregisteredFile(t *testing.T) {
 	w := &Watcher{authDir: dir, config: &config.Config{AuthDir: dir}, authQueue: make(chan AuthUpdate, 10)}
 	originalSnapshot := snapshotCoreAuthsFunc
 	t.Cleanup(func() { snapshotCoreAuthsFunc = originalSnapshot })
-	snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
-		auths, incomplete := originalSnapshot(cfg, authDir, parser)
+	snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string) ([]*coreauth.Auth, map[string]struct{}) {
+		auths, incomplete := originalSnapshot(cfg, authDir)
 		if errRemove := os.Remove(path); errRemove != nil {
 			t.Fatal(errRemove)
 		}
@@ -425,12 +423,6 @@ func TestRefreshAuthStatePreservesConcurrentProxyUpdate(t *testing.T) {
 	}
 }
 
-type snapshotTestPluginParser func(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error)
-
-func (f snapshotTestPluginParser) ParseAuth(ctx context.Context, req pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
-	return f(ctx, req)
-}
-
 func TestWatcherFileSnapshotReformatAndUnmappedChangeDoNotDropUpdate(t *testing.T) {
 	t.Run("reformatted_before_consume", func(t *testing.T) {
 		dir := t.TempDir()
@@ -480,20 +472,13 @@ func TestWatcherFileSnapshotReformatAndUnmappedChangeDoNotDropUpdate(t *testing.
 		}
 	})
 
-	t.Run("plugin_unmapped_field_change_before_consume", func(t *testing.T) {
+	t.Run("unmapped_field_change_before_consume", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, "plugin.json")
-		parser := snapshotTestPluginParser(func(_ context.Context, req pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
-			return &coreauth.Auth{
-				ID:       req.FileName,
-				Provider: "gemini-cli",
-				Metadata: map[string]any{"type": "gemini-cli"},
-			}, true, nil
-		})
-		if errWrite := os.WriteFile(path, []byte(`{"type":"gemini-cli","prefix":"pfx-initial","ignored":"v0"}`), 0o600); errWrite != nil {
+		path := filepath.Join(dir, "account.json")
+		if errWrite := os.WriteFile(path, []byte(`{"type":"codex","prefix":"pfx-initial","ignored":"v0"}`), 0o600); errWrite != nil {
 			t.Fatal(errWrite)
 		}
-		w := &Watcher{authDir: dir, config: &config.Config{AuthDir: dir}, pluginAuthParser: parser, authQueue: make(chan AuthUpdate, 10)}
+		w := &Watcher{authDir: dir, config: &config.Config{AuthDir: dir}, authQueue: make(chan AuthUpdate, 10)}
 		w.addOrUpdateClient(path)
 		initBatch, okInit := w.nextPendingBatch(context.Background())
 		if !okInit || len(initBatch) != 1 {
@@ -506,7 +491,7 @@ func TestWatcherFileSnapshotReformatAndUnmappedChangeDoNotDropUpdate(t *testing.
 		}
 
 		// Step 1: Edit file to B (prefix=pfx-edited, ignored=v1) and pop batchB.
-		if errWrite := os.WriteFile(path, []byte(`{"type":"gemini-cli","prefix":"pfx-edited","ignored":"v1"}`), 0o600); errWrite != nil {
+		if errWrite := os.WriteFile(path, []byte(`{"type":"codex","prefix":"pfx-edited","ignored":"v1"}`), 0o600); errWrite != nil {
 			t.Fatal(errWrite)
 		}
 		w.addOrUpdateClient(path)
@@ -517,7 +502,7 @@ func TestWatcherFileSnapshotReformatAndUnmappedChangeDoNotDropUpdate(t *testing.
 
 		// Step 2: Before batchB is consumed, change only the unmapped JSON field (ignored=v2).
 		// Because the file snapshot digest changed, Watcher must emit a follow-up update.
-		if errWrite := os.WriteFile(path, []byte(`{"type":"gemini-cli","prefix":"pfx-edited","ignored":"v2"}`), 0o600); errWrite != nil {
+		if errWrite := os.WriteFile(path, []byte(`{"type":"codex","prefix":"pfx-edited","ignored":"v2"}`), 0o600); errWrite != nil {
 			t.Fatal(errWrite)
 		}
 		w.addOrUpdateClient(path)
@@ -533,7 +518,7 @@ func TestWatcherFileSnapshotReformatAndUnmappedChangeDoNotDropUpdate(t *testing.
 		if _, errUpdate := manager.Update(ctx, batchB2[0].Auth); errUpdate != nil {
 			t.Fatal(errUpdate)
 		}
-		current, _ := manager.GetByID("plugin.json")
+		current, _ := manager.GetByID("account.json")
 		if current == nil || current.Prefix != "pfx-edited" {
 			t.Fatalf("unmapped field change caused edit to be dropped: got=%#v, want prefix=pfx-edited", current)
 		}
@@ -547,20 +532,19 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 		fullReload bool
 	}{
 		{name: "truncated_empty_refresh", midContent: ""},
-		{name: "partial_json_refresh", midContent: `{"type":"plugin","ids":["b"`},
+		{name: "partial_json_refresh", midContent: `{"type":"codex","prefix":"p`},
 		{name: "truncated_empty_reload_clients", midContent: "", fullReload: true},
-		{name: "partial_json_reload_clients", midContent: `{"type":"plugin","ids":["b"`, fullReload: true},
+		{name: "partial_json_reload_clients", midContent: `{"type":"codex","prefix":"p`, fullReload: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "accounts.json")
 			w := &Watcher{
-				authDir:          dir,
-				config:           &config.Config{AuthDir: dir},
-				authQueue:        make(chan AuthUpdate, 16),
-				pluginAuthParser: &fileDeleteTestParser{},
+				authDir:   dir,
+				config:    &config.Config{AuthDir: dir},
+				authQueue: make(chan AuthUpdate, 16),
 			}
-			if errWrite := os.WriteFile(path, []byte(`{"type":"plugin","ids":["a","b"]}`), 0o600); errWrite != nil {
+			if errWrite := os.WriteFile(path, []byte(`{"type":"codex","prefix":"p1"}`), 0o600); errWrite != nil {
 				t.Fatal(errWrite)
 			}
 			w.addOrUpdateClient(path)
@@ -586,16 +570,16 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 				w.refreshAuthState(false)
 			}
 
-			if w.currentAuths["a"] == nil || w.currentAuths["b"] == nil {
+			if w.currentAuths["accounts.json"] == nil {
 				_ = file.Close()
-				t.Fatalf("full scan unregistered credentials during in-place write: currentAuths=%#v, pending=%#v", w.currentAuths, w.pendingUpdates)
+				t.Fatalf("full scan unregistered credential during in-place write: currentAuths=%#v, pending=%#v", w.currentAuths, w.pendingUpdates)
 			}
 			if len(w.pendingOrder) != 0 {
 				_ = file.Close()
 				t.Fatalf("expected no queued deletes during in-place write, got %#v", w.pendingUpdates)
 			}
 
-			// Finish the in-place write with ["b","c"] (dropping "a" and adding "c").
+			// Finish the in-place write with a new prefix.
 			if _, errSeek := file.Seek(0, 0); errSeek != nil {
 				_ = file.Close()
 				t.Fatal(errSeek)
@@ -604,7 +588,7 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 				_ = file.Close()
 				t.Fatal(errTrunc)
 			}
-			if _, errWrite := file.WriteString(`{"type":"plugin","ids":["b","c"]}`); errWrite != nil {
+			if _, errWrite := file.WriteString(`{"type":"codex","prefix":"p2"}`); errWrite != nil {
 				_ = file.Close()
 				t.Fatal(errWrite)
 			}
@@ -614,109 +598,15 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 
 			w.handleEvent(fsnotify.Event{Name: path, Op: fsnotify.Write})
 
-			if w.currentAuths["a"] != nil {
-				t.Fatalf("expected writer's final event to remove dropped child a, got %#v", w.currentAuths["a"])
+			current := w.currentAuths["accounts.json"]
+			if current == nil || current.Prefix != "p2" {
+				t.Fatalf("expected updated credential after write finished, got %#v", current)
 			}
-			if w.currentAuths["b"] == nil || w.currentAuths["c"] == nil {
-				t.Fatalf("expected b and c in currentAuths after write finished, got %#v", w.currentAuths)
-			}
-			if gotDelete := w.pendingUpdates["a"]; gotDelete.Action != AuthUpdateActionDelete {
-				t.Fatalf("expected delete update for dropped child a, got %+v", gotDelete)
-			}
-			if gotAdd := w.pendingUpdates["c"]; gotAdd.Action != AuthUpdateActionAdd {
-				t.Fatalf("expected add update for new child c, got %+v", gotAdd)
+			if got := w.pendingUpdates["accounts.json"]; got.Action != AuthUpdateActionModify {
+				t.Fatalf("expected modify update after write finished, got %+v", got)
 			}
 		})
 	}
-
-	t.Run("reload_clients_pass_divergence_retains_file_auth_index", func(t *testing.T) {
-		for _, mode := range []string{"without_early_event", "with_early_truncated_write_event", "final_write_event_during_scan"} {
-			t.Run(mode, func(t *testing.T) {
-				dir := t.TempDir()
-				path := filepath.Join(dir, "accounts.json")
-				w := &Watcher{
-					authDir:          dir,
-					config:           &config.Config{AuthDir: dir},
-					authQueue:        make(chan AuthUpdate, 16),
-					pluginAuthParser: &fileDeleteTestParser{},
-				}
-				if errWrite := os.WriteFile(path, []byte(`{"type":"plugin","ids":["a","b"]}`), 0o600); errWrite != nil {
-					t.Fatal(errWrite)
-				}
-				w.addOrUpdateClient(path)
-				if _, okBatch := w.nextPendingBatch(context.Background()); !okBatch {
-					t.Fatal("expected initial add batch")
-				}
-
-				// reloadClients pass 1 reads complete ["b","c"], then an in-place write truncates
-				// the file right before refreshAuthState runs snapshotCoreAuthsFunc.
-				if errWrite := os.WriteFile(path, []byte(`{"type":"plugin","ids":["b","c"]}`), 0o600); errWrite != nil {
-					t.Fatal(errWrite)
-				}
-				originalSnapshot := snapshotCoreAuthsFunc
-				t.Cleanup(func() { snapshotCoreAuthsFunc = originalSnapshot })
-				var file *os.File
-				snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
-					var errOpen error
-					file, errOpen = os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
-					if errOpen != nil {
-						t.Fatal(errOpen)
-					}
-					auths, incomplete := originalSnapshot(cfg, authDir, parser)
-					switch mode {
-					case "with_early_truncated_write_event":
-						// An early write event for the truncated file increments fileObservations
-						// during the scan but returns early without updating fileAuthsByPath.
-						w.handleEvent(fsnotify.Event{Name: path, Op: fsnotify.Write})
-					case "final_write_event_during_scan":
-						if _, errWrite := file.WriteString(`{"type":"plugin","ids":["b","c"]}`); errWrite != nil {
-							_ = file.Close()
-							t.Fatal(errWrite)
-						}
-						if errClose := file.Close(); errClose != nil {
-							t.Fatal(errClose)
-						}
-						file = nil
-						w.handleEvent(fsnotify.Event{Name: path, Op: fsnotify.Write})
-					}
-					return auths, incomplete
-				}
-
-				w.reloadClients(true, nil, false)
-				snapshotCoreAuthsFunc = originalSnapshot
-
-				if file != nil {
-					if w.currentAuths["a"] == nil || w.currentAuths["b"] == nil {
-						_ = file.Close()
-						t.Fatalf("expected a and b to survive incomplete refresh scan, got %#v", w.currentAuths)
-					}
-
-					if _, errWrite := file.WriteString(`{"type":"plugin","ids":["b","c"]}`); errWrite != nil {
-						_ = file.Close()
-						t.Fatal(errWrite)
-					}
-					if errClose := file.Close(); errClose != nil {
-						t.Fatal(errClose)
-					}
-
-					w.handleEvent(fsnotify.Event{Name: path, Op: fsnotify.Write})
-				}
-
-				if w.currentAuths["a"] != nil {
-					t.Fatalf("expected writer's final event to remove retained child a, got %#v", w.currentAuths["a"])
-				}
-				if w.currentAuths["b"] == nil || w.currentAuths["c"] == nil {
-					t.Fatalf("expected b and c in currentAuths after write finished, got %#v", w.currentAuths)
-				}
-				if gotDelete := w.pendingUpdates["a"]; gotDelete.Action != AuthUpdateActionDelete {
-					t.Fatalf("expected delete update for dropped child a, got %+v", gotDelete)
-				}
-				if gotAdd := w.pendingUpdates["c"]; gotAdd.Action != AuthUpdateActionAdd {
-					t.Fatalf("expected add update for new child c, got %+v", gotAdd)
-				}
-			})
-		}
-	})
 
 	t.Run("affected_oauth_provider_reload_during_in_place_write", func(t *testing.T) {
 		dir := t.TempDir()
@@ -783,8 +673,8 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 
 		originalSnapshot := snapshotCoreAuthsFunc
 		t.Cleanup(func() { snapshotCoreAuthsFunc = originalSnapshot })
-		snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string, parser synthesizer.PluginAuthParser) ([]*coreauth.Auth, map[string]struct{}) {
-			auths, incomplete := originalSnapshot(cfg, authDir, parser)
+		snapshotCoreAuthsFunc = func(cfg *config.Config, authDir string) ([]*coreauth.Auth, map[string]struct{}) {
+			auths, incomplete := originalSnapshot(cfg, authDir)
 			w.dispatchRuntimeAuthUpdate(AuthUpdate{Action: AuthUpdateActionDelete, ID: "ws-codex"})
 			if errRemove := os.Remove(path); errRemove != nil {
 				t.Fatal(errRemove)
@@ -844,17 +734,16 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 	})
 
 	t.Run("control_valid_zero_auth_and_removed_file_still_delete", func(t *testing.T) {
-		for _, mode := range []string{"valid_empty_object", "valid_plugin_empty", "removed_file"} {
+		for _, mode := range []string{"valid_empty_object", "removed_file"} {
 			t.Run(mode, func(t *testing.T) {
 				dir := t.TempDir()
 				path := filepath.Join(dir, "accounts.json")
 				w := &Watcher{
-					authDir:          dir,
-					config:           &config.Config{AuthDir: dir},
-					authQueue:        make(chan AuthUpdate, 16),
-					pluginAuthParser: &fileDeleteTestParser{},
+					authDir:   dir,
+					config:    &config.Config{AuthDir: dir},
+					authQueue: make(chan AuthUpdate, 16),
 				}
-				if errWrite := os.WriteFile(path, []byte(`{"type":"plugin","ids":["a"]}`), 0o600); errWrite != nil {
+				if errWrite := os.WriteFile(path, []byte(`{"type":"codex"}`), 0o600); errWrite != nil {
 					t.Fatal(errWrite)
 				}
 				w.addOrUpdateClient(path)
@@ -867,10 +756,6 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 					if errWrite := os.WriteFile(path, []byte(`{}`), 0o600); errWrite != nil {
 						t.Fatal(errWrite)
 					}
-				case "valid_plugin_empty":
-					if errWrite := os.WriteFile(path, []byte(`{"type":"plugin","ids":[]}`), 0o600); errWrite != nil {
-						t.Fatal(errWrite)
-					}
 				case "removed_file":
 					if errRemove := os.Remove(path); errRemove != nil {
 						t.Fatal(errRemove)
@@ -878,10 +763,10 @@ func TestRefreshAuthStatePreservesIncompleteFileDuringInPlaceWrite(t *testing.T)
 				}
 
 				w.refreshAuthState(false)
-				if w.currentAuths["a"] != nil {
-					t.Fatalf("expected %s to remove auth a, got %#v", mode, w.currentAuths["a"])
+				if w.currentAuths["accounts.json"] != nil {
+					t.Fatalf("expected %s to remove auth, got %#v", mode, w.currentAuths["accounts.json"])
 				}
-				if got := w.pendingUpdates["a"]; got.Action != AuthUpdateActionDelete {
+				if got := w.pendingUpdates["accounts.json"]; got.Action != AuthUpdateActionDelete {
 					t.Fatalf("expected delete update for %s, got %+v", mode, got)
 				}
 			})

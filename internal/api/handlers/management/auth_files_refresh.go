@@ -5,9 +5,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // RefreshAuthFiles triggers active refresh for a single auth file or all auth files.
@@ -40,6 +42,8 @@ func (h *Handler) RefreshAuthFiles(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	// Responses describe credentials; never let an intermediary cache them.
+	c.Header("Cache-Control", "no-store")
 
 	if req.All {
 		results := h.authManager.ForceRefreshAll(ctx)
@@ -70,8 +74,49 @@ func (h *Handler) RefreshAuthFiles(c *gin.Context) {
 		return
 	}
 
+	if refreshed == nil {
+		refreshed = targetAuth
+	}
+	summary := refreshedAuthSummary(refreshed)
+	if summary["auth_index"] == "" {
+		summary["auth_index"] = targetAuth.Index
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"ok":   true,
-		"auth": refreshed,
+		"auth": summary,
 	})
+}
+
+// refreshedAuthSummary describes a credential after a refresh without any
+// secret material: no metadata (access/refresh/id tokens), attributes (API
+// keys) or proxy URL (may embed credentials).
+func refreshedAuthSummary(auth *coreauth.Auth) gin.H {
+	name := strings.TrimSpace(auth.FileName)
+	if name == "" {
+		name = auth.ID
+	}
+	summary := gin.H{
+		"id":             auth.ID,
+		"auth_index":     auth.Index,
+		"name":           name,
+		"provider":       strings.TrimSpace(auth.Provider),
+		"label":          auth.Label,
+		"status":         auth.Status,
+		"status_message": auth.StatusMessage,
+		"disabled":       auth.Disabled,
+		"unavailable":    auth.Unavailable,
+	}
+	if email := authEmail(auth); email != "" {
+		summary["email"] = email
+	}
+	if !auth.LastRefreshedAt.IsZero() {
+		summary["last_refresh"] = auth.LastRefreshedAt.UTC().Format(time.RFC3339)
+	}
+	if !auth.NextRefreshAfter.IsZero() {
+		summary["next_refresh_after"] = auth.NextRefreshAfter.UTC().Format(time.RFC3339)
+	}
+	if expiry, ok := auth.AccessTokenExpirationTime(); ok && !expiry.IsZero() {
+		summary["expires_at"] = expiry.UTC().Format(time.RFC3339)
+	}
+	return summary
 }

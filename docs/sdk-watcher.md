@@ -10,7 +10,7 @@ The SDK service exposes a watcher integration that surfaces granular auth update
 
 ## Watcher Behaviour
 
-- `internal/watcher/watcher.go` keeps a shadow snapshot of auth state (`currentAuths`). Each filesystem or configuration event triggers a recomputation and a diff against the previous snapshot to produce minimal `AuthUpdate` entries that mirror adds, edits, and removals.
+- `internal/watcher` (see `dispatcher.go`) keeps a shadow snapshot of auth state (`currentAuths`). Each filesystem or configuration event triggers a recomputation and a diff against the previous snapshot to produce minimal `AuthUpdate` entries that mirror adds, edits, and removals.
 - Updates are coalesced per credential identifier. If multiple changes occur before dispatch (e.g., write followed by delete), only the final action is sent downstream.
 - The watcher runs an internal dispatch loop that buffers pending updates in memory and forwards them asynchronously to the queue. Producers never block on channel capacity; they just enqueue into the in-memory buffer and signal the dispatcher. Dispatch cancellation happens when the watcher stops, guaranteeing goroutines exit cleanly.
 
@@ -24,9 +24,10 @@ The SDK service exposes a watcher integration that surfaces granular auth update
 
 ## Usage Checklist
 
-1. Instantiate the SDK service (builder or manual construction).
-2. Call `ensureAuthUpdateQueue` before starting the watcher to allocate the shared channel.
-3. When the `WatcherWrapper` is created, call `SetAuthUpdateQueue` with the service queue, then start the watcher.
-4. Provide a reload callback that handles configuration updates; auth deltas will arrive via the queue and are applied by the service automatically through `handleAuthUpdate`.
+`cliproxy.Service` performs these steps itself when it runs; they matter only if you replace the watcher via `Builder.WithWatcherFactory`.
+
+1. The service allocates the shared queue (`ensureAuthUpdateQueue`) before starting the watcher.
+2. When the `WatcherWrapper` is created, the service calls `SetAuthUpdateQueue` with that queue, then starts the watcher.
+3. Configuration changes go through the reload callback; auth deltas arrive via the queue and are applied by `handleAuthUpdate`.
 
 Following this flow keeps auth changes responsive while avoiding full reloads for every edit.

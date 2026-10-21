@@ -88,7 +88,6 @@ func (w *Watcher) reloadConfigIfChanged() {
 		}
 		w.lastConfigHash = appliedHash
 		w.clientsMutex.Unlock()
-		w.persistConfigAsync()
 	}
 }
 
@@ -102,14 +101,10 @@ func (w *Watcher) reloadConfig() bool {
 		return false
 	}
 
-	if w.mirroredAuthDir != "" {
-		newConfig.AuthDir = w.mirroredAuthDir
+	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(newConfig.AuthDir); errResolveAuthDir != nil {
+		log.Errorf("failed to resolve auth directory from config: %v", errResolveAuthDir)
 	} else {
-		if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(newConfig.AuthDir); errResolveAuthDir != nil {
-			log.Errorf("failed to resolve auth directory from config: %v", errResolveAuthDir)
-		} else {
-			newConfig.AuthDir = resolvedAuthDir
-		}
+		newConfig.AuthDir = resolvedAuthDir
 	}
 
 	w.clientsMutex.Lock()

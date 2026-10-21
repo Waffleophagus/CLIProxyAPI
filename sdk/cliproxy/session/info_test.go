@@ -139,15 +139,6 @@ func TestExtractSessionInfoAllClients(t *testing.T) {
 		t.Errorf("Codex fork with Session-Id header and body thread_id mismatch: %+v", info)
 	}
 
-	// 5. Antigravity X-Http-Session-Id
-	agyHeaders := http.Header{
-		"X-Http-Session-Id": []string{"agy-sess-888"},
-	}
-	info, ok = ExtractSessionInfo(agyHeaders, nil, nil)
-	if !ok || info.ClientType != "agy" || info.SessionID != "agy:agy-sess-888" {
-		t.Errorf("Antigravity mismatch: %+v", info)
-	}
-
 	// 6. Payload with metadata.agent_id and parent_session_id
 	payload := []byte(`{
 		"session_id": "payload-child-10",
@@ -264,66 +255,6 @@ func TestExtractSessionInfoClaudeNestedParent(t *testing.T) {
 	}
 }
 
-func TestExtractSessionInfoGeminiAndAntigravityHierarchy(t *testing.T) {
-	t.Parallel()
-
-	// Gemini cachedContent with parent_session_id
-	geminiPayload := []byte(`{"cachedContent":"cache-child-1","parent_session_id":"cache-parent-1"}`)
-	info, ok := ExtractSessionInfo(nil, geminiPayload, nil)
-	if !ok {
-		t.Fatal("ExtractSessionInfo failed on Gemini cachedContent")
-	}
-	if info.SessionID != "geminicache:cache-child-1" {
-		t.Fatalf("expected session geminicache:cache-child-1, got %q", info.SessionID)
-	}
-	if info.ParentSessionID != "geminicache:cache-parent-1" {
-		t.Fatalf("expected parent geminicache:cache-parent-1, got %q", info.ParentSessionID)
-	}
-	if info.AgentName != "subagent" {
-		t.Fatalf("expected subagent, got %q", info.AgentName)
-	}
-
-	// Antigravity headers with parent
-	headers := http.Header{}
-	headers.Set("X-Http-Session-Id", "agy-child-2")
-	headers.Set("X-Parent-Session-ID", "agy-parent-2")
-	info2, ok := ExtractSessionInfo(headers, nil, nil)
-	if !ok {
-		t.Fatal("ExtractSessionInfo failed on Antigravity headers")
-	}
-	if info2.SessionID != "agy:agy-child-2" {
-		t.Fatalf("expected session agy:agy-child-2, got %q", info2.SessionID)
-	}
-	if info2.ParentSessionID != "agy:agy-parent-2" {
-		t.Fatalf("expected parent agy:agy-parent-2, got %q", info2.ParentSessionID)
-	}
-	if info2.AgentName != "subagent" {
-		t.Fatalf("expected subagent, got %q", info2.AgentName)
-	}
-}
-
-func TestExtractSessionInfoNestedAntigravityRequest(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{
-		"project_id": "proj-123",
-		"request": {
-			"parentSessionId": "parent-sess-456",
-			"sessionId": "child-sess-789"
-		}
-	}`)
-	info, ok := ExtractSessionInfo(nil, payload, nil)
-	if !ok {
-		t.Fatal("ExtractSessionInfo failed on nested Antigravity payload")
-	}
-	if info.SessionID != "session:child-sess-789" {
-		t.Fatalf("SessionID = %q, want session:child-sess-789", info.SessionID)
-	}
-	if info.ParentSessionID != "session:parent-sess-456" {
-		t.Fatalf("ParentSessionID = %q, want session:parent-sess-456", info.ParentSessionID)
-	}
-}
-
 func TestExtractSessionInfoThreadAndConversation(t *testing.T) {
 	t.Parallel()
 
@@ -382,49 +313,6 @@ func TestExtractSessionInfoSelfReferentialParentFiltered(t *testing.T) {
 	}
 	if info.ParentSessionID != "" {
 		t.Fatalf("ParentSessionID = %q, want empty (self-referential parent must be rejected)", info.ParentSessionID)
-	}
-}
-
-func TestDeprecatedInMemorySessionTreeStoreCompatibility(t *testing.T) {
-	t.Parallel()
-
-	var store SessionTreeStore = NewInMemorySessionTreeStore(100, 0)
-	node := store.RecordNode(SessionTreeInfo{
-		SessionID:       "child-1",
-		ParentSessionID: "root-1",
-		AgentName:       "reviewer",
-		ClientType:      "pi",
-	})
-	if node == nil || node.SessionID != "child-1" || node.TreeDepth != 1 {
-		t.Fatalf("RecordNode returned invalid node: %+v", node)
-	}
-
-	gotNode, ok := store.GetNode("child-1")
-	if !ok || gotNode == nil || gotNode.SessionID != "child-1" {
-		t.Fatalf("GetNode failed: %+v", gotNode)
-	}
-
-	tree := store.GetTree("root-1")
-	if len(tree) != 1 || tree[0].SessionID != "child-1" {
-		t.Fatalf("GetTree failed: %+v", tree)
-	}
-
-	ancestors := store.Ancestors("child-1")
-	if len(ancestors) != 1 || ancestors[0] != "root-1" {
-		t.Fatalf("Ancestors failed: %+v", ancestors)
-	}
-
-	if !store.UpdateAffinity("child-1", "auth-99", "claude", "sonnet") {
-		t.Fatal("UpdateAffinity failed")
-	}
-
-	if store.Len() != 1 {
-		t.Fatalf("Len() = %d, want 1", store.Len())
-	}
-
-	store.Clear()
-	if store.Len() != 0 {
-		t.Fatalf("Len() after Clear = %d, want 0", store.Len())
 	}
 }
 
@@ -489,32 +377,6 @@ func TestExtractSessionInfoPromptCacheKeyAndClientReqAndMetadata(t *testing.T) {
 	}
 }
 
-func TestExtractSessionInfoNestedRequestAgent(t *testing.T) {
-	t.Parallel()
-
-	payload := []byte(`{
-		"request": {
-			"sessionId": "child-sess-1",
-			"metadata": {
-				"agent_id": "worker-sub"
-			}
-		}
-	}`)
-	info, ok := ExtractSessionInfo(nil, payload, nil)
-	if !ok {
-		t.Fatal("ExtractSessionInfo failed on nested request")
-	}
-	if info.SessionID != "session:child-sess-1:agent:worker-sub" {
-		t.Fatalf("SessionID = %q, want session:child-sess-1:agent:worker-sub", info.SessionID)
-	}
-	if info.ParentSessionID != "session:child-sess-1" {
-		t.Fatalf("ParentSessionID = %q, want session:child-sess-1", info.ParentSessionID)
-	}
-	if info.AgentName != "worker-sub" {
-		t.Fatalf("AgentName = %q, want worker-sub", info.AgentName)
-	}
-}
-
 func TestExtractSessionInfoClaudeMetadataUserIDWithAgentHeader(t *testing.T) {
 	t.Parallel()
 
@@ -541,78 +403,6 @@ func TestExtractSessionInfoClaudeMetadataUserIDWithAgentHeader(t *testing.T) {
 	}
 	if info.AgentName != "subagent-uuid-123" {
 		t.Fatalf("AgentName = %q, want subagent-uuid-123", info.AgentName)
-	}
-}
-
-func TestExtractSessionInfoNestedSubagentIDAndUserID(t *testing.T) {
-	t.Parallel()
-
-	// 1. Nested request with subagent_id
-	payloadSub := []byte(`{
-		"request": {
-			"sessionId": "main-sess-999",
-			"metadata": {
-				"subagent_id": "worker-sub-999"
-			}
-		}
-	}`)
-	info, ok := ExtractSessionInfo(nil, payloadSub, nil)
-	if !ok {
-		t.Fatal("ExtractSessionInfo failed on nested subagent_id request")
-	}
-	if info.SessionID != "session:main-sess-999:agent:worker-sub-999" {
-		t.Fatalf("SessionID = %q, want session:main-sess-999:agent:worker-sub-999", info.SessionID)
-	}
-	if info.ParentSessionID != "session:main-sess-999" {
-		t.Fatalf("ParentSessionID = %q, want session:main-sess-999", info.ParentSessionID)
-	}
-	if info.AgentName != "worker-sub-999" {
-		t.Fatalf("AgentName = %q, want worker-sub-999", info.AgentName)
-	}
-
-	// 2. Nested request with plain user_id
-	payloadUser := []byte(`{
-		"request": {
-			"metadata": {
-				"user_id": "nested-user-123"
-			}
-		}
-	}`)
-	infoUser, okUser := ExtractSessionInfo(nil, payloadUser, nil)
-	if !okUser {
-		t.Fatal("ExtractSessionInfo failed on nested user_id request")
-	}
-	if infoUser.SessionID != "user:nested-user-123" {
-		t.Fatalf("SessionID = %q, want user:nested-user-123", infoUser.SessionID)
-	}
-
-	// 3. Nested request with promptCacheKey
-	payloadPCK := []byte(`{
-		"request": {
-			"promptCacheKey": "nested-pck-456"
-		}
-	}`)
-	infoPCK, okPCK := ExtractSessionInfo(nil, payloadPCK, nil)
-	if !okPCK {
-		t.Fatal("ExtractSessionInfo failed on nested promptCacheKey request")
-	}
-	if infoPCK.SessionID != "pck:nested-pck-456" {
-		t.Fatalf("SessionID = %q, want pck:nested-pck-456", infoPCK.SessionID)
-	}
-
-	// 4. Nested promptCacheKey when top-level prompt_cache_key is empty string
-	payloadPCKShadow := []byte(`{
-		"prompt_cache_key": "",
-		"request": {
-			"promptCacheKey": "nested-pck-valid"
-		}
-	}`)
-	infoShadow, okShadow := ExtractSessionInfo(nil, payloadPCKShadow, nil)
-	if !okShadow {
-		t.Fatal("ExtractSessionInfo failed on shadowed promptCacheKey request")
-	}
-	if infoShadow.SessionID != "pck:nested-pck-valid" {
-		t.Fatalf("SessionID = %q, want pck:nested-pck-valid", infoShadow.SessionID)
 	}
 }
 
