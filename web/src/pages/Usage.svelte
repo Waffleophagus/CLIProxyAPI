@@ -248,7 +248,9 @@
     return chartMetric === 'tokens' ? p.total_tokens : chartMetric === 'cost' ? p.cost_usd : p.requests;
   }
 
-  const rateAxis = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+  // Ticks are multiples of 1, 2, 2.5 or 5 x 10^k, so keep their significant
+  // digits (0.075 stays distinct from 0.1) and only drop float noise.
+  const rateAxis = (n: number) => String(Number(n.toPrecision(6)));
 
   const chartSeries = $derived.by(() => {
     const list = series?.series ?? [];
