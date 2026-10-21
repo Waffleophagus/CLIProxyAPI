@@ -316,14 +316,15 @@
                 <tr>
                   <td class="model">
                     <code>{m.requested_model || m.upstream_model}</code>
-                    {#if m.upstream_model && m.upstream_model !== m.requested_model}<span class="muted small">→ {m.upstream_model}</span
+                    {#if m.upstream_model && m.upstream_model !== m.requested_model}<span class="muted small upstream"
+                        >→ {m.upstream_model}</span
                       >{/if}
                     <div class="muted small">
                       {providerName(m.provider)} · {m.requests ? `${compact(m.total_tokens)} tokens` : 'configured, no requests yet'}
                     </div>
                   </td>
                   <td class="nowrap">{CLASS_LABELS[m.class] ?? m.class}</td>
-                  <td>
+                  <td class="priced">
                     {#if m.priced_as}
                       <code class="small">{m.priced_as}</code>
                       <div class="muted small">
@@ -549,9 +550,18 @@
   .warn {
     color: var(--warn-text);
   }
+  /* overflow-wrap: anywhere drops the min-content width to one character,
+     so a min-width keeps narrow screens from squeezing the column. */
   .model {
+    min-width: 11rem;
     max-width: 260px;
     overflow-wrap: anywhere;
+  }
+  .model .upstream {
+    display: block;
+  }
+  .priced {
+    min-width: 10rem;
   }
   .nowrap {
     white-space: nowrap;

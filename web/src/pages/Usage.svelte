@@ -597,7 +597,9 @@
                 >
                 <td class="model">
                   <code>{r.requested_model}</code>
-                  {#if r.upstream_model && r.upstream_model !== r.requested_model}<span class="muted small">→ {r.upstream_model}</span>{/if}
+                  {#if r.upstream_model && r.upstream_model !== r.requested_model}<span class="muted small upstream"
+                      >→ {r.upstream_model}</span
+                    >{/if}
                 </td>
                 <td class="hide-md truncate acct">{r.auth_label || providerName(r.provider)}</td>
                 <td class="hide-md"><code>{r.client_key_masked || '–'}</code></td>
@@ -725,9 +727,15 @@
     border-radius: 2px;
     flex: none;
   }
+  /* overflow-wrap: anywhere drops the min-content width to one character,
+     so a min-width keeps narrow screens from squeezing the column. */
   .model {
+    min-width: 11rem;
     max-width: 320px;
     overflow-wrap: anywhere;
+  }
+  .model .upstream {
+    display: block;
   }
   .acct {
     max-width: 220px;
