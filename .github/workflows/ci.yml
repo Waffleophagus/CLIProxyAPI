@@ -1,8 +1,11 @@
 name: CI and container
 
 # Branch work is covered by pull_request; push only runs for main and release
-# tags, so a push to a PR branch triggers one run instead of two. Use
-# workflow_dispatch to run (and publish a branch-<name> image for) any branch.
+# tags, so a push to a PR branch triggers one run instead of two. PRs validate
+# and smoke-test the image without touching the registry. A push to main skips
+# the Go and web jobs (the PR already ran them and the image build compiles
+# both) and builds the image once: it is smoke-tested and then tagged as is.
+# Use workflow_dispatch to run (and publish a branch-<name> image for) any branch.
 on:
   push:
     branches:
@@ -19,6 +22,7 @@ concurrency:
 jobs:
   go:
     name: Go build, vet and test
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     container: ghcr.io/catthehacker/ubuntu:act-24.04
     timeout-minutes: 30
@@ -51,6 +55,7 @@ jobs:
 
   web:
     name: Web UI lint, check, test and build
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     container: ghcr.io/catthehacker/ubuntu:act-24.04
     timeout-minutes: 20
@@ -89,6 +94,11 @@ jobs:
   image:
     name: Container image
     needs: [go, web]
+    # Run when go/web passed, or were skipped for a push to main.
+    if: >-
+      ${{ !cancelled() &&
+          (needs.go.result == 'success' || needs.go.result == 'skipped') &&
+          (needs.web.result == 'success' || needs.web.result == 'skipped') }}
     runs-on: ubuntu-latest
     container: ghcr.io/catthehacker/ubuntu:act-24.04
     timeout-minutes: 45
@@ -173,6 +183,7 @@ jobs:
           set -euo pipefail
           printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
       - name: Build image for smoke testing
+        id: build
         shell: bash
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
@@ -183,17 +194,31 @@ jobs:
           SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -euo pipefail
-          cache=()
+          output=(--load --tag "$SMOKE_IMAGE")
           if [[ "$PUBLISH" == true ]]; then
-            cache+=(--cache-from "type=registry,ref=$IMAGE:buildcache")
+            # Upload by digest without any tag, smoke-test that exact image, then
+            # tag it in the publish step. The image is built only once.
+            output=(
+              --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true"
+              --cache-from "type=registry,ref=$IMAGE:buildcache"
+              --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max"
+              --provenance=mode=min --sbom=true
+            )
           fi
-          docker buildx build --builder "$BUILDER" --platform linux/amd64 --load \
-            --tag "$SMOKE_IMAGE" \
+          metadata="$RUNNER_TEMP/image-metadata.json"
+          docker buildx build --builder "$BUILDER" --platform linux/amd64 \
+            --metadata-file "$metadata" \
             --build-arg "VERSION=$VERSION" --build-arg "COMMIT=$REVISION" --build-arg "BUILD_DATE=$BUILD_DATE" \
             --label "org.opencontainers.image.source=$SOURCE_URL" \
             --label "org.opencontainers.image.revision=$REVISION" \
             --label "org.opencontainers.image.version=$VERSION" \
-            "${cache[@]}" .
+            "${output[@]}" .
+          if [[ "$PUBLISH" == true ]]; then
+            digest="$(jq -er '."containerimage.digest"' "$metadata")"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            docker pull --platform linux/amd64 "$IMAGE@$digest"
+            docker tag "$IMAGE@$digest" "$SMOKE_IMAGE"
+          fi
       - name: Smoke test image
         shell: bash
         run: |
@@ -224,33 +249,29 @@ jobs:
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAGS: ${{ steps.meta.outputs.tags }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          REVISION: ${{ steps.meta.outputs.revision }}
-          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
-          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           tag_args=()
           IFS=',' read -ra tag_list <<< "$TAGS"
           for t in "${tag_list[@]}"; do tag_args+=(--tag "$t"); done
-          docker buildx build --builder "$BUILDER" --platform linux/amd64 --push \
-            "${tag_args[@]}" \
-            --build-arg "VERSION=$VERSION" --build-arg "COMMIT=$REVISION" --build-arg "BUILD_DATE=$BUILD_DATE" \
-            --label "org.opencontainers.image.source=$SOURCE_URL" \
-            --label "org.opencontainers.image.revision=$REVISION" \
-            --label "org.opencontainers.image.version=$VERSION" \
-            --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max" \
-            --provenance=mode=min --sbom=true .
+          # Tag the smoke-tested digest; this keeps its provenance and SBOM.
+          docker buildx imagetools create "${tag_args[@]}" "$IMAGE@$DIGEST"
           echo "Published: $TAGS"
       - name: Clean up
         if: always()
         shell: bash
         env:
           REGISTRY: ${{ steps.meta.outputs.registry }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           docker rm --force "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
           docker buildx rm "$BUILDER" >/dev/null 2>&1 || true
           docker image rm "$SMOKE_IMAGE" >/dev/null 2>&1 || true
+          if [[ -n "${DIGEST:-}" ]]; then
+            docker image rm "$IMAGE@$DIGEST" >/dev/null 2>&1 || true
+          fi
           if [[ -n "${REGISTRY:-}" ]]; then
             docker logout "$REGISTRY" >/dev/null 2>&1 || true
           fi

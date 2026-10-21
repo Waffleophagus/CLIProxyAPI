@@ -218,6 +218,11 @@ tags, and manual runs:
 - **image**: builds the Docker image, starts it with the example config and
   checks `/healthz`, `/ui/` and that `/v1/models` refuses unauthenticated calls.
 
+Pushes to `main` skip **go** and **web**, since the pull request already ran
+them and the image build compiles both. Pull requests never write to the
+registry. When publishing, the image is built once, smoke-tested, and that same
+digest is then tagged.
+
 Images are published to the forge's container registry
 (`<forge-host>/<owner>/cliproxyapi`) when the repository secrets
 `REGISTRY_USERNAME` and `REGISTRY_TOKEN` (a token with package write access)
