@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/slugs"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -24,6 +25,7 @@ type serverOptionConfig struct {
 	exampleAPIKeySafeMode bool
 	slugResolver          *slugs.Manager
 	usageRuntime          *usagestore.Runtime
+	pricing               *pricing.Service
 	tailnet               TailnetNode
 }
 
@@ -117,6 +119,13 @@ func WithSlugResolver(resolver *slugs.Manager) ServerOption {
 func WithUsageRuntime(runtime *usagestore.Runtime) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.usageRuntime = runtime
+	}
+}
+
+// WithPricingService exposes usage cost estimates to the management API.
+func WithPricingService(service *pricing.Service) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.pricing = service
 	}
 }
 

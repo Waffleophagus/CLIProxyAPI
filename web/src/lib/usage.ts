@@ -1,7 +1,7 @@
 import { ApiError, api } from './api';
 import { browserTZ } from './format';
 import { appStatus } from './status.svelte';
-import type { UsageRequests, UsageSummary, UsageTimeseries } from './types';
+import type { CatalogModel, PricedModel, PricingStatus, UnpricedLocalModel, UsageRequests, UsageSummary, UsageTimeseries } from './types';
 
 export type UsageFilters = {
   from?: string;
@@ -31,8 +31,12 @@ async function wrap<T>(p: Promise<T>): Promise<T> {
   }
 }
 
-export function usageSummary(filters: UsageFilters, groupBy = '') {
-  return wrap(api.get<UsageSummary>('observability/usage/summary', { query: { ...filters, group_by: groupBy, tz: browserTZ } }));
+export function usageSummary(filters: UsageFilters, groupBy = '', withCost = true) {
+  return wrap(
+    api.get<UsageSummary>('observability/usage/summary', {
+      query: { ...filters, group_by: groupBy, tz: browserTZ, cost: withCost ? undefined : 'false' }
+    })
+  );
 }
 
 export function usageTimeseries(filters: UsageFilters, bucket: 'hour' | 'day', groupBy = '', top = 7) {
@@ -47,6 +51,27 @@ export function usageRequests(filters: UsageFilters, limit = 50, before?: number
   return wrap(
     api.get<UsageRequests>('observability/usage/requests', { query: { ...filters, limit, before: before ?? undefined, tz: browserTZ } })
   );
+}
+
+export function pricingStatus() {
+  return api.get<PricingStatus>('observability/usage/pricing');
+}
+
+export function refreshPricing() {
+  return api.post<{ status: string }>('observability/usage/pricing/refresh');
+}
+
+export function searchCatalog(q: string, limit = 25) {
+  return api.get<{ models: CatalogModel[] }>('observability/usage/pricing/catalog', { query: { q, limit } });
+}
+
+export function pricedModels(filters: UsageFilters) {
+  return wrap(api.get<{ models: PricedModel[] }>('observability/usage/pricing/models', { query: { ...filters, tz: browserTZ } }));
+}
+
+/** Models on your own hardware that are configured but have no price. */
+export function unpricedLocalModels() {
+  return api.get<{ models: UnpricedLocalModel[] }>('observability/usage/pricing/unpriced-local');
 }
 
 export type RelativeRange = '24h' | '7d' | '30d' | '90d';

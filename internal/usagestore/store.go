@@ -36,6 +36,8 @@ type Options struct {
 	Path string
 	// RetentionDays prunes rows older than this many days; <= 0 keeps everything.
 	RetentionDays int
+	// RollupRetentionDays prunes rollups older than this many days; <= 0 keeps them.
+	RollupRetentionDays int
 	// BufferSize bounds the in-memory queue between publishers and the writer.
 	BufferSize int
 	// BatchSize flushes the pending batch once it holds this many rows.
@@ -71,9 +73,14 @@ type Store struct {
 	tick      <-chan time.Time
 	ticker    *time.Ticker
 
-	retentionDays atomic.Int64
-	pruneDue      atomic.Bool
-	lastPrune     time.Time // writer goroutine only
+	// keyIDs caches rollup key IDs for the writer (see rememberKeys).
+	keyMu  sync.Mutex
+	keyIDs map[dims]int64
+
+	retentionDays       atomic.Int64
+	rollupRetentionDays atomic.Int64
+	pruneDue            atomic.Bool
+	lastPrune           time.Time // writer goroutine only
 
 	written      atomic.Int64
 	dropped      atomic.Int64
@@ -127,6 +134,7 @@ func Open(opts Options) (*Store, error) {
 		s.tick = s.ticker.C
 	}
 	s.retentionDays.Store(int64(opts.RetentionDays))
+	s.rollupRetentionDays.Store(int64(opts.RollupRetentionDays))
 	s.prune()
 	go s.run()
 	return s, nil
@@ -151,6 +159,16 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Stats returns writer counters.
 func (s *Store) Stats() Stats {
 	return Stats{Written: s.written.Load(), Dropped: s.dropped.Load()}
+}
+
+// RollupRetentionDays returns the rollup retention; <= 0 means keep forever.
+func (s *Store) RollupRetentionDays() int { return int(s.rollupRetentionDays.Load()) }
+
+// SetRollupRetentionDays updates the rollup retention and prunes on the next writer tick.
+func (s *Store) SetRollupRetentionDays(days int) {
+	if s.rollupRetentionDays.Swap(int64(days)) != int64(days) {
+		s.pruneDue.Store(true)
+	}
 }
 
 // RetentionDays returns the active retention; <= 0 means keep forever.
@@ -280,9 +298,42 @@ func (s *Store) run() {
 
 // prune deletes expired rows at most once per pruneInterval. It runs on the
 // writer goroutine (or before it starts), so it never races inserts.
+// rawPrunedBeforeKey names the usage_meta watermark below which raw requests
+// may have been pruned; queries use rollups for window edges below it.
+const rawPrunedBeforeKey = "raw_pruned_before"
+
+// deleteBefore deletes rows of table with column < cutoff. Deleting raw
+// requests also raises the raw watermark in the same transaction, so a
+// reader never sees rows missing below a watermark it has not seen; a prune
+// that deletes nothing leaves the raw history complete and the mark as is.
+func (s *Store) deleteBefore(table, column string, cutoff int64) (int64, error) {
+	tx, errBegin := s.db.Begin()
+	if errBegin != nil {
+		return 0, errBegin
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, errDelete := tx.Exec("DELETE FROM "+table+" WHERE "+column+" < ?", cutoff)
+	if errDelete != nil {
+		return 0, errDelete
+	}
+	n, _ := res.RowsAffected()
+	if table == "requests" && n > 0 {
+		if _, errMark := tx.Exec(`INSERT INTO usage_meta (key, value) VALUES (?, ?)
+ON CONFLICT (key) DO UPDATE SET value = MAX(value, excluded.value)`, rawPrunedBeforeKey, cutoff); errMark != nil {
+			return 0, errMark
+		}
+	}
+	if errCommit := tx.Commit(); errCommit != nil {
+		return 0, errCommit
+	}
+	return n, nil
+}
+
+// Raw requests and rollups have separate retentions, so totals and charts
+// can outlive the per-request history.
 func (s *Store) prune() {
-	days := s.RetentionDays()
-	if days <= 0 {
+	days, rollupDays := s.RetentionDays(), s.RollupRetentionDays()
+	if days <= 0 && rollupDays <= 0 {
 		return
 	}
 	now := s.now()
@@ -290,14 +341,37 @@ func (s *Store) prune() {
 		return
 	}
 	s.lastPrune = now
-	cutoff := now.Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
-	res, errDelete := s.db.Exec("DELETE FROM requests WHERE ts < ?", cutoff)
-	if errDelete != nil {
-		log.Warnf("usage store: retention prune failed: %v", errDelete)
-		return
+	var pruned int64
+	for _, target := range []struct {
+		days         int
+		table, label string
+		column       string
+	}{
+		{days, "requests", "records", "ts"},
+		{rollupDays, "rollups", "rollup buckets", "bucket"},
+	} {
+		if target.days <= 0 {
+			continue
+		}
+		cutoff := now.Add(-time.Duration(target.days) * 24 * time.Hour).UnixMilli()
+		if target.table == "rollups" {
+			// Keep the bucket containing the cutoff: it still covers retained requests.
+			cutoff = (cutoff / sqlBucketMs) * sqlBucketMs
+		}
+		n, errDelete := s.deleteBefore(target.table, target.column, cutoff)
+		if errDelete != nil {
+			log.Warnf("usage store: %s retention prune failed: %v", target.table, errDelete)
+			continue
+		}
+		if n > 0 {
+			pruned += n
+			log.Infof("usage store: pruned %d %s older than %d days", n, target.label, target.days)
+			if target.table == "rollups" {
+				s.pruneOrphanKeys()
+			}
+		}
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		log.Infof("usage store: pruned %d records older than %d days", n, days)
+	if pruned > 0 {
 		if _, errVacuum := s.db.Exec("PRAGMA incremental_vacuum"); errVacuum != nil {
 			log.Debugf("usage store: incremental vacuum failed: %v", errVacuum)
 		}

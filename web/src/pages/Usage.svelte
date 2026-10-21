@@ -4,7 +4,7 @@
   import { errorMessage } from '../lib/api';
   import { config, saveConfig } from '../lib/config.svelte';
   import { seriesColor } from '../lib/colors';
-  import { compact, int, ms, pct, providerName, shortDateTime, dateTime } from '../lib/format';
+  import { compact, int, ms, pct, providerName, shortDateTime, dateTime, usd } from '../lib/format';
   import { router } from '../lib/router.svelte';
   import { appStatus } from '../lib/status.svelte';
   import {
@@ -18,18 +18,20 @@
     type UsageRange,
     type UsageWindow
   } from '../lib/usage';
-  import type { UsageGroup, UsageRow, UsageSummary, UsageTimeseries } from '../lib/types';
+  import type { Aggregate, UsageGroup, UsageRow, UsageSummary, UsageTimeseries } from '../lib/types';
   import PageHeader from '../components/PageHeader.svelte';
   import ColumnChart from '../components/ColumnChart.svelte';
   import Segmented from '../components/Segmented.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import Banner from '../components/Banner.svelte';
   import Icon from '../components/Icon.svelte';
+  import StatTile from '../components/StatTile.svelte';
   import RequestDrawer from './usage/RequestDrawer.svelte';
+  import PricingDialog from './usage/PricingDialog.svelte';
 
   type Range = UsageRange;
   type GroupBy = 'model' | 'upstream_model' | 'provider' | 'credential' | 'api_key' | 'day';
-  type Metric = 'requests' | 'tokens';
+  type Metric = 'requests' | 'tokens' | 'cost';
 
   const GROUPS: { value: GroupBy; label: string }[] = [
     { value: 'model', label: 'Model' },
@@ -43,7 +45,7 @@
   const q = router.query;
   let range = $state<Range>((['24h', '7d', '30d', '90d', 'custom'].includes(q.get('range') ?? '') ? q.get('range') : '7d') as Range);
   let groupBy = $state<GroupBy>((GROUPS.some((g) => g.value === q.get('group')) ? q.get('group') : 'model') as GroupBy);
-  let metric = $state<Metric>(q.get('metric') === 'tokens' ? 'tokens' : 'requests');
+  let metric = $state<Metric>(q.get('metric') === 'tokens' || q.get('metric') === 'cost' ? (q.get('metric') as Metric) : 'requests');
   let fModel = $state(q.get('model') ?? '');
   let fProvider = $state(q.get('provider') ?? '');
   let fCredential = $state(q.get('credential') ?? '');
@@ -63,6 +65,8 @@
   let error = $state('');
   let drawerOpen = $state(false);
   let selected = $state<UsageRow | null>(null);
+  let pricingOpen = $state(false);
+  let pricingFocus = $state('');
   let generation = 0;
 
   function toLocalInput(d: Date): string {
@@ -83,7 +87,7 @@
     router.setQuery({
       range,
       group: groupBy,
-      metric: metric === 'tokens' ? 'tokens' : undefined,
+      metric: metric === 'requests' ? undefined : metric,
       model: fModel,
       provider: fProvider,
       credential: fCredential,
@@ -125,10 +129,10 @@
     const f = { from: w.from, to: w.to };
     try {
       const [m, p, c, k] = await Promise.all([
-        usageSummary(f, 'model'),
-        usageSummary(f, 'provider'),
-        usageSummary(f, 'credential'),
-        usageSummary(f, 'api_key')
+        usageSummary(f, 'model', false),
+        usageSummary(f, 'provider', false),
+        usageSummary(f, 'credential', false),
+        usageSummary(f, 'api_key', false)
       ]);
       options = { model: m.groups ?? [], provider: p.groups ?? [], credential: c.groups ?? [], api_key: k.groups ?? [] };
     } catch {
@@ -151,6 +155,19 @@
       loadingMore = false;
     }
   }
+
+  // ?pricing=<model> (from the unpriced-model notice, also while this page is
+  // already open) opens that model's price editor. Opening a dialog is a side
+  // effect of navigation, so it runs in an effect; syncURL then drops the
+  // parameter so reloads do not reopen it.
+  $effect(() => {
+    const focus = router.query.get('pricing');
+    if (!focus) return;
+    untrack(() => {
+      openPricing(focus);
+      syncURL();
+    });
+  });
 
   onMount(() => {
     void loadAll();
@@ -205,15 +222,46 @@
   const groupLabel = $derived(GROUPS.find((g) => g.value === groupBy)?.label ?? '');
   const filterable = $derived(groupBy !== 'day' && groupBy !== 'upstream_model');
 
-  const chartSeries = $derived(
-    (series?.series ?? []).map((s) => ({
+  const pricing = $derived(summary?.pricing);
+  const chartMetric = $derived<Metric>(metric === 'cost' && !pricing ? 'requests' : metric);
+  const metricName = $derived(chartMetric === 'tokens' ? 'Tokens' : chartMetric === 'cost' ? 'API-equivalent cost' : 'Requests');
+
+  // Cost classes, in stacking order, for the ungrouped cost chart.
+  const COST_CLASSES = [
+    { key: 'api', label: 'Paid API', color: 'var(--series-1)', value: (p: Aggregate) => p.api_spend_usd },
+    { key: 'subscription', label: 'Subscription value', color: 'var(--series-2)', value: (p: Aggregate) => p.subscription_value_usd },
+    { key: 'local', label: 'Hardware value', color: 'var(--series-3)', value: (p: Aggregate) => p.local_value_usd }
+  ];
+
+  function metricValue(p: Aggregate): number {
+    return chartMetric === 'tokens' ? p.total_tokens : chartMetric === 'cost' ? p.cost_usd : p.requests;
+  }
+
+  const chartSeries = $derived.by(() => {
+    const list = series?.series ?? [];
+    if (chartMetric === 'cost' && list.length === 1 && list[0].key === 'total') {
+      return COST_CLASSES.map((c) => ({ key: c.key, label: c.label, color: c.color, values: list[0].points.map(c.value) }));
+    }
+    return list.map((s) => ({
       key: s.key,
-      label:
-        s.key === 'total' ? (metric === 'tokens' ? 'Tokens' : 'Requests') : s.key === '__other__' ? 'Other' : labelFor(s.label || s.key),
+      label: s.key === 'total' ? metricName : s.key === '__other__' ? 'Other' : labelFor(s.label || s.key),
       color: s.key === 'total' ? 'var(--series-1)' : seriesColor(`${groupBy}:${s.key}`),
-      values: s.points.map((p) => (metric === 'tokens' ? p.total_tokens : p.requests))
-    }))
-  );
+      values: s.points.map(metricValue)
+    }));
+  });
+
+  const fees = $derived(pricing?.subscription_fees_usd ?? 0);
+  const subscriptionSaved = $derived((summary?.totals.subscription_value_usd ?? 0) - fees);
+
+  function costCell(a: Aggregate): string {
+    if (a.requests > 0 && a.unpriced_requests >= a.requests) return 'Unpriced';
+    return usd(a.cost_usd);
+  }
+
+  function openPricing(focus = '') {
+    pricingFocus = focus;
+    pricingOpen = true;
+  }
 
   function labelFor(v: string): string {
     if (groupBy === 'provider') return providerName(v);
@@ -237,6 +285,7 @@
   subtitle="Every upstream attempt the proxy made, including retries. Times are in {Intl.DateTimeFormat().resolvedOptions().timeZone}."
 >
   {#snippet actions()}
+    {#if !disabled}<button class="btn" type="button" onclick={() => openPricing()}><Icon name="dollar" />Pricing</button>{/if}
     <button
       class="btn"
       type="button"
@@ -341,10 +390,45 @@
     {/if}
   </div>
 
+  {#if summary && pricing}
+    <div class={['costs', { stale: loading }]}>
+      <StatTile
+        label="API-equivalent cost"
+        value={usd(summary.totals.cost_usd)}
+        sub={summary.totals.unpriced_requests > 0
+          ? `${int(summary.totals.unpriced_requests)} unpriced requests not included`
+          : pricing.catalog.models
+            ? 'At models.dev list prices'
+            : 'Price catalog not loaded yet'}
+        tone={summary.totals.unpriced_requests > 0 || !pricing.catalog.models ? 'warn' : ''}
+      />
+      <StatTile label="Paid API spend" value={usd(summary.totals.api_spend_usd)} sub="API keys and paid endpoints" />
+      <StatTile
+        label="Subscription value"
+        value={usd(summary.totals.subscription_value_usd)}
+        sub={fees > 0
+          ? subscriptionSaved >= 0
+            ? `${usd(fees)} in fees · saved ${usd(subscriptionSaved)}`
+            : `${usd(fees)} in fees · ${usd(-subscriptionSaved)} more than API`
+          : 'Set plan fees under Pricing to see savings'}
+      />
+      <StatTile
+        label="Hardware value"
+        value={usd(summary.totals.local_value_usd)}
+        sub="What your own servers' requests would cost on the API"
+      />
+    </div>
+    {#if summary.totals.unpriced_requests > 0}
+      <p class="small muted unpriced">
+        Some models have no known price. <button class="link" type="button" onclick={() => openPricing()}>Set prices</button>
+      </p>
+    {/if}
+  {/if}
+
   <section class={['card card-pad gap', { stale: loading }]} aria-labelledby="chart-h">
     <div class="row wrap head">
       <h2 id="chart-h">
-        {metric === 'tokens' ? 'Tokens' : 'Requests'} per {win.bucket}{groupBy !== 'day' ? ` by ${groupLabel.toLowerCase()}` : ''}
+        {metricName} per {win.bucket}{groupBy !== 'day' ? ` by ${groupLabel.toLowerCase()}` : chartMetric === 'cost' ? ' by class' : ''}
       </h2>
       <div class="spacer"></div>
       <Segmented
@@ -352,18 +436,21 @@
         bind:value={metric}
         options={[
           { value: 'requests', label: 'Requests' },
-          { value: 'tokens', label: 'Tokens' }
+          { value: 'tokens', label: 'Tokens' },
+          ...(pricing ? [{ value: 'cost' as const, label: 'Cost' }] : [])
         ]}
         onchange={syncURL}
       />
     </div>
     <ColumnChart
-      title="{metric} over time"
+      title="{metricName} over time"
       buckets={series?.buckets ?? []}
       series={chartSeries}
       bucket={series?.bucket ?? win.bucket}
       height={240}
-      format={metric === 'tokens' ? compact : int}
+      format={chartMetric === 'tokens' ? compact : chartMetric === 'cost' ? usd : int}
+      integer={chartMetric !== 'cost'}
+      axisFormat={chartMetric === 'cost' ? usd : compact}
     />
   </section>
 
@@ -387,6 +474,7 @@
               <th class="r">Total tokens</th>
               <th class="r">Avg latency</th>
               <th class="r">Avg first token</th>
+              {#if pricing}<th class="r">Cost</th>{/if}
             </tr>
           </thead>
           <tbody>
@@ -414,6 +502,9 @@
                 <td class="r">{compact(g.total_tokens)}</td>
                 <td class="r">{ms(g.avg_latency_ms)}</td>
                 <td class="r">{ms(g.avg_ttft_ms)}</td>
+                {#if pricing}
+                  <td class={['r', { warn: g.unpriced_requests > 0 && g.unpriced_requests >= g.requests }]}>{costCell(g)}</td>
+                {/if}
               </tr>
             {/each}
           </tbody>
@@ -427,6 +518,7 @@
               <td class="r">{compact(summary.totals.total_tokens)}</td>
               <td class="r">{ms(summary.totals.avg_latency_ms)}</td>
               <td class="r">{ms(summary.totals.avg_ttft_ms)}</td>
+              {#if pricing}<td class="r">{usd(summary.totals.cost_usd)}</td>{/if}
             </tr>
           </tfoot>
         </table>
@@ -453,6 +545,7 @@
               <th class="hide-md">Client key</th>
               <th class="r">Latency</th>
               <th class="r">Tokens in / out</th>
+              {#if pricing}<th class="r">Cost</th>{/if}
             </tr>
           </thead>
           <tbody>
@@ -479,6 +572,8 @@
                 <td class="hide-md"><code>{r.client_key_masked || '–'}</code></td>
                 <td class="r">{ms(r.latency_ms)}</td>
                 <td class="r nowrap">{compact(r.input_tokens)} / {compact(r.output_tokens)}</td>
+                {#if pricing}<td class="r nowrap" title={r.priced_as ?? 'Unpriced'}>{r.cost_usd !== undefined ? usd(r.cost_usd) : '–'}</td
+                  >{/if}
               </tr>
             {/each}
           </tbody>
@@ -499,7 +594,10 @@
   </section>
 {/if}
 
-<RequestDrawer bind:open={drawerOpen} row={selected} />
+<RequestDrawer bind:open={drawerOpen} row={selected} onsetprice={(model) => openPricing(model)} />
+{#if pricingOpen}
+  <PricingDialog bind:open={pricingOpen} range={win} focus={pricingFocus} onsaved={() => loadAll()} />
+{/if}
 
 <style>
   .filters {
@@ -550,6 +648,24 @@
   }
   .warn {
     color: var(--warn-text);
+  }
+  .costs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .unpriced {
+    margin: 0 0 16px;
+  }
+  .link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent-text);
+    cursor: pointer;
+    font: inherit;
+    text-decoration: underline;
   }
   .stale {
     opacity: 0.6;

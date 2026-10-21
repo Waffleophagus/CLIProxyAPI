@@ -156,6 +156,10 @@ retain the corresponding business operation's fields.
 | `/observability/usage/summary` | GET | Usage totals for a window, optionally grouped (see below). |
 | `/observability/usage/timeseries` | GET | Hour/day usage buckets for charts. |
 | `/observability/usage/requests` | GET | Recent recorded upstream attempts, paginated. |
+| `/observability/usage/pricing` | GET | Price catalog status (see Usage cost estimates). |
+| `/observability/usage/pricing/refresh` | POST | Refetch the price catalog now. |
+| `/observability/usage/pricing/catalog` | GET | Search catalog models for price mappings. |
+| `/observability/usage/pricing/models` | GET | Models served in a window and how each is priced. |
 | `/credentials` | GET, POST, DELETE | List, upload, or delete credential files. |
 | `/credentials/models` | GET | Get credential models. |
 | `/credentials/download` | GET | Download a credential file. |
@@ -260,10 +264,24 @@ observability:
     enabled: true        # default true
     path: ""             # default: $WRITABLE_PATH/data/usage.db, else data/usage.db next to the config file
     retention-days: 90   # default 90; -1 keeps everything
+    rollup-retention-days: 0 # totals and charts; default 0 keeps them forever
 ```
 
+Besides the raw rows, every write also updates 15-minute rollups (one row per
+bucket, dimension combination, context band and success flag), so summaries,
+timeseries and costs scale with the number of buckets instead of requests.
+Queries read whole buckets from the rollups and the partial buckets at either
+window edge from the raw rows, so results are exact; once raw rows have been
+pruned, an edge below the pruning point uses its whole 15-minute bucket
+instead. Each query reads from a single database snapshot. Rollups have their own
+retention (`rollup-retention-days`, never shorter than `retention-days`;
+0 keeps them forever), so totals, costs and savings outlive per-request
+details: windows older than `retention-days` still report totals, while the
+request list and the p50/p95 latency only cover retained raw rows. Upgrading
+backfills the rollups from existing rows once.
+
 Relative paths resolve against the config file directory. In the container the
-default is `/CLIProxyAPI/data/usage.db` (mount `./data`). Changes to all three
+default is `/CLIProxyAPI/data/usage.db` (mount `./data`). Changes to these
 keys apply on hot reload: the store is closed (pending rows flushed) and
 reopened, or only the retention changes. Rows older than the retention are
 pruned at startup and daily. Writes are asynchronous and never slow requests;
@@ -408,6 +426,107 @@ the last page. `ts` is the attempt start time in UTC.
 Optional row fields (`trace_id`, `auth_type`, `response_model`, `base_url`,
 `endpoint`, `session_id`, `error`, `reasoning_effort`, `service_tier`) are
 omitted when empty.
+
+### Usage cost estimates
+
+When `observability.usage.pricing.enabled` is true (the default), usage
+responses include API-equivalent costs at [models.dev](https://models.dev)
+list prices. Costs are computed at query time from the current catalog and
+mappings, so changing a mapping re-prices the whole history.
+
+```yaml
+observability:
+  usage:
+    pricing:
+      enabled: true          # default true
+      source: ""             # default https://models.dev/api.json; or an absolute file path
+      models:                # for aliases, slugs and local models
+        - model: gpt-oss-120b             # requested, upstream or response model ID (case-insensitive)
+          price-as: zai/glm-5.3-flash     # a models.dev "provider/model" ID
+        - model: gpt-oss-120b             # a later price for the same model
+          input: 0.6
+          output: 0.9
+          from: "2026-10-21T15:00:00Z"    # applies to requests from this time on
+        - model: my-finetune
+          input: 0.5                      # USD per million tokens
+          output: 1.5
+          cache-read: 0.05                # optional; defaults to the input price
+          cache-write: 0.5                # optional; defaults to the input price
+      subscriptions:         # monthly plan fees, per OAuth account (auth ID)
+        - account: claude-me@example.com.json
+          provider: claude
+          monthly-usd: 200
+      provider-classes:      # override the detected cost class
+        openai-compatible-dgx-spark: local
+```
+
+The catalog is cached next to the usage database (`models-dev.json`) and
+refetched daily; on failure the last catalog is kept and retried hourly.
+
+**Matching.** Explicit `models` entries win, checked against the upstream,
+response and then requested model: a mapping of the served model beats a
+mapping of the alias, so a model behind a follow-mode slug keeps its own price
+after the slug moves to another model. Entries for the same model with
+different `from` times form a price history; each request uses the entry in
+effect when it was made (to 15-minute precision), and requests before the
+earliest `from` use the automatic price. Otherwise the served model (upstream, then
+response; the requested alias only when neither was recorded) is looked up
+under the provider's models.dev home (`claude` → `anthropic`, `codex` →
+`openai`, `xai`, `kimi` → `moonshotai`, `meta`), then first-party providers,
+then any provider when all listings agree on price. Lookups also try the ID
+without a `[1m]`/`(high)` suffix, an organization prefix, a date suffix and
+`-thinking`.
+
+**Context bands.** Rollups split requests into input-size bands at 100k,
+200k, 272k and 512k tokens, the first-party tier sizes; a tier at another size
+(e.g. 32k, 128k or 256k on some hosts) is applied to the whole enclosing band.
+
+**Formula.** Uncached input (`input_tokens` minus cache reads and writes),
+cache reads, cache writes and output are priced separately; reasoning tokens
+are billed as output unless the model has a separate reasoning price. Context
+tiers (e.g. above 272k input tokens) apply per request, and a response
+`service_tier` such as `priority` uses the model's matching mode price.
+
+**Classes.** Each row has a cost class: `subscription` for OAuth accounts,
+`local` for OpenAI-compatible providers whose base URL is loopback, private,
+link-local, Tailscale CGNAT, a single-label host or `.local`/`.lan`/`.home`/
+`.internal`/`.ts.net`, and `api` (real spend) otherwise.
+
+Every aggregate object gains `cost_usd` (all priced rows), `api_spend_usd`,
+`subscription_value_usd`, `local_value_usd` and `unpriced_requests`. Request
+rows gain `cost_usd` (omitted when unpriced), `cost_class` and `priced_as`.
+Summaries add:
+
+```json
+"pricing": {
+  "catalog": {"enabled": true, "source": "https://models.dev/api.json", "fetched_at": "2026-10-21T08:30:00Z", "models": 8726},
+  "subscription_fees_usd": 6.57,
+  "subscriptions": [{"account": "claude-me@example.com.json", "provider": "claude", "monthly_usd": 200, "window_usd": 6.57}]
+}
+```
+
+`window_usd` prorates the monthly fee over the query window (average month);
+fees honor the `provider` and `credential` filters. Pass `cost=false` to skip
+cost estimation on a usage query.
+
+`GET /observability/usage/pricing` returns the catalog status (`enabled`,
+`source`, `fetched_at`, `models`, `error`). `POST .../pricing/refresh` returns
+202, 409 when pricing is disabled, or 429 within a minute of the last attempt.
+`GET .../pricing/catalog?q=&limit=` (limit default 25, max 100) returns
+`{"models": [{"id", "provider", "provider_name", "model", "name", "price"}]}`,
+where `price` has `input`, `output`, `cache_read`, `cache_write`, optional
+`reasoning`, `tiers` and `modes`; it returns 503 until a catalog has loaded.
+`GET .../pricing/models` (shared window and filter parameters; default 30 days)
+returns `{"models": [{"provider", "requested_model", "upstream_model",
+"response_model", "class", "priced_as", "source": "auto"|"override", "price",
+"from", "history", "requests", "total_tokens", "cost_usd"}]}`; `from` and
+`history` (every `{from, priced_as, source, price}`, oldest first) are present
+for dated prices. `GET .../pricing/unpriced-local` returns
+`{"models": [{"provider", "group", "alias", "model"}]}`: models configured on
+your own hardware (OpenAI-compatible providers in the `local` class, follow
+slugs resolved to the model they serve now) that have no price; the UI uses it
+to prompt for a price after a model swap. Summaries report
+`store.rollup_retention_days`.
 
 ### Tailscale status
 

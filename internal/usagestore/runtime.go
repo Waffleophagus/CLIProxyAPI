@@ -25,6 +25,8 @@ type Settings struct {
 	Enabled       bool
 	Path          string
 	RetentionDays int
+	// RollupRetentionDays prunes rollups; <= 0 keeps them forever.
+	RollupRetentionDays int
 }
 
 // ResolveSettings derives the effective settings from the config. The default
@@ -44,6 +46,8 @@ func ResolveSettings(cfg *config.Config, configFilePath string) Settings {
 		Enabled:       u.IsEnabled(),
 		Path:          filepath.Clean(path),
 		RetentionDays: u.EffectiveRetentionDays(),
+
+		RollupRetentionDays: u.EffectiveRollupRetentionDays(),
 	}
 }
 
@@ -92,6 +96,10 @@ func (r *Runtime) Apply(settings Settings, authDir string) {
 			r.store.SetRetentionDays(settings.RetentionDays)
 			log.Infof("usage tracking retention set to %d days", settings.RetentionDays)
 		}
+		if prev.RollupRetentionDays != settings.RollupRetentionDays {
+			r.store.SetRollupRetentionDays(settings.RollupRetentionDays)
+			log.Infof("usage rollup retention set to %d days (0 keeps forever)", settings.RollupRetentionDays)
+		}
 		return
 	}
 	if r.store != nil {
@@ -111,7 +119,7 @@ func (r *Runtime) Apply(settings Settings, authDir string) {
 	if insideDir(settings.Path, authDir) {
 		log.Warnf("usage tracking database %s is inside the auth directory; move it (observability.usage.path) to avoid auth watcher churn", settings.Path)
 	}
-	store, errOpen := r.newStore(Options{Path: settings.Path, RetentionDays: settings.RetentionDays, Now: r.now})
+	store, errOpen := r.newStore(Options{Path: settings.Path, RetentionDays: settings.RetentionDays, RollupRetentionDays: settings.RollupRetentionDays, Now: r.now})
 	if errOpen != nil {
 		r.openErr = errOpen
 		log.Errorf("usage tracking unavailable: %v", errOpen)

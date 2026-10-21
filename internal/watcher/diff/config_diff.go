@@ -46,6 +46,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.UsageTracking.EffectiveRetentionDays() != newCfg.UsageTracking.EffectiveRetentionDays() {
 		changes = append(changes, fmt.Sprintf("observability.usage.retention-days: %d -> %d", oldCfg.UsageTracking.EffectiveRetentionDays(), newCfg.UsageTracking.EffectiveRetentionDays()))
 	}
+	if oldCfg.UsageTracking.EffectiveRollupRetentionDays() != newCfg.UsageTracking.EffectiveRollupRetentionDays() {
+		changes = append(changes, fmt.Sprintf("observability.usage.rollup-retention-days: %d -> %d", oldCfg.UsageTracking.EffectiveRollupRetentionDays(), newCfg.UsageTracking.EffectiveRollupRetentionDays()))
+	}
 	if oldCfg.LoggingToFile != newCfg.LoggingToFile {
 		changes = append(changes, fmt.Sprintf("logging-to-file: %t -> %t", oldCfg.LoggingToFile, newCfg.LoggingToFile))
 	}

@@ -1,13 +1,19 @@
 <script lang="ts">
   import { api, ApiError, errorMessage } from '../../lib/api';
-  import { dateTime, int, ms, providerName } from '../../lib/format';
+  import { dateTime, int, ms, providerName, usd } from '../../lib/format';
   import type { UsageRow } from '../../lib/types';
   import Dialog from '../../components/Dialog.svelte';
   import StatusBadge from '../../components/StatusBadge.svelte';
   import CopyButton from '../../components/CopyButton.svelte';
   import Icon from '../../components/Icon.svelte';
 
-  let { open = $bindable(false), row }: { open?: boolean; row: UsageRow | null } = $props();
+  let {
+    open = $bindable(false),
+    row,
+    onsetprice
+  }: { open?: boolean; row: UsageRow | null; onsetprice?: (model: string) => void } = $props();
+
+  const CLASS_LABELS: Record<string, string> = { api: 'Paid API', subscription: 'Subscription', local: 'My hardware' };
 
   type LogState = 'idle' | 'loading' | 'missing' | 'error' | 'ok';
   // The fetched log belongs to one row: these writable deriveds reset whenever
@@ -70,6 +76,9 @@
           ['Cache read tokens', int(row.cache_read_tokens)],
           ['Cache write tokens', int(row.cache_creation_tokens)],
           ['Total tokens', int(row.total_tokens)],
+          ['API-equivalent cost', row.cost_usd !== undefined ? usd(row.cost_usd) : row.cost_class ? 'Unpriced' : undefined],
+          ['Counts as', row.cost_class ? CLASS_LABELS[row.cost_class] : undefined],
+          ['Priced as', row.priced_as],
           ['Reasoning effort', row.reasoning_effort],
           ['Service tier', row.service_tier],
           ['Session', row.session_id],
@@ -95,6 +104,19 @@
         <div class="err">
           <strong>Error</strong>
           <p>{row.error}</p>
+        </div>
+      {/if}
+      {#if row.cost_class && row.cost_usd === undefined && onsetprice}
+        <div class="row">
+          <span class="muted small">This model has no known price.</span>
+          <button
+            class="btn sm"
+            type="button"
+            onclick={() => {
+              open = false;
+              onsetprice(row.upstream_model || row.requested_model);
+            }}>Set price</button
+          >
         </div>
       {/if}
       <dl>

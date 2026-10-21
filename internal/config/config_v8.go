@@ -245,6 +245,9 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 	if errValidate := decoded.Models.Validate(); errValidate != nil {
 		return errValidate
 	}
+	if errValidate := decoded.UsageTracking.Pricing.Validate(); errValidate != nil {
+		return errValidate
+	}
 	*cfg = Config(decoded)
 	cfg.OAuthOnlyFields = nil
 	source := expandConfigAliases(node)
@@ -916,6 +919,9 @@ func ValidateV8Config(data []byte) error {
 		return errValidate
 	}
 	if errValidate := (*Config)(&cfg).ValidateTailscale(); errValidate != nil {
+		return errValidate
+	}
+	if errValidate := cfg.UsageTracking.Pricing.Validate(); errValidate != nil {
 		return errValidate
 	}
 	return cfg.Models.Validate()

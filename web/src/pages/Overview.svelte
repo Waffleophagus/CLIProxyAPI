@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api, errorMessage } from '../lib/api';
   import { config } from '../lib/config.svelte';
-  import { compact, int, ms, pct, relative, shortDateTime, providerName } from '../lib/format';
+  import { compact, int, ms, pct, relative, shortDateTime, providerName, usd } from '../lib/format';
   import { link, router } from '../lib/router.svelte';
   import { poll } from '../lib/poll';
   import { credentialHealth, type HealthCategory } from '../lib/accounts';
@@ -166,6 +166,13 @@
       value={summary ? ms(summary.latency_p95_ms) : '…'}
       sub={totals?.avg_ttft_ms ? `first token ~${ms(totals.avg_ttft_ms)}` : ''}
     />
+    {#if summary?.pricing && totals}
+      <StatTile
+        label="API value · 24h"
+        value={usd(totals.cost_usd)}
+        sub={`${usd(totals.api_spend_usd)} paid · ${usd(totals.subscription_value_usd + totals.local_value_usd)} covered`}
+      />
+    {/if}
   {/if}
 </section>
 

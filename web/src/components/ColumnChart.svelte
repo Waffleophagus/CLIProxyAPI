@@ -15,16 +15,22 @@
     bucket = 'hour',
     height = 200,
     format = int,
+    axisFormat = compact,
     title,
-    emptyText = 'No data in this period'
+    emptyText = 'No data in this period',
+    integer = true
   }: {
     buckets: string[];
     series: ChartSeries[];
     bucket?: 'hour' | 'day';
     height?: number;
     format?: (n: number) => string;
+    /** Formats y-axis tick labels. */
+    axisFormat?: (n: number) => string;
     title: string;
     emptyText?: string;
+    /** Integer series (counts) never get fractional gridlines; set false for amounts such as dollars. */
+    integer?: boolean;
   } = $props();
 
   const M = { top: 10, right: 6, bottom: 26, left: 44 };
@@ -39,9 +45,9 @@
   const plotH = $derived(Math.max(10, height - M.top - M.bottom));
 
   // Four gridline steps of a "nice" size (1, 2, 2.5, 5 x 10^k), never below 1
-  // so integer counts get integer ticks.
+  // for integer series so counts get integer ticks.
   function niceStep(v: number): number {
-    const raw = Math.max(1, v / 4);
+    const raw = integer || v <= 0 ? Math.max(1, v / 4) : v / 4;
     const exp = Math.pow(10, Math.floor(Math.log10(raw)));
     for (const m of [1, 2, 2.5, 5, 10]) {
       if (m * exp >= raw) return m * exp;
@@ -168,7 +174,7 @@
       <svg {width} {height} aria-hidden="true">
         {#each ticks as t, i (i)}
           <line x1={M.left} x2={width - M.right} y1={y(t)} y2={y(t)} class={i === 0 ? 'baseline' : 'grid'} />
-          <text x={M.left - 8} y={y(t)} dy="0.32em" text-anchor="end" class="axis">{compact(t)}</text>
+          <text x={M.left - 8} y={y(t)} dy="0.32em" text-anchor="end" class="axis">{axisFormat(t)}</text>
         {/each}
         {#if active !== null}
           <rect x={M.left + active * slot} y={M.top} width={slot} height={plotH} class="hoverband" />

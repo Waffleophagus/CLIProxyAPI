@@ -195,6 +195,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	s.mgmt.SetSlugResolver(optionState.slugResolver)
 	s.mgmt.SetUsageRuntime(optionState.usageRuntime)
+	s.mgmt.SetPricingService(optionState.pricing)
 	logDir := logging.ResolveLogDirectory(cfg)
 	s.mgmt.SetLogDirectory(logDir)
 	if optionState.postAuthHook != nil {

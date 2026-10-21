@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -250,11 +251,150 @@ type UsageTrackingConfig struct {
 	// RetentionDays prunes records older than this many days. 0 means the default
 	// (90); a negative value keeps records forever.
 	RetentionDays int `yaml:"retention-days,omitempty" json:"retention-days,omitempty"`
+	// RollupRetentionDays prunes the aggregated history behind charts and
+	// totals after this many days. 0 or negative keeps it forever (default);
+	// it is never shorter than RetentionDays.
+	RollupRetentionDays int `yaml:"rollup-retention-days,omitempty" json:"rollup-retention-days,omitempty"`
+	// Pricing estimates API-equivalent costs for recorded usage.
+	Pricing UsagePricingConfig `yaml:"pricing,omitempty" json:"pricing,omitempty"`
+}
+
+// DefaultUsagePricingSource is the models.dev catalog used for price lookups.
+const DefaultUsagePricingSource = "https://models.dev/api.json"
+
+// Usage cost classes.
+const (
+	UsageCostClassAPI          = "api"
+	UsageCostClassSubscription = "subscription"
+	UsageCostClassLocal        = "local"
+)
+
+// UsagePricingConfig configures cost estimates (v8: observability.usage.pricing).
+// Costs are always computed at query time from the current catalog and
+// mappings, so changes apply to the whole history.
+type UsagePricingConfig struct {
+	// Enabled toggles cost estimates; nil means enabled.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Source is the models.dev api.json URL or an absolute file path.
+	// Empty means DefaultUsagePricingSource.
+	Source string `yaml:"source,omitempty" json:"source,omitempty"`
+	// Models maps model IDs that cannot be priced automatically (aliases,
+	// slugs, local models) to a models.dev entry or to explicit prices.
+	Models []UsagePriceModel `yaml:"models,omitempty" json:"models,omitempty"`
+	// Subscriptions sets monthly plan fees for OAuth accounts.
+	Subscriptions []UsageSubscription `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
+	// ProviderClasses overrides the cost class (api, subscription, local)
+	// detected for a usage provider ID such as "openai-compatible-dgx-spark".
+	ProviderClasses map[string]string `yaml:"provider-classes,omitempty" json:"provider-classes,omitempty"`
+}
+
+// UsagePriceModel prices one model ID. PriceAs takes precedence over the
+// explicit per-million prices.
+type UsagePriceModel struct {
+	// Model is a requested (alias/slug), upstream, or response model ID; matched case-insensitively.
+	Model string `yaml:"model" json:"model"`
+	// From is an optional RFC3339 time from which this entry applies. Entries
+	// for the same model with different From values form a price history;
+	// requests before the earliest From use the automatic price.
+	From string `yaml:"from,omitempty" json:"from,omitempty"`
+	// PriceAs is a models.dev "provider/model" ID whose prices apply to Model.
+	PriceAs string `yaml:"price-as,omitempty" json:"price-as,omitempty"`
+	// Input, Output, CacheRead and CacheWrite are USD per million tokens.
+	// Empty cache prices fall back to the input price.
+	Input      *float64 `yaml:"input,omitempty" json:"input,omitempty"`
+	Output     *float64 `yaml:"output,omitempty" json:"output,omitempty"`
+	CacheRead  *float64 `yaml:"cache-read,omitempty" json:"cache-read,omitempty"`
+	CacheWrite *float64 `yaml:"cache-write,omitempty" json:"cache-write,omitempty"`
+}
+
+// EffectiveFrom parses From; the zero time means "from the beginning".
+func (m UsagePriceModel) EffectiveFrom() (time.Time, error) {
+	from := strings.TrimSpace(m.From)
+	if from == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339, from)
+}
+
+// UsageSubscription is the monthly fee paid for one OAuth account.
+type UsageSubscription struct {
+	// Account is the auth ID shown as the usage "account" dimension.
+	Account string `yaml:"account" json:"account"`
+	// Provider is the account's provider (e.g. "claude"); used for filtering.
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	// MonthlyUSD is the plan fee per month.
+	MonthlyUSD float64 `yaml:"monthly-usd" json:"monthly-usd"`
+}
+
+// IsEnabled reports whether cost estimates are enabled (default true).
+func (c UsagePricingConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// EffectiveSource returns the catalog source with the default applied.
+func (c UsagePricingConfig) EffectiveSource() string {
+	if source := strings.TrimSpace(c.Source); source != "" {
+		return source
+	}
+	return DefaultUsagePricingSource
+}
+
+// Validate checks prices, fees and provider classes.
+func (c UsagePricingConfig) Validate() error {
+	seen := make(map[string]bool)
+	for i, m := range c.Models {
+		if strings.TrimSpace(m.Model) == "" {
+			return fmt.Errorf("observability.usage.pricing.models[%d].model is required", i)
+		}
+		from, errFrom := m.EffectiveFrom()
+		if errFrom != nil {
+			return fmt.Errorf("observability.usage.pricing.models[%d].from must be an RFC3339 time: %w", i, errFrom)
+		}
+		key := strings.ToLower(strings.TrimSpace(m.Model)) + "|" + strconv.FormatInt(from.UnixMilli(), 10)
+		if seen[key] {
+			return fmt.Errorf("observability.usage.pricing.models[%d] duplicates the price of %q from the same time", i, m.Model)
+		}
+		seen[key] = true
+		if strings.TrimSpace(m.PriceAs) == "" && (m.Input == nil || m.Output == nil) {
+			return fmt.Errorf("observability.usage.pricing.models[%d] needs price-as or input and output prices", i)
+		}
+		for _, v := range []*float64{m.Input, m.Output, m.CacheRead, m.CacheWrite} {
+			if v != nil && *v < 0 {
+				return fmt.Errorf("observability.usage.pricing.models[%d] prices must not be negative", i)
+			}
+		}
+	}
+	for i, s := range c.Subscriptions {
+		if strings.TrimSpace(s.Account) == "" {
+			return fmt.Errorf("observability.usage.pricing.subscriptions[%d].account is required", i)
+		}
+		if s.MonthlyUSD < 0 {
+			return fmt.Errorf("observability.usage.pricing.subscriptions[%d].monthly-usd must not be negative", i)
+		}
+	}
+	for provider, class := range c.ProviderClasses {
+		switch class {
+		case UsageCostClassAPI, UsageCostClassSubscription, UsageCostClassLocal:
+		default:
+			return fmt.Errorf("observability.usage.pricing.provider-classes[%s] must be api, subscription or local", provider)
+		}
+	}
+	return nil
 }
 
 // IsEnabled reports whether usage tracking is enabled (default true).
 func (c UsageTrackingConfig) IsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
+}
+
+// EffectiveRollupRetentionDays returns the rollup retention; 0 keeps rollups
+// forever. It is never shorter than the raw retention.
+func (c UsageTrackingConfig) EffectiveRollupRetentionDays() int {
+	raw := c.EffectiveRetentionDays()
+	if c.RollupRetentionDays <= 0 || raw == 0 {
+		return 0
+	}
+	return max(c.RollupRetentionDays, raw)
 }
 
 // EffectiveRetentionDays returns the retention with the default applied; a

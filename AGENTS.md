@@ -46,6 +46,7 @@ docker compose up -d --build # Build and run the local image (cliproxy:local)
 - `internal/slugs/` — Follow-mode slugs: polls OpenAI-compatible `/models` and resolves `follow: true` aliases into the effective runtime config (`Service.cfg`; the loaded config stays in `Service.sourceCfg`)
 - `internal/tailnet/` — Embedded Tailscale node (`tailscale.com/tsnet`): tailnet listeners served via `api.Server.ServeListener` (requests marked via-tailnet), WhoIs identity for `tailscale.management-users`, node status
 - `internal/registry/` — Model registry, embedded catalogs and remote updaters (`StartModelCatalogUpdaters`); `--local-model` disables remote updates
+- `internal/pricing/` — Usage cost estimates: models.dev catalog (cached, daily refresh), model→price resolution and cost classes (paid API / subscription / local hardware)
 - `internal/cache/` — Thinking/reasoning replay and web-search result caches
 - `internal/signature/` — Request signature handling
 - `internal/watcher/` — Config/auth hot reload and auth update dispatch

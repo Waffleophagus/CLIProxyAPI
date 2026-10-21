@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/slugs"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/tailnet"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
@@ -35,6 +36,8 @@ type Service struct {
 
 	// usageRuntime persists usage records to SQLite (see internal/usagestore).
 	usageRuntime *usagestore.Runtime
+	// pricing estimates usage costs from the models.dev catalog.
+	pricing *pricing.Service
 
 	// tailnet is the embedded tailscale node; nil when tailscale is disabled.
 	tailnet *tailnet.Node

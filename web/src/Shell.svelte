@@ -6,6 +6,7 @@
   import { router, routes, link } from './lib/router.svelte';
   import { theme } from './lib/theme.svelte';
   import Icon from './components/Icon.svelte';
+  import UnpricedSparkNotice from './components/UnpricedSparkNotice.svelte';
   import Overview from './pages/Overview.svelte';
   import Slugs from './pages/Slugs.svelte';
   import Accounts from './pages/Accounts.svelte';
@@ -159,6 +160,8 @@
     </main>
   </div>
 </div>
+
+{#if !usageOff}<UnpricedSparkNotice />{/if}
 
 <style>
   .layout {

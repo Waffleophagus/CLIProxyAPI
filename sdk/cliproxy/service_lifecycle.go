@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
@@ -271,6 +273,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if errCloseUsage := s.usageRuntime.Close(); errCloseUsage != nil {
 			log.Errorf("failed to close usage store: %v", errCloseUsage)
 		}
+		s.pricing.Close()
 	})
 	return shutdownErr
 }
@@ -280,7 +283,10 @@ func (s *Service) applyUsageConfig(cfg *config.Config) {
 	if s == nil || s.usageRuntime == nil || cfg == nil {
 		return
 	}
-	s.usageRuntime.Apply(usagestore.ResolveSettings(cfg, s.configPath), cfg.AuthDir)
+	settings := usagestore.ResolveSettings(cfg, s.configPath)
+	s.usageRuntime.Apply(settings, cfg.AuthDir)
+	cachePath := filepath.Join(filepath.Dir(settings.Path), pricing.CacheFileName)
+	s.pricing.Apply(settings.Enabled, cfg.UsageTracking.Pricing, cachePath)
 }
 
 func (s *Service) ensureAuthDir() error {

@@ -13,6 +13,78 @@ export type Aggregate = {
   avg_latency_ms: number;
   max_latency_ms: number;
   avg_ttft_ms: number;
+  /** API-equivalent cost estimates (USD); zero when pricing is off. */
+  cost_usd: number;
+  api_spend_usd: number;
+  subscription_value_usd: number;
+  local_value_usd: number;
+  unpriced_requests: number;
+};
+
+export type PricingStatus = {
+  enabled: boolean;
+  source: string;
+  fetched_at?: string;
+  models: number;
+  error?: string;
+};
+
+export type SubscriptionFee = { account: string; provider?: string; monthly_usd: number; window_usd: number };
+
+export type UsagePricingWindow = {
+  catalog: PricingStatus;
+  subscription_fees_usd: number;
+  subscriptions: SubscriptionFee[];
+};
+
+export type PriceRates = { input: number; output: number; cache_read: number; cache_write: number; reasoning?: number };
+
+export type Price = PriceRates & { tiers?: { size: number; rates: PriceRates }[]; modes?: Record<string, PriceRates> };
+
+export type CatalogModel = { id: string; provider: string; provider_name: string; model: string; name: string; price: Price };
+
+export type CostClass = 'api' | 'subscription' | 'local';
+
+export type PriceVersion = { from?: string; priced_as?: string; source?: 'auto' | 'override'; price?: Price };
+
+export type PricedModel = {
+  provider: string;
+  requested_model: string;
+  upstream_model: string;
+  response_model?: string;
+  class: CostClass;
+  priced_as?: string;
+  source?: 'auto' | 'override';
+  price?: Price;
+  /** When the current price took effect (dated mappings). */
+  from?: string;
+  /** Every price over time, oldest first, when the price changed. */
+  history?: PriceVersion[];
+  requests: number;
+  total_tokens: number;
+  cost_usd: number;
+};
+
+/** A model configured on your own hardware that has no price. */
+export type UnpricedLocalModel = { provider: string; group: string; alias: string; model: string };
+
+export type UsagePriceModel = {
+  model: string;
+  /** RFC3339 time from which this price applies (price history). */
+  from?: string;
+  'price-as'?: string;
+  input?: number;
+  output?: number;
+  'cache-read'?: number;
+  'cache-write'?: number;
+};
+
+export type UsagePricingConfig = {
+  enabled?: boolean;
+  source?: string;
+  models?: UsagePriceModel[];
+  subscriptions?: { account: string; provider?: string; 'monthly-usd': number }[];
+  'provider-classes'?: Record<string, CostClass>;
 };
 
 export type UsageGroup = Aggregate & { key: string; label: string };
@@ -26,7 +98,9 @@ export type UsageSummary = {
   latency_p50_ms: number;
   latency_p95_ms: number;
   groups?: UsageGroup[];
-  store: { dropped: number; retention_days: number };
+  store: { dropped: number; retention_days: number; rollup_retention_days: number };
+  /** Present when cost estimates are enabled. */
+  pricing?: UsagePricingWindow;
 };
 
 export type UsagePoint = Aggregate & { t: string };
@@ -74,6 +148,9 @@ export type UsageRow = {
   total_tokens: number;
   reasoning_effort?: string;
   service_tier?: string;
+  cost_usd?: number;
+  cost_class?: CostClass;
+  priced_as?: string;
 };
 
 export type UsageRequests = { requests: UsageRow[]; next_before: number | null };
@@ -223,7 +300,13 @@ export type ConfigDoc = {
   };
   observability?: {
     logs?: { debug?: boolean; 'logging-to-file'?: boolean; 'request-log'?: boolean; [k: string]: unknown };
-    usage?: { enabled?: boolean; path?: string; 'retention-days'?: number };
+    usage?: {
+      enabled?: boolean;
+      path?: string;
+      'retention-days'?: number;
+      'rollup-retention-days'?: number;
+      pricing?: UsagePricingConfig;
+    };
     [k: string]: unknown;
   };
   tailscale?: {

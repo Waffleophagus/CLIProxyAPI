@@ -315,6 +315,24 @@ observability:
     enabled: true
     # path: "" # Default: $WRITABLE_PATH/data/usage.db, else data/usage.db next to this file.
     # retention-days: 90 # Older records are pruned at startup and daily; -1 keeps everything.
+    # rollup-retention-days: 0 # Totals, charts and costs; 0 keeps them forever (never shorter than retention-days).
+    # pricing: # API-equivalent cost estimates from models.dev (enabled by default); edit in the UI under Usage > Pricing.
+    #   models: # Price aliases, slugs and local models.
+    #     - model: "gpt-oss-120b" # Served model; prices of hardware models stay with the model.
+    #       price-as: "zai/glm-5.3-flash" # models.dev provider/model
+    #     - model: "gpt-oss-120b"
+    #       input: 0.6
+    #       output: 0.9
+    #       from: "2026-10-21T15:00:00Z" # Later price; earlier requests keep the previous one.
+    #     - model: "my-finetune"
+    #       input: 0.5 # USD per million tokens
+    #       output: 1.5
+    #   subscriptions: # Monthly plan fee per OAuth account, used for savings.
+    #     - account: "claude-me@example.com.json"
+    #       provider: "claude"
+    #       monthly-usd: 200
+    #   provider-classes: # Override the detected class: api, subscription or local.
+    #     openai-compatible-dgx-spark: local
   # pprof: # Go profiling server; keep it on localhost.
   #   enable: false
   #   addr: "127.0.0.1:8316"

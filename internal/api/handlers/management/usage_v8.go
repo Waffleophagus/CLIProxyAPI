@@ -77,7 +77,7 @@ func parseUsageTime(raw string) (time.Time, error) {
 
 // parseUsageQuery reads the shared window, timezone, and filter parameters.
 // When defaultWindow is zero, a missing from/to leaves the window open.
-func parseUsageQuery(c *gin.Context, defaultWindow time.Duration) (usageQuery, error) {
+func (h *Handler) parseUsageQuery(c *gin.Context, defaultWindow time.Duration) (usageQuery, error) {
 	q := usageQuery{loc: time.Local}
 	if tz := strings.TrimSpace(c.Query("tz")); tz != "" {
 		loc, errLoc := time.LoadLocation(tz)
@@ -119,6 +119,16 @@ func parseUsageQuery(c *gin.Context, defaultWindow time.Duration) (usageQuery, e
 		Provider:       c.Query("provider"),
 		Credential:     c.Query("credential"),
 		APIKey:         c.Query("api_key"),
+		Pricer:         h.pricingService().Pricer(),
+	}
+	if raw := strings.TrimSpace(c.Query("cost")); raw != "" {
+		withCost, errBool := strconv.ParseBool(raw)
+		if errBool != nil {
+			return q, fmt.Errorf("invalid cost %q", raw)
+		}
+		if !withCost {
+			q.filter.Pricer = nil
+		}
 	}
 	if raw := strings.TrimSpace(c.Query("success")); raw != "" {
 		success, errBool := strconv.ParseBool(raw)
@@ -159,7 +169,7 @@ func intQuery(c *gin.Context, name string, def, min, max int) (int, error) {
 
 // GetUsageSummary returns totals for a window, optionally grouped.
 func (h *Handler) GetUsageSummary(c *gin.Context) {
-	q, errQuery := parseUsageQuery(c, defaultUsageWindow)
+	q, errQuery := h.parseUsageQuery(c, defaultUsageWindow)
 	if errQuery != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": errQuery.Error()})
 		return
@@ -183,6 +193,9 @@ func (h *Handler) GetUsageSummary(c *gin.Context) {
 	out["totals"] = summary.Totals
 	out["latency_p50_ms"] = summary.LatencyP50Ms
 	out["latency_p95_ms"] = summary.LatencyP95Ms
+	if q.filter.Pricer != nil {
+		out["pricing"] = h.usagePricingWindow(q.filter)
+	}
 	if groupBy != "" {
 		groups := summary.Groups
 		if groups == nil {
@@ -191,13 +204,13 @@ func (h *Handler) GetUsageSummary(c *gin.Context) {
 		out["groups"] = groups
 	}
 	stats := store.Stats()
-	out["store"] = gin.H{"dropped": stats.Dropped, "retention_days": store.RetentionDays()}
+	out["store"] = gin.H{"dropped": stats.Dropped, "retention_days": store.RetentionDays(), "rollup_retention_days": store.RollupRetentionDays()}
 	c.JSON(http.StatusOK, out)
 }
 
 // GetUsageTimeseries returns zero-filled hour/day buckets for charts.
 func (h *Handler) GetUsageTimeseries(c *gin.Context) {
-	q, errQuery := parseUsageQuery(c, defaultUsageWindow)
+	q, errQuery := h.parseUsageQuery(c, defaultUsageWindow)
 	if errQuery != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": errQuery.Error()})
 		return
@@ -240,7 +253,7 @@ func (h *Handler) GetUsageTimeseries(c *gin.Context) {
 
 // GetUsageRequests lists stored request rows newest first with keyset pagination.
 func (h *Handler) GetUsageRequests(c *gin.Context) {
-	q, errQuery := parseUsageQuery(c, 0)
+	q, errQuery := h.parseUsageQuery(c, 0)
 	if errQuery != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": errQuery.Error()})
 		return

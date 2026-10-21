@@ -42,6 +42,11 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/observability/usage/summary", s.mgmt.GetUsageSummary)
 	v8.GET("/observability/usage/timeseries", s.mgmt.GetUsageTimeseries)
 	v8.GET("/observability/usage/requests", s.mgmt.GetUsageRequests)
+	v8.GET("/observability/usage/pricing", s.mgmt.GetUsagePricing)
+	v8.POST("/observability/usage/pricing/refresh", s.mgmt.RefreshUsagePricing)
+	v8.GET("/observability/usage/pricing/catalog", s.mgmt.SearchUsagePricingCatalog)
+	v8.GET("/observability/usage/pricing/models", s.mgmt.GetUsagePricingModels)
+	v8.GET("/observability/usage/pricing/unpriced-local", s.mgmt.GetUnpricedLocalModels)
 
 	v8.GET("/credentials", s.mgmt.ListAuthFiles)
 	v8.POST("/credentials", s.mgmt.UploadAuthFileV8)

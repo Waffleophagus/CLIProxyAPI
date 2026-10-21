@@ -16,6 +16,31 @@ export function int(n: number | null | undefined): string {
   return intFmt.format(Math.round(n));
 }
 
+const usdFmt = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+const usdSmallFmt = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumSignificantDigits: 2 });
+const usdCompactFmt = new Intl.NumberFormat(undefined, {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 1
+});
+
+/** US dollars: cents for normal amounts, two significant digits below a cent, compact above $10k. */
+export function usd(n: number | null | undefined): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return '–';
+  const abs = Math.abs(n);
+  if (abs === 0) return usdFmt.format(0);
+  if (abs < 0.01) return usdSmallFmt.format(n);
+  if (abs >= 10_000) return usdCompactFmt.format(n);
+  return usdFmt.format(n);
+}
+
+/** A per-million-token price, e.g. "$2.50". */
+export function perM(n: number | null | undefined): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return '–';
+  return `$${Number(n.toPrecision(4))}`;
+}
+
 export function pct(part: number, total: number): string {
   if (!total) return '–';
   const v = (part / total) * 100;

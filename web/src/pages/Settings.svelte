@@ -23,6 +23,7 @@
     disableCooling: boolean;
     usageEnabled: boolean;
     retention: number;
+    rollupRetention: number;
     debug: boolean;
     allowRemote: boolean;
     disableUI: boolean;
@@ -42,6 +43,7 @@
       disableCooling: c?.routing?.cooldown?.['disable-cooling'] === true,
       usageEnabled: c?.observability?.usage?.enabled !== false,
       retention: c?.observability?.usage?.['retention-days'] ?? 90,
+      rollupRetention: c?.observability?.usage?.['rollup-retention-days'] ?? 0,
       debug: c?.observability?.logs?.debug === true,
       allowRemote: c?.management?.['allow-remote'] === true,
       disableUI: c?.management?.['disable-ui'] === true,
@@ -57,7 +59,7 @@
   // keeps unsaved edits in the other cards.
   const CARDS = {
     routing: ['strategy', 'affinity', 'retry', 'retryWait', 'disableCooling'],
-    usage: ['usageEnabled', 'retention'],
+    usage: ['usageEnabled', 'retention', 'rollupRetention'],
     mgmt: ['allowRemote', 'disableUI', 'debug'],
     ts: ['tsEnabled', 'tsHostname', 'tsHTTPS', 'tsUsers']
   } as const satisfies Record<string, readonly (keyof Draft)[]>;
@@ -123,7 +125,15 @@
     if (
       (await save(
         'usage',
-        { observability: { usage: { enabled, 'retention-days': Number(draft.retention) || 90 } } },
+        {
+          observability: {
+            usage: {
+              enabled,
+              'retention-days': Number(draft.retention) || 90,
+              'rollup-retention-days': Math.max(0, Number(draft.rollupRetention) || 0)
+            }
+          }
+        },
         'Usage settings saved'
       )) &&
       enabled
@@ -339,7 +349,12 @@
       <div class="field">
         <label for="retention">Keep history for (days)</label>
         <input id="retention" type="number" min="-1" bind:value={draft.retention} style="max-width:160px" />
-        <span class="hint">-1 keeps everything.</span>
+        <span class="hint">Per-request details (the request list and latency percentiles). -1 keeps everything.</span>
+      </div>
+      <div class="field">
+        <label for="rollup-retention">Keep totals and charts for (days)</label>
+        <input id="rollup-retention" type="number" min="0" bind:value={draft.rollupRetention} style="max-width:160px" />
+        <span class="hint">Totals, charts, costs and savings outlive the per-request details. 0 keeps them forever.</span>
       </div>
       <div class="row">
         <span class="path">observability.usage.*</span>

@@ -9,6 +9,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/slugs"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
@@ -256,12 +257,14 @@ func (b *Builder) Build() (*Service, error) {
 		return usagestore.AuthInfo{}
 	})
 	usage.RegisterNamedPlugin("usagestore", usageRuntime)
+	pricingService := pricing.NewService()
 
 	service := &Service{
 		cfg:                 effectiveCfg,
 		sourceCfg:           sourceCfg,
 		slugs:               slugManager,
 		usageRuntime:        usageRuntime,
+		pricing:             pricingService,
 		configPath:          b.configPath,
 		tokenProvider:       tokenProvider,
 		apiKeyProvider:      apiKeyProvider,
@@ -281,6 +284,7 @@ func (b *Builder) Build() (*Service, error) {
 	service.serverOptions = append(service.serverOptions,
 		api.WithSlugResolver(slugManager),
 		api.WithUsageRuntime(usageRuntime),
+		api.WithPricingService(pricingService),
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
 			service.reloadConfigFromWatcher()

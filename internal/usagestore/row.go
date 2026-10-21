@@ -306,9 +306,15 @@ func (s *Store) insert(rows []Row) error {
 			return fmt.Errorf("insert: %w", errExec)
 		}
 	}
+	newKeys, errRollup := s.upsertRollups(ctx, tx, rows)
+	if errRollup != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("rollups: %w", errRollup)
+	}
 	if errCommit := tx.Commit(); errCommit != nil {
 		return fmt.Errorf("commit: %w", errCommit)
 	}
+	s.rememberKeys(newKeys)
 	return nil
 }
 

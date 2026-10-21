@@ -8,6 +8,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pricing"
 )
 
 // TimeLayout is the RFC3339 layout (millisecond precision) used in responses.
@@ -28,11 +31,18 @@ type Filter struct {
 	Credential     string // auth_id
 	APIKey         string // client_key_id fingerprint
 	Success        *bool
+	// Pricer, when set, adds cost estimates to totals and request rows.
+	Pricer *pricing.Pricer
 }
 
 func (f Filter) where() (string, []any) {
-	clauses := []string{"ts >= ?", "ts < ?"}
-	args := []any{f.From.UnixMilli(), f.To.UnixMilli()}
+	return f.whereRange("ts", f.From.UnixMilli(), f.To.UnixMilli())
+}
+
+// whereRange builds the filter clauses with the time column limited to [from, to).
+func (f Filter) whereRange(timeColumn string, from, to int64) (string, []any) {
+	clauses := []string{timeColumn + " >= ?", timeColumn + " < ?"}
+	args := []any{from, to}
 	add := func(column, value string) {
 		if value = strings.TrimSpace(value); value != "" {
 			clauses = append(clauses, column+" = ?")
@@ -67,6 +77,16 @@ type Totals struct {
 	MaxLatencyMs        int64   `json:"max_latency_ms"`
 	AvgTTFTMs           float64 `json:"avg_ttft_ms"`
 
+	// Cost estimates at API list prices (USD), present when pricing is enabled.
+	// CostUSD is the sum of the three classes: paid API spend, the API value of
+	// subscription (OAuth) traffic, and the API value of local hardware traffic.
+	CostUSD              float64 `json:"cost_usd"`
+	APISpendUSD          float64 `json:"api_spend_usd"`
+	SubscriptionValueUSD float64 `json:"subscription_value_usd"`
+	LocalValueUSD        float64 `json:"local_value_usd"`
+	// UnpricedRequests counts rows whose model has no known price.
+	UnpricedRequests int64 `json:"unpriced_requests"`
+
 	latencySum int64
 	ttftSum    int64
 	ttftCount  int64
@@ -82,6 +102,11 @@ func (t *Totals) add(o *Totals) {
 	t.CacheReadTokens += o.CacheReadTokens
 	t.CacheCreationTokens += o.CacheCreationTokens
 	t.TotalTokens += o.TotalTokens
+	t.CostUSD += o.CostUSD
+	t.APISpendUSD += o.APISpendUSD
+	t.SubscriptionValueUSD += o.SubscriptionValueUSD
+	t.LocalValueUSD += o.LocalValueUSD
+	t.UnpricedRequests += o.UnpricedRequests
 	t.latencySum += o.latencySum
 	t.ttftSum += o.ttftSum
 	t.ttftCount += o.ttftCount
@@ -102,20 +127,33 @@ func (t *Totals) finish() {
 
 func round1(v float64) float64 { return float64(int64(v*10+0.5)) / 10 }
 
-// Dimension identifies a group-by column.
+// addCost adds usd to the total and to the bucket of the given cost class.
+func (t *Totals) addCost(usd float64, class string) {
+	t.CostUSD += usd
+	switch class {
+	case config.UsageCostClassSubscription:
+		t.SubscriptionValueUSD += usd
+	case config.UsageCostClassLocal:
+		t.LocalValueUSD += usd
+	default:
+		t.APISpendUSD += usd
+	}
+}
+
+// Dimension identifies a group-by value and its display label.
 type Dimension struct {
 	Name  string
-	key   string
-	label string
+	key   func(*dims) string
+	label func(*dims) string
 }
 
 // Dimensions are the non-time group-by options.
 var Dimensions = map[string]Dimension{
-	"model":          {Name: "model", key: "requested_model", label: "requested_model"},
-	"upstream_model": {Name: "upstream_model", key: "upstream_model", label: "upstream_model"},
-	"provider":       {Name: "provider", key: "provider", label: "provider"},
-	"credential":     {Name: "credential", key: "auth_id", label: "auth_label"},
-	"api_key":        {Name: "api_key", key: "client_key_id", label: "client_key_masked"},
+	"model":          {Name: "model", key: func(d *dims) string { return d.requestedModel }, label: func(d *dims) string { return d.requestedModel }},
+	"upstream_model": {Name: "upstream_model", key: func(d *dims) string { return d.upstreamModel }, label: func(d *dims) string { return d.upstreamModel }},
+	"provider":       {Name: "provider", key: func(d *dims) string { return d.provider }, label: func(d *dims) string { return d.provider }},
+	"credential":     {Name: "credential", key: func(d *dims) string { return d.authID }, label: func(d *dims) string { return d.authLabel }},
+	"api_key":        {Name: "api_key", key: func(d *dims) string { return d.clientKeyID }, label: func(d *dims) string { return d.clientKeyMasked }},
 }
 
 // TimeBuckets are the time group-by / bucket options.
@@ -126,51 +164,48 @@ type partial struct {
 	key    string
 	label  string
 	totals Totals
+	price  pricing.Key
 }
 
-// aggregate groups rows by an optional dimension and optional 15-minute bucket.
-func (s *Store) aggregate(ctx context.Context, f Filter, dim *Dimension, byTime bool) ([]partial, error) {
-	bucketExpr, keyExpr, labelExpr := "0", "''", "''"
-	if byTime {
-		bucketExpr = fmt.Sprintf("(ts / %d) * %d", sqlBucketMs, sqlBucketMs)
+// PriceKeyUsage is the usage of one distinct price key (service tier and
+// context tier merged).
+type PriceKeyUsage struct {
+	Key    pricing.Key
+	Totals Totals
+}
+
+// PriceKeys returns the distinct price keys in the window with their totals,
+// most requested first. f.Pricer is required.
+func (s *Store) PriceKeys(ctx context.Context, f Filter) ([]PriceKeyUsage, error) {
+	if f.Pricer == nil {
+		return nil, errors.New("usagestore: price keys need a pricer")
 	}
-	if dim != nil {
-		keyExpr, labelExpr = dim.key, dim.label
+	parts, errAggregate := s.aggregate(ctx, f, nil, false, true)
+	if errAggregate != nil {
+		return nil, errAggregate
 	}
-	where, args := f.where()
-	query := fmt.Sprintf(`SELECT %s AS b, %s AS k, MAX(%s),
-	COUNT(*), SUM(success),
-	SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens),
-	SUM(cache_read_tokens), SUM(cache_creation_tokens), SUM(total_tokens),
-	SUM(CASE WHEN success = 1 THEN latency_ms ELSE 0 END),
-	MAX(CASE WHEN success = 1 THEN latency_ms ELSE 0 END),
-	SUM(CASE WHEN success = 1 AND ttft_ms > 0 THEN ttft_ms ELSE 0 END),
-	SUM(CASE WHEN success = 1 AND ttft_ms > 0 THEN 1 ELSE 0 END)
-FROM requests WHERE %s GROUP BY b, k`, bucketExpr, keyExpr, labelExpr, where)
-	rows, errQuery := s.db.QueryContext(ctx, query, args...)
-	if errQuery != nil {
-		return nil, fmt.Errorf("usagestore: aggregate: %w", errQuery)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []partial
-	for rows.Next() {
-		var p partial
-		t := &p.totals
-		if errScan := rows.Scan(&p.bucket, &p.key, &p.label, &t.Requests, &t.Successes,
-			&t.InputTokens, &t.OutputTokens, &t.ReasoningTokens,
-			&t.CacheReadTokens, &t.CacheCreationTokens, &t.TotalTokens,
-			&t.latencySum, &t.MaxLatencyMs, &t.ttftSum, &t.ttftCount); errScan != nil {
-			return nil, fmt.Errorf("usagestore: aggregate scan: %w", errScan)
+	index := make(map[pricing.Key]int)
+	var out []PriceKeyUsage
+	for i := range parts {
+		key := parts[i].price
+		key.ServiceTier = ""
+		pos, ok := index[key]
+		if !ok {
+			pos = len(out)
+			index[key] = pos
+			out = append(out, PriceKeyUsage{Key: key})
 		}
-		t.Failures = t.Requests - t.Successes
-		if p.label == "" {
-			p.label = p.key
+		out[pos].Totals.add(&parts[i].totals)
+	}
+	for i := range out {
+		out[i].Totals.finish()
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Totals.Requests != out[j].Totals.Requests {
+			return out[i].Totals.Requests > out[j].Totals.Requests
 		}
-		out = append(out, p)
-	}
-	if errRows := rows.Err(); errRows != nil {
-		return nil, fmt.Errorf("usagestore: aggregate rows: %w", errRows)
-	}
+		return out[i].Key.UpstreamModel < out[j].Key.UpstreamModel
+	})
 	return out, nil
 }
 
@@ -236,7 +271,7 @@ func (s *Store) SummaryQuery(ctx context.Context, f Filter, groupBy string, loc 
 	if d, ok := Dimensions[groupBy]; ok {
 		dim = &d
 	}
-	parts, errAggregate := s.aggregate(ctx, f, dim, byTime)
+	parts, errAggregate := s.aggregate(ctx, f, dim, byTime, false)
 	if errAggregate != nil {
 		return nil, errAggregate
 	}
@@ -394,7 +429,7 @@ func (s *Store) TimeseriesQuery(ctx context.Context, f Filter, bucket, groupBy s
 		}
 		t = next
 	}
-	parts, errAggregate := s.aggregate(ctx, f, dim, true)
+	parts, errAggregate := s.aggregate(ctx, f, dim, true, false)
 	if errAggregate != nil {
 		return nil, errAggregate
 	}
@@ -514,6 +549,10 @@ type RequestRow struct {
 	TotalTokens         int64  `json:"total_tokens"`
 	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
 	ServiceTier         string `json:"service_tier,omitempty"`
+	// CostUSD is the API-equivalent cost; nil when unpriced or pricing is off.
+	CostUSD   *float64 `json:"cost_usd,omitempty"`
+	CostClass string   `json:"cost_class,omitempty"`
+	PricedAs  string   `json:"priced_as,omitempty"`
 }
 
 func requestsSQL(f Filter, before int64, limit int) (string, []any) {
@@ -559,6 +598,21 @@ func (s *Store) RequestsQuery(ctx context.Context, f Filter, before int64, limit
 		}
 		r.Time = time.UnixMilli(ts).UTC().Format(TimeLayout)
 		r.Stream, r.Success = stream == 1, success == 1
+		if f.Pricer != nil {
+			key := pricing.Key{Provider: r.Provider, AuthType: r.AuthType, BaseURL: r.BaseURL,
+				RequestedModel: r.RequestedModel, UpstreamModel: r.UpstreamModel,
+				ResponseModel: r.ResponseModel, ServiceTier: r.ServiceTier}
+			usd, class, priced := f.Pricer.Cost(key, ts, r.InputTokens, pricing.Tokens{
+				Input: r.InputTokens, Output: r.OutputTokens, Reasoning: r.ReasoningTokens,
+				CacheRead: r.CacheReadTokens, CacheWrite: r.CacheCreationTokens,
+			})
+			r.CostClass = class
+			if priced {
+				r.CostUSD = &usd
+				res := f.Pricer.Resolve(key)
+				r.PricedAs = res.At(ts).PricedAs
+			}
+		}
 		out = append(out, r)
 	}
 	if errRows := rows.Err(); errRows != nil {

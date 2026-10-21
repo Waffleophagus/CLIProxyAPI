@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/slugs"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagestore"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
@@ -59,6 +60,7 @@ type Handler struct {
 	siwcCommitMu            sync.Mutex
 	slugResolver            *slugs.Manager
 	usageRuntime            *usagestore.Runtime
+	pricing                 *pricing.Service
 	verifiedKeys            verifiedKeyCache
 	// compareKeyHash overrides bcrypt.CompareHashAndPassword in tests.
 	compareKeyHash func(hash, password []byte) error
