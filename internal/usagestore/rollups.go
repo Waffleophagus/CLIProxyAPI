@@ -52,10 +52,12 @@ func (f Filter) matches(d *dims) bool {
 }
 
 // sums are additive request measures. Latency and TTFT only cover
-// successful requests.
+// successful requests; genTokens and genMs only the requests that qualify
+// for output tokens per second (see genWindowMs).
 type sums struct {
 	requests, input, output, reasoning, cacheRead, cacheCreation, total int64
 	latencySum, latencyMax, ttftSum, ttftCount                          int64
+	genTokens, genMs                                                    int64
 }
 
 func (s *sums) addRow(r *Row) {
@@ -74,6 +76,10 @@ func (s *sums) addRow(r *Row) {
 			s.ttftCount++
 		}
 	}
+	if w := genWindowMs(r); w > 0 {
+		s.genTokens += r.OutputTokens
+		s.genMs += w
+	}
 }
 
 const upsertKeySQL = `INSERT INTO rollup_keys (provider, auth_id, auth_label, auth_type, base_url, requested_model,
@@ -84,8 +90,9 @@ ON CONFLICT (provider, auth_id, auth_label, auth_type, base_url, requested_model
 RETURNING id`
 
 const upsertRollupSQL = `INSERT INTO rollups (bucket, key_id, success, requests, input_tokens, output_tokens,
-	reasoning_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, latency_sum, latency_max, ttft_sum, ttft_count)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	reasoning_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, latency_sum, latency_max, ttft_sum, ttft_count,
+	gen_tokens, gen_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (bucket, key_id, success) DO UPDATE SET
 	requests = requests + excluded.requests,
 	input_tokens = input_tokens + excluded.input_tokens,
@@ -97,7 +104,9 @@ ON CONFLICT (bucket, key_id, success) DO UPDATE SET
 	latency_sum = latency_sum + excluded.latency_sum,
 	latency_max = MAX(latency_max, excluded.latency_max),
 	ttft_sum = ttft_sum + excluded.ttft_sum,
-	ttft_count = ttft_count + excluded.ttft_count`
+	ttft_count = ttft_count + excluded.ttft_count,
+	gen_tokens = gen_tokens + excluded.gen_tokens,
+	gen_ms = gen_ms + excluded.gen_ms`
 
 type rollupKey struct {
 	bucket  int64
@@ -152,7 +161,7 @@ func (s *Store) upsertRollups(ctx context.Context, tx *sql.Tx, rows []Row) (map[
 		v := batch[k]
 		if _, errExec := stmt.ExecContext(ctx, k.bucket, id, boolInt(k.success),
 			v.requests, v.input, v.output, v.reasoning, v.cacheRead, v.cacheCreation, v.total,
-			v.latencySum, v.latencyMax, v.ttftSum, v.ttftCount,
+			v.latencySum, v.latencyMax, v.ttftSum, v.ttftCount, v.genTokens, v.genMs,
 		); errExec != nil {
 			return nil, fmt.Errorf("upsert: %w", errExec)
 		}
@@ -269,6 +278,8 @@ func (a *aggregator) add(ms, bucket int64, d *dims, res *pricing.Resolution, suc
 	t.MaxLatencyMs = max(t.MaxLatencyMs, v.latencyMax)
 	t.ttftSum += v.ttftSum
 	t.ttftCount += v.ttftCount
+	t.genTokens += v.genTokens
+	t.genMs += v.genMs
 	if res == nil {
 		return
 	}
@@ -306,7 +317,8 @@ func scanRollups(ctx context.Context, tx querier, a *aggregator, from, to int64)
 		return errKeys
 	}
 	query := `SELECT bucket, key_id, success, requests, input_tokens, output_tokens, reasoning_tokens,
-	cache_read_tokens, cache_creation_tokens, total_tokens, latency_sum, latency_max, ttft_sum, ttft_count
+	cache_read_tokens, cache_creation_tokens, total_tokens, latency_sum, latency_max, ttft_sum, ttft_count,
+	gen_tokens, gen_ms
 FROM rollups WHERE bucket >= ? AND bucket < ?`
 	args := []any{from, to}
 	if a.f.Success != nil {
@@ -324,7 +336,8 @@ FROM rollups WHERE bucket >= ? AND bucket < ?`
 		var success int
 		var v sums
 		if errScan := rows.Scan(&bucket, &keyID, &success, &v.requests, &v.input, &v.output, &v.reasoning,
-			&v.cacheRead, &v.cacheCreation, &v.total, &v.latencySum, &v.latencyMax, &v.ttftSum, &v.ttftCount); errScan != nil {
+			&v.cacheRead, &v.cacheCreation, &v.total, &v.latencySum, &v.latencyMax, &v.ttftSum, &v.ttftCount,
+			&v.genTokens, &v.genMs); errScan != nil {
 			return fmt.Errorf("usagestore: rollups scan: %w", errScan)
 		}
 		d := keys[keyID]
@@ -348,7 +361,7 @@ FROM rollups WHERE bucket >= ? AND bucket < ?`
 func scanRaw(ctx context.Context, q querier, a *aggregator, from, to int64) error {
 	where, args := a.f.whereRange("ts", from, to)
 	rows, errQuery := q.QueryContext(ctx, `SELECT ts, provider, auth_id, auth_label, auth_type, base_url,
-	requested_model, upstream_model, response_model, client_key_id, client_key_masked, service_tier, success,
+	requested_model, upstream_model, response_model, client_key_id, client_key_masked, service_tier, stream, success,
 	input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens, total_tokens,
 	latency_ms, ttft_ms FROM requests WHERE `+where, args...)
 	if errQuery != nil {
@@ -357,14 +370,14 @@ func scanRaw(ctx context.Context, q querier, a *aggregator, from, to int64) erro
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r Row
-		var success int
+		var stream, success int
 		if errScan := rows.Scan(&r.TS, &r.Provider, &r.AuthID, &r.AuthLabel, &r.AuthType, &r.BaseURL,
 			&r.RequestedModel, &r.UpstreamModel, &r.ResponseModel, &r.ClientKeyID, &r.ClientKeyMasked, &r.ServiceTier,
-			&success, &r.InputTokens, &r.OutputTokens, &r.ReasoningTokens, &r.CacheReadTokens, &r.CacheCreationTokens,
+			&stream, &success, &r.InputTokens, &r.OutputTokens, &r.ReasoningTokens, &r.CacheReadTokens, &r.CacheCreationTokens,
 			&r.TotalTokens, &r.LatencyMs, &r.TTFTMs); errScan != nil {
 			return fmt.Errorf("usagestore: raw rows scan: %w", errScan)
 		}
-		r.Success = success == 1
+		r.Stream, r.Success = stream == 1, success == 1
 		d := dimsOf(&r)
 		var v sums
 		v.addRow(&r)

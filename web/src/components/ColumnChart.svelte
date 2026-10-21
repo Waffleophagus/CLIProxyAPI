@@ -1,5 +1,6 @@
 <script lang="ts" module>
-  export type ChartSeries = { key: string; label: string; color: string; values: number[] };
+  /** A null value is a bucket without a sample: zero in stacks, a gap in lines. */
+  export type ChartSeries = { key: string; label: string; color: string; values: (number | null)[] };
 </script>
 
 <script lang="ts">
@@ -7,6 +8,8 @@
   // Marks follow the dataviz spec: <=24px columns, 4px rounded data-end,
   // 2px surface gap between stacked segments, hairline grid, one y-axis,
   // per-column hover/focus tooltip listing every series, and a table view.
+  // With `lines`, series are 2px lines instead (for rates, which do not
+  // stack), with a crosshair and ringed markers at the hovered bucket.
   import { compact, int } from '../lib/format';
 
   let {
@@ -18,7 +21,8 @@
     axisFormat = compact,
     title,
     emptyText = 'No data in this period',
-    integer = true
+    integer = true,
+    lines = false
   }: {
     buckets: string[];
     series: ChartSeries[];
@@ -31,6 +35,8 @@
     emptyText?: string;
     /** Integer series (counts) never get fractional gridlines; set false for amounts such as dollars. */
     integer?: boolean;
+    /** Draw each series as a line; buckets without a sample break it. */
+    lines?: boolean;
   } = $props();
 
   const M = { top: 10, right: 6, bottom: 26, left: 44 };
@@ -40,7 +46,7 @@
 
   const n = $derived(buckets.length);
   const totals = $derived(buckets.map((_, i) => series.reduce((s, se) => s + (se.values[i] ?? 0), 0)));
-  const maxTotal = $derived(Math.max(0, ...totals));
+  const maxTotal = $derived(lines ? Math.max(0, ...series.flatMap((s) => s.values.map((v) => v ?? 0))) : Math.max(0, ...totals));
   const plotW = $derived(Math.max(10, width - M.left - M.right));
   const plotH = $derived(Math.max(10, height - M.top - M.bottom));
 
@@ -64,6 +70,7 @@
   type Seg = { x: number; y: number; w: number; h: number; color: string; top: boolean };
   const columns = $derived.by(() => {
     const out: Seg[][] = [];
+    if (lines) return out;
     for (let i = 0; i < n; i++) {
       const segs: Seg[] = [];
       let acc = 0;
@@ -89,6 +96,31 @@
     }
     return out;
   });
+
+  const cx = (i: number) => M.left + i * slot + slot / 2;
+
+  // One path per series, broken at missing samples; a sample without a
+  // neighbour gets a dot, since a lone point draws no line.
+  const linePaths = $derived.by(() => {
+    if (!lines) return [];
+    return series.map((s) => {
+      let d = '';
+      const dots: { x: number; y: number }[] = [];
+      for (let i = 0; i < n; i++) {
+        const v = s.values[i];
+        if (v === null || v === undefined) continue;
+        const joined = i > 0 && s.values[i - 1] !== null && s.values[i - 1] !== undefined;
+        d += `${joined ? 'L' : 'M'}${cx(i)},${y(v)}`;
+        const next = s.values[i + 1];
+        if (!joined && (next === null || next === undefined)) dots.push({ x: cx(i), y: y(v) });
+      }
+      return { key: s.key, color: s.color, d, dots };
+    });
+  });
+
+  function cell(v: number | null | undefined): string {
+    return v === null || v === undefined ? '–' : format(v);
+  }
 
   function segPath(s: Seg): string {
     // Rounded data-end (top), square at the baseline.
@@ -150,7 +182,7 @@
   {#if series.length > 1}
     <ul class="legend" aria-label="Legend">
       {#each series as s (s.key)}
-        <li><span class="swatch" style="background:{s.color}"></span>{s.label}</li>
+        <li><span class={['swatch', { line: lines }]} style="background:{s.color}"></span>{s.label}</li>
       {/each}
     </ul>
   {/if}
@@ -177,7 +209,21 @@
           <text x={M.left - 8} y={y(t)} dy="0.32em" text-anchor="end" class="axis">{axisFormat(t)}</text>
         {/each}
         {#if active !== null}
-          <rect x={M.left + active * slot} y={M.top} width={slot} height={plotH} class="hoverband" />
+          {#if lines}
+            <line x1={cx(active)} x2={cx(active)} y1={M.top} y2={M.top + plotH} class="crosshair" />
+          {:else}
+            <rect x={M.left + active * slot} y={M.top} width={slot} height={plotH} class="hoverband" />
+          {/if}
+        {/if}
+        {#each linePaths as l (l.key)}
+          <path d={l.d} stroke={l.color} class="line" />
+          {#each l.dots as p, j (j)}<circle cx={p.x} cy={p.y} r="3" fill={l.color} />{/each}
+        {/each}
+        {#if lines && active !== null}
+          {#each series as s (s.key)}
+            {@const v = s.values[active]}
+            {#if v !== null && v !== undefined}<circle cx={cx(active)} cy={y(v)} r="4" fill={s.color} class="marker" />{/if}
+          {/each}
         {/if}
         {#each columns as segs, i (i)}
           <g class={{ dim: active !== null && active !== i }}>
@@ -208,11 +254,11 @@
           {#each series as s (s.key)}
             <div class="tt-row">
               <span class="key" style="background:{s.color}"></span>
-              <strong class="num">{format(s.values[active] ?? 0)}</strong>
+              <strong class="num">{lines ? cell(s.values[active]) : format(s.values[active] ?? 0)}</strong>
               <span class="tt-label">{s.label}</span>
             </div>
           {/each}
-          {#if series.length > 1}
+          {#if series.length > 1 && !lines}
             <div class="tt-row total">
               <span class="key blank"></span><strong class="num">{format(totals[active])}</strong><span class="tt-label">Total</span>
             </div>
@@ -235,16 +281,16 @@
           <tr>
             <th>{bucket === 'day' ? 'Day' : 'Hour'}</th>
             {#each series as s (s.key)}<th class="r">{s.label}</th>{/each}
-            {#if series.length > 1}<th class="r">Total</th>{/if}
+            {#if series.length > 1 && !lines}<th class="r">Total</th>{/if}
           </tr>
         </thead>
         <tbody>
           {#each buckets as b, i (b)}
-            {#if totals[i] > 0}
+            {#if lines ? series.some((s) => s.values[i] !== null && s.values[i] !== undefined) : totals[i] > 0}
               <tr>
                 <td>{fullLabel(b)}</td>
-                {#each series as s (s.key)}<td class="r">{format(s.values[i] ?? 0)}</td>{/each}
-                {#if series.length > 1}<td class="r">{format(totals[i])}</td>{/if}
+                {#each series as s (s.key)}<td class="r">{lines ? cell(s.values[i]) : format(s.values[i] ?? 0)}</td>{/each}
+                {#if series.length > 1 && !lines}<td class="r">{format(totals[i])}</td>{/if}
               </tr>
             {/if}
           {/each}
@@ -282,6 +328,26 @@
     height: 10px;
     border-radius: 2px;
     flex: none;
+  }
+  .swatch.line {
+    height: 2px;
+    width: 12px;
+    border-radius: 1px;
+  }
+  .line {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+  .crosshair {
+    stroke: var(--baseline);
+    stroke-width: 1;
+    shape-rendering: crispEdges;
+  }
+  .marker {
+    stroke: var(--surface);
+    stroke-width: 2;
   }
   .plot {
     position: relative;

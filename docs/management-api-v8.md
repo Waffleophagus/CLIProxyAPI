@@ -322,8 +322,16 @@ Every aggregate object (`totals`, groups, series totals, points) has:
 `requests`, `successes`, `failures`, `input_tokens` (includes cache reads and
 writes), `output_tokens` (includes reasoning), `reasoning_tokens`,
 `cache_read_tokens`, `cache_creation_tokens`, `total_tokens`,
-`avg_latency_ms` and `max_latency_ms` (successful requests only), and
-`avg_ttft_ms` (successful requests that reported a time to first token).
+`avg_latency_ms` and `max_latency_ms` (successful requests only),
+`avg_ttft_ms` (successful requests that reported a time to first token), and
+`output_tps`, the generation speed in output tokens per second (reasoning
+included). Speed covers successful streamed requests with a time to first
+token and a generation window (`latency_ms - ttft_ms`) of at least 250 ms; a
+shorter window means the server buffered the response, so it says nothing
+about decode speed. It is the window-weighted rate (summed output tokens over
+summed windows) and `0` when no request qualifies. Speed is recorded from
+schema version 3 on; buckets older than the raw rows kept at upgrade have
+none.
 
 `GET /observability/usage/summary?group_by=` returns window totals, the
 nearest-rank p50/p95 latency of successful requests, and, with `group_by`, one
@@ -341,7 +349,7 @@ chronologically.
   "group_by": "model",
   "totals": {"requests": 4, "successes": 3, "failures": 1, "input_tokens": 45, "output_tokens": 23,
              "reasoning_tokens": 4, "cache_read_tokens": 8, "cache_creation_tokens": 0, "total_tokens": 68,
-             "avg_latency_ms": 812.3, "max_latency_ms": 1904, "avg_ttft_ms": 230},
+             "avg_latency_ms": 812.3, "max_latency_ms": 1904, "avg_ttft_ms": 230, "output_tps": 41.7},
   "latency_p50_ms": 640,
   "latency_p95_ms": 1904,
   "groups": [
@@ -425,7 +433,8 @@ the last page. `ts` is the attempt start time in UTC.
 
 Optional row fields (`trace_id`, `auth_type`, `response_model`, `base_url`,
 `endpoint`, `session_id`, `error`, `reasoning_effort`, `service_tier`) are
-omitted when empty.
+omitted when empty. `output_tps` (the row's generation speed, see above) is
+omitted when the row does not qualify.
 
 ### Usage cost estimates
 

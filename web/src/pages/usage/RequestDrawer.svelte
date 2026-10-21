@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, ApiError, errorMessage } from '../../lib/api';
-  import { dateTime, int, ms, providerName, usd } from '../../lib/format';
+  import { dateTime, int, ms, providerName, tps, usd } from '../../lib/format';
   import type { UsageRow } from '../../lib/types';
   import Dialog from '../../components/Dialog.svelte';
   import StatusBadge from '../../components/StatusBadge.svelte';
@@ -70,6 +70,7 @@
           ['HTTP status', row.status],
           ['Latency', ms(row.latency_ms)],
           ['Time to first token', ms(row.ttft_ms)],
+          ['Output speed', row.output_tps ? tps(row.output_tps) : undefined],
           ['Input tokens', int(row.input_tokens)],
           ['Output tokens', int(row.output_tokens)],
           ['Reasoning tokens', int(row.reasoning_tokens)],

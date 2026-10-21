@@ -13,6 +13,8 @@ export type Aggregate = {
   avg_latency_ms: number;
   max_latency_ms: number;
   avg_ttft_ms: number;
+  /** Generation speed (output tokens per second) of qualifying streams; 0 without a sample. */
+  output_tps: number;
   /** API-equivalent cost estimates (USD); zero when pricing is off. */
   cost_usd: number;
   api_spend_usd: number;
@@ -148,6 +150,8 @@ export type UsageRow = {
   total_tokens: number;
   reasoning_effort?: string;
   service_tier?: string;
+  /** Generation speed; absent when the request does not qualify (not streamed, buffered, failed). */
+  output_tps?: number;
   cost_usd?: number;
   cost_class?: CostClass;
   priced_as?: string;

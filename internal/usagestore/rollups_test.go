@@ -43,6 +43,7 @@ func randomRows(base time.Time, n int, seed int64) []Row {
 			out[i].ServiceTier = "priority"
 		}
 		out[i].CacheReadTokens = out[i].InputTokens / 2
+		out[i].Stream = rng.Intn(3) != 0
 	}
 	return out
 }
@@ -96,7 +97,8 @@ func TestRollupsMatchRawRows(t *testing.T) {
 				if g.Requests != w.Requests || g.Successes != w.Successes || g.InputTokens != w.InputTokens ||
 					g.OutputTokens != w.OutputTokens || g.CacheReadTokens != w.CacheReadTokens ||
 					g.latencySum != w.latencySum || g.MaxLatencyMs != w.MaxLatencyMs || g.ttftSum != w.ttftSum ||
-					g.ttftCount != w.ttftCount || g.UnpricedRequests != w.UnpricedRequests ||
+					g.ttftCount != w.ttftCount || g.genTokens != w.genTokens || g.genMs != w.genMs ||
+					g.UnpricedRequests != w.UnpricedRequests ||
 					!nearRel(g.CostUSD, w.CostUSD) || !nearRel(g.SubscriptionValueUSD, w.SubscriptionValueUSD) ||
 					!nearRel(g.LocalValueUSD, w.LocalValueUSD) {
 					t.Fatalf("filter %d %q key %q:\n got %+v\nwant %+v", i, groupBy, key, g, w)
@@ -221,15 +223,20 @@ func TestMigrationBackfillsRollups(t *testing.T) {
 		t.Fatal(errGot, errWant)
 	}
 	g, w := mergeParts(got), mergeParts(want)
-	var total int64
+	var total, genMs int64
 	for key, wt := range w {
-		if g[key] == nil || g[key].Requests != wt.Requests || !nearRel(g[key].CostUSD, wt.CostUSD) || g[key].MaxLatencyMs != wt.MaxLatencyMs {
+		if g[key] == nil || g[key].Requests != wt.Requests || !nearRel(g[key].CostUSD, wt.CostUSD) || g[key].MaxLatencyMs != wt.MaxLatencyMs ||
+			g[key].genTokens != wt.genTokens || g[key].genMs != wt.genMs {
 			t.Fatalf("bucket %s: got %+v want %+v", key, g[key], wt)
 		}
 		total += wt.Requests
+		genMs += wt.genMs
 	}
 	if total != 300 {
 		t.Fatalf("backfilled requests = %d", total)
+	}
+	if genMs == 0 {
+		t.Fatal("no generation window was backfilled")
 	}
 }
 

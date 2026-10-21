@@ -4,7 +4,7 @@
   import { errorMessage } from '../lib/api';
   import { config, saveConfig } from '../lib/config.svelte';
   import { seriesColor } from '../lib/colors';
-  import { compact, int, ms, pct, providerName, shortDateTime, dateTime, usd } from '../lib/format';
+  import { compact, int, ms, pct, providerName, shortDateTime, dateTime, tps, usd } from '../lib/format';
   import { router } from '../lib/router.svelte';
   import { appStatus } from '../lib/status.svelte';
   import {
@@ -31,7 +31,7 @@
 
   type Range = UsageRange;
   type GroupBy = 'model' | 'upstream_model' | 'provider' | 'credential' | 'api_key' | 'day';
-  type Metric = 'requests' | 'tokens' | 'cost';
+  type Metric = 'requests' | 'tokens' | 'cost' | 'speed';
 
   const GROUPS: { value: GroupBy; label: string }[] = [
     { value: 'model', label: 'Model' },
@@ -45,7 +45,7 @@
   const q = router.query;
   let range = $state<Range>((['24h', '7d', '30d', '90d', 'custom'].includes(q.get('range') ?? '') ? q.get('range') : '7d') as Range);
   let groupBy = $state<GroupBy>((GROUPS.some((g) => g.value === q.get('group')) ? q.get('group') : 'model') as GroupBy);
-  let metric = $state<Metric>(q.get('metric') === 'tokens' || q.get('metric') === 'cost' ? (q.get('metric') as Metric) : 'requests');
+  let metric = $state<Metric>((['tokens', 'cost', 'speed'].includes(q.get('metric') ?? '') ? q.get('metric') : 'requests') as Metric);
   let fModel = $state(q.get('model') ?? '');
   let fProvider = $state(q.get('provider') ?? '');
   let fCredential = $state(q.get('credential') ?? '');
@@ -224,7 +224,15 @@
 
   const pricing = $derived(summary?.pricing);
   const chartMetric = $derived<Metric>(metric === 'cost' && !pricing ? 'requests' : metric);
-  const metricName = $derived(chartMetric === 'tokens' ? 'Tokens' : chartMetric === 'cost' ? 'API-equivalent cost' : 'Requests');
+  const metricName = $derived(
+    chartMetric === 'tokens'
+      ? 'Tokens'
+      : chartMetric === 'cost'
+        ? 'API-equivalent cost'
+        : chartMetric === 'speed'
+          ? 'Output speed'
+          : 'Requests'
+  );
 
   // Cost classes, in stacking order, for the ungrouped cost chart.
   const COST_CLASSES = [
@@ -233,9 +241,14 @@
     { key: 'local', label: 'Hardware value', color: 'var(--series-3)', value: (p: Aggregate) => p.local_value_usd }
   ];
 
-  function metricValue(p: Aggregate): number {
+  // Speed is a rate: a bucket without a qualifying stream has no value (a
+  // gap in the line), not zero.
+  function metricValue(p: Aggregate): number | null {
+    if (chartMetric === 'speed') return p.output_tps > 0 ? p.output_tps : null;
     return chartMetric === 'tokens' ? p.total_tokens : chartMetric === 'cost' ? p.cost_usd : p.requests;
   }
+
+  const rateAxis = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
   const chartSeries = $derived.by(() => {
     const list = series?.series ?? [];
@@ -384,6 +397,9 @@
       <div>
         <span class="muted small">p50 / p95 latency</span><strong>{ms(summary.latency_p50_ms)} / {ms(summary.latency_p95_ms)}</strong>
       </div>
+      <div title="Output tokens per second after the first token, over streamed requests">
+        <span class="muted small">Output speed</span><strong>{tps(summary.totals.output_tps)}</strong>
+      </div>
       {#if summary.store.dropped > 0}
         <div><span class="muted small">Dropped rows</span><strong class="warn">{int(summary.store.dropped)}</strong></div>
       {/if}
@@ -437,6 +453,7 @@
         options={[
           { value: 'requests', label: 'Requests' },
           { value: 'tokens', label: 'Tokens' },
+          { value: 'speed', label: 'Speed' },
           ...(pricing ? [{ value: 'cost' as const, label: 'Cost' }] : [])
         ]}
         onchange={syncURL}
@@ -448,10 +465,18 @@
       series={chartSeries}
       bucket={series?.bucket ?? win.bucket}
       height={240}
-      format={chartMetric === 'tokens' ? compact : chartMetric === 'cost' ? usd : int}
-      integer={chartMetric !== 'cost'}
-      axisFormat={chartMetric === 'cost' ? usd : compact}
+      format={chartMetric === 'tokens' ? compact : chartMetric === 'cost' ? usd : chartMetric === 'speed' ? tps : int}
+      integer={chartMetric !== 'cost' && chartMetric !== 'speed'}
+      axisFormat={chartMetric === 'cost' ? usd : chartMetric === 'speed' ? rateAxis : compact}
+      lines={chartMetric === 'speed'}
+      emptyText={chartMetric === 'speed' ? 'No streamed requests with a measurable speed in this period' : undefined}
     />
+    {#if chartMetric === 'speed'}
+      <p class="small muted note">
+        Output tokens per second from the first token to the end of the response, over successful streamed requests. Recorded going forward;
+        responses a server sends all at once are left out.
+      </p>
+    {/if}
   </section>
 
   <section class={['card gap', { stale: loading }]} aria-labelledby="breakdown-h">
@@ -474,6 +499,7 @@
               <th class="r">Total tokens</th>
               <th class="r">Avg latency</th>
               <th class="r">Avg first token</th>
+              <th class="r">Speed</th>
               {#if pricing}<th class="r">Cost</th>{/if}
             </tr>
           </thead>
@@ -502,6 +528,7 @@
                 <td class="r">{compact(g.total_tokens)}</td>
                 <td class="r">{ms(g.avg_latency_ms)}</td>
                 <td class="r">{ms(g.avg_ttft_ms)}</td>
+                <td class="r nowrap">{tps(g.output_tps)}</td>
                 {#if pricing}
                   <td class={['r', { warn: g.unpriced_requests > 0 && g.unpriced_requests >= g.requests }]}>{costCell(g)}</td>
                 {/if}
@@ -518,6 +545,7 @@
               <td class="r">{compact(summary.totals.total_tokens)}</td>
               <td class="r">{ms(summary.totals.avg_latency_ms)}</td>
               <td class="r">{ms(summary.totals.avg_ttft_ms)}</td>
+              <td class="r nowrap">{tps(summary.totals.output_tps)}</td>
               {#if pricing}<td class="r">{usd(summary.totals.cost_usd)}</td>{/if}
             </tr>
           </tfoot>
@@ -544,6 +572,7 @@
               <th class="hide-md">Account</th>
               <th class="hide-md">Client key</th>
               <th class="r">Latency</th>
+              <th class="r hide-md">Speed</th>
               <th class="r">Tokens in / out</th>
               {#if pricing}<th class="r">Cost</th>{/if}
             </tr>
@@ -571,6 +600,7 @@
                 <td class="hide-md truncate acct">{r.auth_label || providerName(r.provider)}</td>
                 <td class="hide-md"><code>{r.client_key_masked || '–'}</code></td>
                 <td class="r">{ms(r.latency_ms)}</td>
+                <td class="r nowrap hide-md">{tps(r.output_tps)}</td>
                 <td class="r nowrap">{compact(r.input_tokens)} / {compact(r.output_tokens)}</td>
                 {#if pricing}<td class="r nowrap" title={r.priced_as ?? 'Unpriced'}>{r.cost_usd !== undefined ? usd(r.cost_usd) : '–'}</td
                   >{/if}
@@ -657,6 +687,9 @@
   }
   .unpriced {
     margin: 0 0 16px;
+  }
+  .note {
+    margin: 6px 0 0;
   }
   .link {
     background: none;

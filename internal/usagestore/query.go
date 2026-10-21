@@ -62,7 +62,10 @@ func (f Filter) whereRange(timeColumn string, from, to int64) (string, []any) {
 }
 
 // Totals aggregates a set of rows. Latency averages cover successful rows only;
-// TTFT averages cover successful rows that reported a TTFT.
+// TTFT averages cover successful rows that reported a TTFT. OutputTPS is the
+// generation speed of the qualifying streams (see genWindowMs): their output
+// tokens over their summed generation windows, so each request weighs by its
+// duration, as OpenCode aggregates steps. It is 0 without a qualifying stream.
 type Totals struct {
 	Requests            int64   `json:"requests"`
 	Successes           int64   `json:"successes"`
@@ -76,6 +79,7 @@ type Totals struct {
 	AvgLatencyMs        float64 `json:"avg_latency_ms"`
 	MaxLatencyMs        int64   `json:"max_latency_ms"`
 	AvgTTFTMs           float64 `json:"avg_ttft_ms"`
+	OutputTPS           float64 `json:"output_tps"`
 
 	// Cost estimates at API list prices (USD), present when pricing is enabled.
 	// CostUSD is the sum of the three classes: paid API spend, the API value of
@@ -90,6 +94,8 @@ type Totals struct {
 	latencySum int64
 	ttftSum    int64
 	ttftCount  int64
+	genTokens  int64
+	genMs      int64
 }
 
 func (t *Totals) add(o *Totals) {
@@ -110,18 +116,23 @@ func (t *Totals) add(o *Totals) {
 	t.latencySum += o.latencySum
 	t.ttftSum += o.ttftSum
 	t.ttftCount += o.ttftCount
+	t.genTokens += o.genTokens
+	t.genMs += o.genMs
 	if o.MaxLatencyMs > t.MaxLatencyMs {
 		t.MaxLatencyMs = o.MaxLatencyMs
 	}
 }
 
 func (t *Totals) finish() {
-	t.AvgLatencyMs, t.AvgTTFTMs = 0, 0
+	t.AvgLatencyMs, t.AvgTTFTMs, t.OutputTPS = 0, 0, 0
 	if t.Successes > 0 {
 		t.AvgLatencyMs = round1(float64(t.latencySum) / float64(t.Successes))
 	}
 	if t.ttftCount > 0 {
 		t.AvgTTFTMs = round1(float64(t.ttftSum) / float64(t.ttftCount))
+	}
+	if t.genMs > 0 {
+		t.OutputTPS = round1(float64(t.genTokens) * 1000 / float64(t.genMs))
 	}
 }
 
@@ -549,6 +560,9 @@ type RequestRow struct {
 	TotalTokens         int64  `json:"total_tokens"`
 	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
 	ServiceTier         string `json:"service_tier,omitempty"`
+	// OutputTPS is the request's generation speed; nil when it does not
+	// qualify (see genWindowMs).
+	OutputTPS *float64 `json:"output_tps,omitempty"`
 	// CostUSD is the API-equivalent cost; nil when unpriced or pricing is off.
 	CostUSD   *float64 `json:"cost_usd,omitempty"`
 	CostClass string   `json:"cost_class,omitempty"`
@@ -598,6 +612,11 @@ func (s *Store) RequestsQuery(ctx context.Context, f Filter, before int64, limit
 		}
 		r.Time = time.UnixMilli(ts).UTC().Format(TimeLayout)
 		r.Stream, r.Success = stream == 1, success == 1
+		if w := genWindowMs(&Row{Stream: r.Stream, Success: r.Success, OutputTokens: r.OutputTokens,
+			LatencyMs: r.LatencyMs, TTFTMs: r.TTFTMs}); w > 0 {
+			tps := round1(float64(r.OutputTokens) * 1000 / float64(w))
+			r.OutputTPS = &tps
+		}
 		if f.Pricer != nil {
 			key := pricing.Key{Provider: r.Provider, AuthType: r.AuthType, BaseURL: r.BaseURL,
 				RequestedModel: r.RequestedModel, UpstreamModel: r.UpstreamModel,

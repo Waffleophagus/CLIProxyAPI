@@ -55,6 +55,12 @@ export function ms(v: number | null | undefined): string {
   return `${(v / 60_000).toFixed(1)} min`;
 }
 
+/** Output tokens per second; zero or missing means no sample. */
+export function tps(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v) || v <= 0) return '–';
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} tok/s`;
+}
+
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;

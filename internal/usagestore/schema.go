@@ -113,6 +113,47 @@ FROM requests r JOIN rollup_keys k ON k.provider = r.provider AND k.auth_id = r.
 	AND k.band = CASE WHEN r.input_tokens > 512000 THEN 512000 WHEN r.input_tokens > 272000 THEN 272000
 		WHEN r.input_tokens > 200000 THEN 200000 WHEN r.input_tokens > 100000 THEN 100000 ELSE 0 END
 GROUP BY 1, k.id, r.success;`,
+	// 3: generation-speed sums over the requests that qualify for output
+	// tokens per second (see genWindowMs). Rollups are backfilled from the
+	// raw requests still stored; older buckets have no speed sample.
+	`ALTER TABLE rollups ADD COLUMN gen_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE rollups ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0;
+UPDATE rollups SET gen_tokens = g.tokens, gen_ms = g.ms
+FROM (SELECT (r.ts / 900000) * 900000 AS bucket, k.id AS key_id, SUM(r.output_tokens) AS tokens,
+		SUM(r.latency_ms - r.ttft_ms) AS ms
+	FROM requests r JOIN rollup_keys k ON k.provider = r.provider AND k.auth_id = r.auth_id
+		AND k.auth_label = r.auth_label AND k.auth_type = r.auth_type AND k.base_url = r.base_url
+		AND k.requested_model = r.requested_model AND k.upstream_model = r.upstream_model
+		AND k.response_model = r.response_model AND k.client_key_id = r.client_key_id
+		AND k.client_key_masked = r.client_key_masked AND k.service_tier = r.service_tier
+		AND k.band = CASE WHEN r.input_tokens > 512000 THEN 512000 WHEN r.input_tokens > 272000 THEN 272000
+			WHEN r.input_tokens > 200000 THEN 200000 WHEN r.input_tokens > 100000 THEN 100000 ELSE 0 END
+	WHERE r.success = 1 AND r.stream = 1 AND r.output_tokens > 0 AND r.ttft_ms > 0
+		AND r.latency_ms - r.ttft_ms >= 250
+	GROUP BY 1, 2) AS g
+WHERE rollups.bucket = g.bucket AND rollups.key_id = g.key_id AND rollups.success = 1;`,
+}
+
+// minGenWindowMs is the shortest generation window (latency minus TTFT) a
+// request needs to count towards output tokens per second. Some servers
+// buffer a whole response (e.g. a parsed tool call) and send it at the end,
+// so its first token arrives milliseconds before the last and the window
+// says nothing about decode speed. Migration 3 hardcodes this value.
+const minGenWindowMs = 250
+
+// genWindowMs returns the generation window of a request that qualifies for
+// output tokens per second, or 0. Like OpenCode's per-request TPS, the window
+// runs from the first output token (reasoning included) to the end of the
+// response. Only successful streams with a TTFT qualify: a non-streaming
+// response arrives in one piece, so its TTFT is close to its latency.
+func genWindowMs(r *Row) int64 {
+	if !r.Success || !r.Stream || r.OutputTokens <= 0 || r.TTFTMs <= 0 {
+		return 0
+	}
+	if w := r.LatencyMs - r.TTFTMs; w >= minGenWindowMs {
+		return w
+	}
+	return 0
 }
 
 // contextBands are the input sizes (ascending) at which rows are split into
