@@ -106,3 +106,14 @@ describe('config store writes', () => {
     expect(config.data?.access?.['api-keys']).toEqual(['sk-existing-1', 'sk-existing-2']);
   });
 });
+
+describe('config.keyName', () => {
+  it('adds the key id only when a label is shared', async () => {
+    const { config } = await freshStore();
+    config.data = { access: { 'api-key-labels': { aaaa1111: 'jeremy', bbbb2222: 'jeremy', cccc3333: 'opencode' } } };
+    expect(config.keyName('aaaa1111')).toBe('jeremy (aaaa1111)');
+    expect(config.keyName('bbbb2222')).toBe('jeremy (bbbb2222)');
+    expect(config.keyName('cccc3333')).toBe('opencode');
+    expect(config.keyName('dddd4444')).toBe('');
+  });
+});

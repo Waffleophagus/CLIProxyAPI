@@ -283,13 +283,13 @@
   function groupName(key: string, label: string): string {
     if (groupBy === 'provider') return providerName(key);
     if (groupBy === 'day') return new Date(key).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-    if (groupBy === 'api_key' && config.keyLabels[key]) return config.keyLabels[key];
+    if (groupBy === 'api_key' && config.keyName(key)) return config.keyName(key);
     return label || key || '(none)';
   }
 
   function optionLabel(kind: string, g: UsageGroup): string {
     if (kind === 'provider') return providerName(g.key);
-    if (kind === 'api_key' && config.keyLabels[g.key]) return config.keyLabels[g.key];
+    if (kind === 'api_key' && config.keyName(g.key)) return config.keyName(g.key);
     return g.label || g.key || '(none)';
   }
 
@@ -377,8 +377,7 @@
       Client key
       <select bind:value={fKey} onchange={() => loadAll()}>
         <option value="">All</option>
-        {#if fKey && !(options.api_key ?? []).some((g) => g.key === fKey)}<option value={fKey}>{config.keyLabels[fKey] || fKey}</option
-          >{/if}
+        {#if fKey && !(options.api_key ?? []).some((g) => g.key === fKey)}<option value={fKey}>{config.keyName(fKey) || fKey}</option>{/if}
         {#each options.api_key ?? [] as g (g.key)}<option value={g.key}>{optionLabel('api_key', g)}</option>{/each}
       </select>
     </label>
@@ -580,7 +579,7 @@
           </thead>
           <tbody>
             {#each rows as r (r.id)}
-              {@const keyLabel = config.keyLabels[r.client_key_id]}
+              {@const keyLabel = config.keyName(r.client_key_id)}
               <tr
                 class="clickable"
                 tabindex="0"

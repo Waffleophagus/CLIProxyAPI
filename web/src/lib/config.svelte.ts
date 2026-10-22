@@ -59,6 +59,13 @@ class ConfigStore {
   get keyLabels(): Record<string, string> {
     return this.data?.access?.['api-key-labels'] ?? {};
   }
+  /** Display name of a client key id: its label, plus the id when another key shares that label; '' when unlabeled. */
+  keyName(id: string): string {
+    const labels = this.keyLabels;
+    const label = labels[id];
+    if (!label) return '';
+    return Object.values(labels).filter((l) => l === label).length > 1 ? `${label} (${id})` : label;
+  }
   get usageEnabled(): boolean {
     return this.data?.observability?.usage?.enabled !== false;
   }
