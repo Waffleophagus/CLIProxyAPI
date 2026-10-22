@@ -20,11 +20,23 @@
   let usageOff = $state(false);
   let usageError = $state('');
   let newKey = $state('');
+  let newLabel = $state('');
   let newOpen = $state(false);
   let saving = $state(false);
+  let labelKey = $state('');
+  let labelDraft = $state('');
+  let labelOpen = $state(false);
 
   const keys = $derived(config.data?.['access']?.['api-keys'] ?? []);
   const examples = $derived(keys.filter(isExampleKey));
+  const labelOf = (k: string) => config.keyLabels[clientKeyId(k)] ?? '';
+  // Labeled keys first, by label; unlabeled keys keep their config order.
+  const sorted = $derived(
+    keys
+      .map((k, i) => ({ k, i, label: labelOf(k) }))
+      .sort((a, b) => (a.label && b.label ? a.label.localeCompare(b.label) : a.label ? -1 : b.label ? 1 : 0) || a.i - b.i)
+      .map((e) => e.k)
+  );
 
   async function loadUsage() {
     try {
@@ -53,13 +65,38 @@
 
   function openGenerate() {
     newKey = generateKey();
+    newLabel = '';
     newOpen = true;
+  }
+
+  function openLabel(key: string) {
+    labelKey = key;
+    labelDraft = labelOf(key);
+    labelOpen = true;
   }
 
   // Every change is computed from one config snapshot and sent with that
   // snapshot's ETag; nothing can be written before the config has loaded.
   function keysOf(snap: ConfigSnapshot): string[] {
     return snap.doc.access?.['api-keys'] ?? [];
+  }
+
+  // Writes keys and labels together; labels of keys no longer configured are dropped.
+  function saveAccess(snap: ConfigSnapshot, keys: string[], labels: Record<string, string>, okText: string) {
+    const ids = new Set(keys.map(clientKeyId));
+    const kept = Object.fromEntries(
+      Object.entries(labels)
+        .map(([id, l]) => [id, l.trim()])
+        .filter(([id, l]) => ids.has(id) && l)
+    );
+    const access: NonNullable<ConfigSnapshot['doc']['access']> = { ...snap.doc.access, 'api-keys': keys };
+    if (Object.keys(kept).length > 0) access['api-key-labels'] = kept;
+    else delete access['api-key-labels'];
+    return saveConfig(() => config.put('access', access, snap), okText);
+  }
+
+  function labelsOf(snap: ConfigSnapshot): Record<string, string> {
+    return snap.doc.access?.['api-key-labels'] ?? {};
   }
 
   async function addKey() {
@@ -70,8 +107,10 @@
     const current = keysOf(snap);
     const replacing = current.some(isExampleKey);
     const next = [...current.filter((k) => !isExampleKey(k)), newKey];
-    const ok = await saveConfig(
-      () => config.put('access/api-keys', next, snap),
+    const ok = await saveAccess(
+      snap,
+      next,
+      { ...labelsOf(snap), [clientKeyId(newKey)]: newLabel },
       replacing ? 'Example keys replaced; safe mode is off' : 'Client key added'
     );
     saving = false;
@@ -92,27 +131,36 @@
       danger: true
     });
     if (!ok) return;
-    await saveConfig(
-      () =>
-        config.put(
-          'access/api-keys',
-          current.filter((k) => k !== key),
-          snap
-        ),
+    await saveAccess(
+      snap,
+      current.filter((k) => k !== key),
+      labelsOf(snap),
       'Client key revoked'
     );
+  }
+
+  async function saveLabel() {
+    const snap = config.snapshot();
+    if (!snap) return;
+    saving = true;
+    const label = labelDraft.trim();
+    const ok = await saveAccess(
+      snap,
+      keysOf(snap),
+      { ...labelsOf(snap), [clientKeyId(labelKey)]: label },
+      label ? 'Label saved' : 'Label removed'
+    );
+    saving = false;
+    if (ok) labelOpen = false;
   }
 
   async function removeExamples() {
     const snap = config.snapshot();
     if (!snap) return;
-    await saveConfig(
-      () =>
-        config.put(
-          'access/api-keys',
-          keysOf(snap).filter((k) => !isExampleKey(k)),
-          snap
-        ),
+    await saveAccess(
+      snap,
+      keysOf(snap).filter((k) => !isExampleKey(k)),
+      labelsOf(snap),
       'Example keys removed'
     );
   }
@@ -156,6 +204,7 @@
         <table class="data">
           <thead>
             <tr>
+              <th>Label</th>
               <th>Key</th>
               <th class="r">Requests · 30d</th>
               <th class="r">Success</th>
@@ -165,10 +214,24 @@
             </tr>
           </thead>
           <tbody>
-            {#each keys as k (k)}
+            {#each sorted as k (k)}
               {@const id = clientKeyId(k)}
               {@const s = stats[id]}
+              {@const label = labelOf(k)}
               <tr>
+                <td>
+                  <div class="row">
+                    {#if label}<span class="label">{label}</span>{:else}<span class="muted">–</span>{/if}
+                    <button
+                      class="btn sm ghost"
+                      type="button"
+                      onclick={() => openLabel(k)}
+                      disabled={!config.loaded}
+                      aria-label={label ? `Rename ${label}` : 'Add label'}
+                      title={label ? 'Rename' : 'Add label'}><Icon name="edit" size={14} /></button
+                    >
+                  </div>
+                </td>
                 <td>
                   <div class="row">
                     <Secret value={k} label="client key" />
@@ -193,7 +256,7 @@
     {/if}
   </section>
   {#if usageOff}<p class="small muted">Usage tracking is off, so per-key numbers are not available.</p>{/if}
-  <p class="path">access.api-keys</p>
+  <p class="path">access.api-keys · access.api-key-labels</p>
 </div>
 
 <Dialog bind:open={newOpen} title="New client key">
@@ -202,6 +265,11 @@
     <div class="newkey">
       <code>{newKey}</code>
       <CopyButton text={newKey} label="Copy key" showLabel small={false} />
+    </div>
+    <div class="field">
+      <label for="new-key-label">Label <span class="muted">(optional)</span></label>
+      <input id="new-key-label" type="text" bind:value={newLabel} placeholder="opencode" autocomplete="off" />
+      <span class="hint">Shown instead of the key on this page and in Usage.</span>
     </div>
     <div class="small muted">
       Use it with base URL <code>{clientBaseURL()}</code> as <code>Authorization: Bearer {mask(newKey)}</code>.
@@ -220,7 +288,33 @@
   {/snippet}
 </Dialog>
 
+<Dialog bind:open={labelOpen} title="Client key label">
+  <form
+    class="stack"
+    id="label-form"
+    onsubmit={(e) => {
+      e.preventDefault();
+      void saveLabel();
+    }}
+  >
+    <div class="field">
+      <label for="key-label">Label for {mask(labelKey)}</label>
+      <input id="key-label" type="text" bind:value={labelDraft} placeholder="opencode" autocomplete="off" />
+      <span class="hint">Leave empty to remove the label.</span>
+    </div>
+  </form>
+  {#snippet footer()}
+    <button class="btn" type="button" onclick={() => (labelOpen = false)}>Cancel</button>
+    <button class="btn primary" type="submit" form="label-form" disabled={saving || !config.loaded}
+      >{saving ? 'Saving…' : 'Save label'}</button
+    >
+  {/snippet}
+</Dialog>
+
 <style>
+  .label {
+    font-weight: 600;
+  }
   table.data th:first-child,
   table.data td:first-child {
     padding-left: 18px;

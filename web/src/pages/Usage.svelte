@@ -170,6 +170,8 @@
   });
 
   onMount(() => {
+    // Client key labels come from the config.
+    void config.ensure();
     void loadAll();
     void loadOptions();
   });
@@ -259,7 +261,7 @@
     }
     return list.map((s) => ({
       key: s.key,
-      label: s.key === 'total' ? metricName : s.key === '__other__' ? 'Other' : labelFor(s.label || s.key),
+      label: s.key === 'total' ? metricName : s.key === '__other__' ? 'Other' : groupName(s.key, s.label),
       color: s.key === 'total' ? 'var(--series-1)' : seriesColor(`${groupBy}:${s.key}`),
       values: s.points.map(metricValue)
     }));
@@ -278,14 +280,16 @@
     pricingOpen = true;
   }
 
-  function labelFor(v: string): string {
-    if (groupBy === 'provider') return providerName(v);
-    if (groupBy === 'day') return new Date(v).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-    return v || '(none)';
+  function groupName(key: string, label: string): string {
+    if (groupBy === 'provider') return providerName(key);
+    if (groupBy === 'day') return new Date(key).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    if (groupBy === 'api_key' && config.keyLabels[key]) return config.keyLabels[key];
+    return label || key || '(none)';
   }
 
   function optionLabel(kind: string, g: UsageGroup): string {
     if (kind === 'provider') return providerName(g.key);
+    if (kind === 'api_key' && config.keyLabels[g.key]) return config.keyLabels[g.key];
     return g.label || g.key || '(none)';
   }
 
@@ -373,7 +377,8 @@
       Client key
       <select bind:value={fKey} onchange={() => loadAll()}>
         <option value="">All</option>
-        {#if fKey && !(options.api_key ?? []).some((g) => g.key === fKey)}<option value={fKey}>{fKey}</option>{/if}
+        {#if fKey && !(options.api_key ?? []).some((g) => g.key === fKey)}<option value={fKey}>{config.keyLabels[fKey] || fKey}</option
+          >{/if}
         {#each options.api_key ?? [] as g (g.key)}<option value={g.key}>{optionLabel('api_key', g)}</option>{/each}
       </select>
     </label>
@@ -515,13 +520,7 @@
               >
                 <td class="name">
                   {#if groupBy !== 'day'}<span class="swatch" style="background:{seriesColor(`${groupBy}:${g.key}`)}"></span>{/if}
-                  <span class="truncate"
-                    >{groupBy === 'day'
-                      ? labelFor(g.key)
-                      : groupBy === 'provider'
-                        ? providerName(g.key)
-                        : g.label || g.key || '(none)'}</span
-                  >
+                  <span class="truncate" title={groupBy === 'api_key' ? g.label : undefined}>{groupName(g.key, g.label)}</span>
                 </td>
                 <td class="r">{int(g.requests)}</td>
                 <td class="r">{pct(g.successes, g.requests)}</td>
@@ -581,6 +580,7 @@
           </thead>
           <tbody>
             {#each rows as r (r.id)}
+              {@const keyLabel = config.keyLabels[r.client_key_id]}
               <tr
                 class="clickable"
                 tabindex="0"
@@ -602,7 +602,9 @@
                     >{/if}
                 </td>
                 <td class="hide-md truncate acct">{r.auth_label || providerName(r.provider)}</td>
-                <td class="hide-md"><code>{r.client_key_masked || '–'}</code></td>
+                <td class="hide-md truncate" title={keyLabel ? r.client_key_masked : undefined}
+                  >{#if keyLabel}{keyLabel}{:else}<code>{r.client_key_masked || '–'}</code>{/if}</td
+                >
                 <td class="r">{ms(r.latency_ms)}</td>
                 <td class="r nowrap hide-md">{tps(r.output_tps)}</td>
                 <td class="r nowrap">{compact(r.input_tokens)} / {compact(r.output_tokens)}</td>

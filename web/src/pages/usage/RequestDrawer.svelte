@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, ApiError, errorMessage } from '../../lib/api';
+  import { config } from '../../lib/config.svelte';
   import { dateTime, int, ms, providerName, tps, usd } from '../../lib/format';
   import type { UsageRow } from '../../lib/types';
   import Dialog from '../../components/Dialog.svelte';
@@ -51,6 +52,12 @@
     logState = 'missing';
   }
 
+  function clientKey(r: UsageRow): string {
+    if (!r.client_key_masked) return '';
+    const label = config.keyLabels[r.client_key_id];
+    return `${label ? `${label} · ` : ''}${r.client_key_masked} (id ${r.client_key_id})`;
+  }
+
   type Field = [string, string | number | boolean | undefined];
   const fields = $derived<Field[]>(
     row
@@ -64,7 +71,7 @@
           ['Account type', row.auth_type],
           ['Account id', row.auth_id],
           ['Upstream URL', row.base_url],
-          ['Client key', row.client_key_masked ? `${row.client_key_masked} (id ${row.client_key_id})` : ''],
+          ['Client key', clientKey(row)],
           ['Endpoint', row.endpoint],
           ['Streaming', row.stream ? 'yes' : 'no'],
           ['HTTP status', row.status],

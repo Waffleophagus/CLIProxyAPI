@@ -286,7 +286,7 @@ export type ProviderGroup = {
 export type ConfigDoc = {
   server?: { host?: string; port?: number; [k: string]: unknown };
   management?: { 'allow-remote'?: boolean; 'disable-ui'?: boolean; [k: string]: unknown };
-  access?: { 'api-keys'?: string[] };
+  access?: { 'api-keys'?: string[]; 'api-key-labels'?: Record<string, string> };
   routing?: {
     strategy?: string;
     'session-affinity'?: boolean;

@@ -97,6 +97,7 @@ the corresponding group value. Legacy field names are rejected by v8 writes.
 | Example path | Value or purpose |
 | --- | --- |
 | `/config/access/api-keys` | Client authentication keys, for example `["client-key"]`. |
+| `/config/access/api-key-labels` | Client key display labels keyed by key id (first 8 hex chars of the key's SHA-256), for example `{"1a2b3c4d": "opencode"}`. |
 | `/config/api-keys` | All upstream provider groups. |
 | `/config/api-keys/codex` | Codex upstream groups. |
 | `/config/client/codex/optimize-multi-agent-v2` | Boolean, default `false`; applies to Codex clients across OAuth and API-key routes. |

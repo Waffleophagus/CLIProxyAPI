@@ -41,6 +41,10 @@ access:
     - "your-api-key-1"
     - "your-api-key-2"
     - "your-api-key-3"
+  # Display names for client keys in the web UI, keyed by the key id shown on the
+  # Client keys page (first 8 hex chars of the key's SHA-256).
+  # api-key-labels:
+  #   1a2b3c4d: "opencode"
 
 # Credential selection when several credentials can serve a model.
 routing:

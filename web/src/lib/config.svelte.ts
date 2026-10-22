@@ -55,6 +55,10 @@ class ConfigStore {
   get exampleKeys(): string[] {
     return (this.data?.access?.['api-keys'] ?? []).filter(isExampleKey);
   }
+  /** Client key labels by key id (access.api-key-labels). */
+  get keyLabels(): Record<string, string> {
+    return this.data?.access?.['api-key-labels'] ?? {};
+  }
   get usageEnabled(): boolean {
     return this.data?.observability?.usage?.enabled !== false;
   }
