@@ -227,7 +227,7 @@
                       type="button"
                       onclick={() => openLabel(k)}
                       disabled={!config.loaded}
-                      aria-label={label ? `Rename ${label}` : 'Add label'}
+                      aria-label={label ? `Rename label ${label} of key ${id}` : `Add label to key ${id}`}
                       title={label ? 'Rename' : 'Add label'}><Icon name="edit" size={14} /></button
                     >
                   </div>
