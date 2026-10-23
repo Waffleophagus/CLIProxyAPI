@@ -47,6 +47,7 @@
   let groupBy = $state<GroupBy>((GROUPS.some((g) => g.value === q.get('group')) ? q.get('group') : 'model') as GroupBy);
   let metric = $state<Metric>((['tokens', 'cost', 'speed'].includes(q.get('metric') ?? '') ? q.get('metric') : 'requests') as Metric);
   let fModel = $state(q.get('model') ?? '');
+  let fUpstream = $state(q.get('upstream_model') ?? '');
   let fProvider = $state(q.get('provider') ?? '');
   let fCredential = $state(q.get('credential') ?? '');
   let fKey = $state(q.get('api_key') ?? '');
@@ -80,7 +81,16 @@
   let active: UsageFilters = {};
 
   function currentFilters(w: UsageWindow): UsageFilters {
-    return { from: w.from, to: w.to, model: fModel, provider: fProvider, credential: fCredential, api_key: fKey, success: fSuccess };
+    return {
+      from: w.from,
+      to: w.to,
+      model: fModel,
+      upstream_model: fUpstream,
+      provider: fProvider,
+      credential: fCredential,
+      api_key: fKey,
+      success: fSuccess
+    };
   }
 
   function syncURL() {
@@ -89,6 +99,7 @@
       group: groupBy,
       metric: metric === 'requests' ? undefined : metric,
       model: fModel,
+      upstream_model: fUpstream,
       provider: fProvider,
       credential: fCredential,
       api_key: fKey,
@@ -128,13 +139,20 @@
     const w = resolveWindow(range, customFrom, customTo);
     const f = { from: w.from, to: w.to };
     try {
-      const [m, p, c, k] = await Promise.all([
+      const [m, u, p, c, k] = await Promise.all([
         usageSummary(f, 'model', false),
+        usageSummary(f, 'upstream_model', false),
         usageSummary(f, 'provider', false),
         usageSummary(f, 'credential', false),
         usageSummary(f, 'api_key', false)
       ]);
-      options = { model: m.groups ?? [], provider: p.groups ?? [], credential: c.groups ?? [], api_key: k.groups ?? [] };
+      options = {
+        model: m.groups ?? [],
+        upstream_model: u.groups ?? [],
+        provider: p.groups ?? [],
+        credential: c.groups ?? [],
+        api_key: k.groups ?? []
+      };
     } catch {
       // Filters still work by typing values in the URL; ignore.
     }
@@ -200,6 +218,7 @@
 
   function applyGroupFilter(g: UsageGroup) {
     if (groupBy === 'model') fModel = g.key;
+    else if (groupBy === 'upstream_model') fUpstream = g.key;
     else if (groupBy === 'provider') fProvider = g.key;
     else if (groupBy === 'credential') fCredential = g.key;
     else if (groupBy === 'api_key') fKey = g.key;
@@ -208,7 +227,7 @@
   }
 
   function clearFilters() {
-    fModel = fProvider = fCredential = fKey = fSuccess = '';
+    fModel = fUpstream = fProvider = fCredential = fKey = fSuccess = '';
     void loadAll();
   }
 
@@ -220,9 +239,9 @@
     }
   }
 
-  const hasFilters = $derived(Boolean(fModel || fProvider || fCredential || fKey || fSuccess));
+  const hasFilters = $derived(Boolean(fModel || fUpstream || fProvider || fCredential || fKey || fSuccess));
   const groupLabel = $derived(GROUPS.find((g) => g.value === groupBy)?.label ?? '');
-  const filterable = $derived(groupBy !== 'day' && groupBy !== 'upstream_model');
+  const filterable = $derived(groupBy !== 'day');
 
   const pricing = $derived(summary?.pricing);
   const chartMetric = $derived<Metric>(metric === 'cost' && !pricing ? 'requests' : metric);
@@ -354,6 +373,15 @@
         <option value="">All</option>
         {#if fModel && !(options.model ?? []).some((g) => g.key === fModel)}<option value={fModel}>{fModel}</option>{/if}
         {#each options.model ?? [] as g (g.key)}<option value={g.key}>{optionLabel('model', g)}</option>{/each}
+      </select>
+    </label>
+    <label class="inline" title="The model that actually served the request, such as the version behind a slug">
+      Upstream model
+      <select bind:value={fUpstream} onchange={() => loadAll()}>
+        <option value="">All</option>
+        {#if fUpstream && !(options.upstream_model ?? []).some((g) => g.key === fUpstream)}<option value={fUpstream}>{fUpstream}</option
+          >{/if}
+        {#each options.upstream_model ?? [] as g (g.key)}<option value={g.key}>{optionLabel('upstream_model', g)}</option>{/each}
       </select>
     </label>
     <label class="inline">
