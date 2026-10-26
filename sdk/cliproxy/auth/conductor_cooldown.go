@@ -93,6 +93,17 @@ func recoverableFailureRetryAfter(now time.Time, disableCooling bool) time.Time 
 	return recoverableFailureRetryAfterWithHint(now, nil, disableCooling)
 }
 
+// transientRateLimitRetryAfter resolves the model-scoped cooldown for a
+// transient capacity 429. An explicit zero retry hint means the upstream
+// accepts an immediate retry and suppresses the default transient cooldown;
+// only a missing hint falls back to that default.
+func transientRateLimitRetryAfter(now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
+	if retryAfter != nil && *retryAfter == 0 {
+		return time.Time{}
+	}
+	return recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+}
+
 func recoverableFailureRetryAfterWithHint(now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
 	if disableCooling {
 		return time.Time{}
@@ -1042,6 +1053,22 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						} else {
 							state.NextRetryAfter = now.Add(30 * time.Minute)
 						}
+					} else if isTransientRateLimitResultError(result.Error) && statusCode == http.StatusTooManyRequests {
+						// Transient per-turn capacity rejection (issue 7017): cool
+						// only the reporting model until the provider retry hint.
+						// The credential quota is not exhausted, so no quota state
+						// is written and the quota exponential backoff never moves;
+						// a still-live genuine quota deadline is left untouched and
+						// keeps blocking through the generic retry branches below.
+						next := transientRateLimitRetryAfter(now, result.RetryAfter, disableCooling)
+						if !next.IsZero() && state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
+							next = state.Quota.NextRecoverAt
+						}
+						if next.IsZero() && state.Quota.Exceeded && state.Quota.NextRecoverAt.After(now) {
+							next = state.Quota.NextRecoverAt
+						}
+						state.NextRetryAfter = next
+						state.Unavailable = !next.IsZero()
 					} else {
 						switch statusCode {
 						case 401, 402, 403:
@@ -1807,6 +1834,11 @@ func resultErrorFromError(err error) *Error {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
 	switch {
+	case isTransientRateLimitError(err):
+		// Preserve the transient capacity classification alongside the public
+		// 429 status so MarkResult cools only the reporting model until the
+		// provider retry hint instead of recording quota exhaustion.
+		resultErr.Code = transientRateLimitErrorCode
 	case isExplicitModelNotFoundError(err, ""):
 		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 			resultErr.Code = "model_not_found"
@@ -2099,11 +2131,25 @@ func retryAfterFromError(err error) *time.Duration {
 	if err == nil {
 		return nil
 	}
+	// A locally trusted deadline outranks any hint on the wrapped error so a
+	// re-recorded terminal error cannot reintroduce a stale upstream value.
+	if trusted := trustedRetryAfterFromError(err); trusted != nil {
+		return trusted
+	}
 	type retryAfterProvider interface {
 		RetryAfter() *time.Duration
 	}
 	var rap retryAfterProvider
 	if !errors.As(err, &rap) || rap == nil {
+		return nil
+	}
+	// An expired trusted wrapper reports a negative remaining time; natural
+	// expiry is not an invalid provider hint, so fall through to the wrapped
+	// error's own hint instead of surfacing the negative value.
+	if _, isTrusted := rap.(*trustedRetryAfterError); isTrusted {
+		if inner := errors.Unwrap(err); inner != nil {
+			return retryAfterFromError(inner)
+		}
 		return nil
 	}
 	retryAfter := rap.RetryAfter()
@@ -2112,6 +2158,34 @@ func retryAfterFromError(err error) *time.Duration {
 	}
 	value := *retryAfter
 	return &value
+}
+
+// isTransientRateLimitError reports a transient per-model capacity/admission
+// 429 whose quota is not exhausted. The classification travels through the
+// shared executor contract, so only executors that explicitly vouch for the
+// failure opt out of quota cooldown handling.
+func isTransientRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A credential-scoped failure always stays on the quota path; a transient
+	// classification must never downgrade whole-credential exhaustion.
+	if isCredentialScopedError(err) {
+		return false
+	}
+	transientErr, ok := errors.AsType[cliproxyexecutor.TransientRateLimitError](err)
+	if ok && transientErr != nil && transientErr.IsTransientRateLimit() {
+		return true
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil && authErr.Code == transientRateLimitErrorCode {
+		return true
+	}
+	return false
+}
+
+func isTransientRateLimitResultError(err *Error) bool {
+	return err != nil && err.Code == transientRateLimitErrorCode
 }
 
 func isCredentialScopedError(err error) bool {
@@ -2591,7 +2665,19 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 	}
 	statusCode := statusCodeFromResult(resultErr)
-	if isCloudflareChallengeResultError(resultErr) {
+	if isTransientRateLimitResultError(resultErr) && statusCode == http.StatusTooManyRequests {
+		// Without a model key the transient capacity rejection degrades to an
+		// auth-level transient cooldown (issue 7017), never quota exhaustion.
+		next := transientRateLimitRetryAfter(now, retryAfter, disableCooling)
+		if !next.IsZero() && auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
+			next = auth.Quota.NextRecoverAt
+		}
+		if next.IsZero() && auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(now) {
+			next = auth.Quota.NextRecoverAt
+		}
+		auth.NextRetryAfter = next
+		auth.Unavailable = !next.IsZero()
+	} else if isCloudflareChallengeResultError(resultErr) {
 		auth.StatusMessage = "cloudflare challenge"
 		next, backoffLevel := nextCloudflareCooldown(auth.Quota.BackoffLevel, disableCooling, now)
 		applyCooldownFields(&auth.Quota, QuotaState{
