@@ -31,6 +31,18 @@ var corsExposedResponseHeaders = []string{
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
 
+// corsAllowedRequestHeaders lists the request headers browser clients may
+// send to the API. The Fetch standard treats Authorization as a CORS
+// non-wildcard request-header name, so it must be named explicitly: a
+// wildcard does not cover it when a browser enforces that rule.
+var corsAllowedRequestHeaders = []string{
+	"Authorization",
+	"Content-Type",
+	"X-Api-Key",
+	"Anthropic-Version",
+	"Anthropic-Beta",
+}
+
 func (s *Server) maxRequestBodyBytes() int64 {
 	if s == nil {
 		return 0
@@ -143,7 +155,7 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "*")
+		c.Header("Access-Control-Allow-Headers", corsAllowHeadersValue(c.Request))
 		c.Header("Access-Control-Expose-Headers", corsExposedResponseHeadersJoined)
 
 		if c.Request.Method == "OPTIONS" {
@@ -174,6 +186,39 @@ func isManagementPath(path string) bool {
 }
 
 const managementPathPrefix = "/v8/management"
+
+// corsAllowHeadersValue builds the Access-Control-Allow-Headers value for a
+// request. It always names the known API request headers explicitly and, for
+// preflight requests, also echoes the headers the client asked about, so no
+// allowed header depends on the wildcard that strict non-wildcard rules
+// reject for Authorization. Echoing requested headers preserves the previous
+// wildcard behavior for arbitrary custom client headers without widening
+// the allowed origins or enabling credentials.
+func corsAllowHeadersValue(req *http.Request) string {
+	allowed := make([]string, 0, len(corsAllowedRequestHeaders))
+	seen := make(map[string]struct{}, len(corsAllowedRequestHeaders))
+	appendHeader := func(name string) {
+		name = http.CanonicalHeaderKey(strings.TrimSpace(name))
+		if name == "" {
+			return
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		allowed = append(allowed, name)
+	}
+	for _, name := range corsAllowedRequestHeaders {
+		appendHeader(name)
+	}
+	if req != nil && req.Method == http.MethodOptions {
+		for _, name := range strings.Split(req.Header.Get("Access-Control-Request-Headers"), ",") {
+			appendHeader(name)
+		}
+	}
+	return strings.Join(allowed, ", ")
+}
 
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,

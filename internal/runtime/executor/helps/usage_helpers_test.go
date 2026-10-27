@@ -53,6 +53,34 @@ func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIUsageFlatReasoningDialect(t *testing.T) {
+	// SGLang-style usage: reasoning_tokens flat on the usage object.
+	data := []byte(`{"usage":{"prompt_tokens":241114,"total_tokens":242270,"completion_tokens":1156,"prompt_tokens_details":{"cached_tokens":240896},"reasoning_tokens":530}}`)
+	detail := ParseOpenAIUsage(data)
+
+	if detail.ReasoningTokens != 530 {
+		t.Fatalf("reasoning tokens = %d, want 530", detail.ReasoningTokens)
+	}
+	if detail.InputTokens != 241114 || detail.OutputTokens != 1156 || detail.TotalTokens != 242270 {
+		t.Fatalf("token counts = %+v", detail)
+	}
+	if detail.CachedTokens != 240896 || detail.CacheReadTokens != 240896 {
+		t.Fatalf("cached tokens = %d/%d", detail.CachedTokens, detail.CacheReadTokens)
+	}
+	if !detail.TokenBreakdown.Valid() {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+
+	// Streaming variant must behave the same.
+	streamDetail, ok := ParseOpenAIStreamUsage([]byte(`data: {"id":"x","object":"chat.completion.chunk","usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"reasoning_tokens":4}}`))
+	if !ok {
+		t.Fatalf("ParseOpenAIStreamUsage reported no usage")
+	}
+	if streamDetail.ReasoningTokens != 4 {
+		t.Fatalf("stream reasoning tokens = %d, want 4", streamDetail.ReasoningTokens)
+	}
+}
+
 func TestParseOpenAIUsageResponses(t *testing.T) {
 	data := []byte(`{"service_tier":"default","usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30,"input_tokens_details":{"cached_tokens":7},"output_tokens_details":{"reasoning_tokens":9}}}`)
 	detail := ParseOpenAIUsage(data)
@@ -399,6 +427,41 @@ func TestParseClaudeStreamUsage_MessageStart(t *testing.T) {
 	}
 	if detail.CachedTokens != 355598 {
 		t.Errorf("cached tokens = %d, want 355598", detail.CachedTokens)
+	}
+}
+
+func TestParseClaudeUsageReportsSpeedAsResponseServiceTier(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"usage":{"input_tokens":10,"output_tokens":5,"speed":"fast"}}`, "fast"},
+		{`{"usage":{"input_tokens":10,"output_tokens":5,"speed":"standard"}}`, "standard"},
+		{`{"usage":{"input_tokens":10,"output_tokens":5}}`, ""},
+	} {
+		if got := ParseClaudeUsage([]byte(tc.body)).ResponseServiceTier; got != tc.want {
+			t.Errorf("%s: ResponseServiceTier = %q, want %q", tc.body, got, tc.want)
+		}
+	}
+}
+
+// The speed can arrive on message_start while message_delta carries only the
+// final output count; the merged stream usage must keep it.
+func TestStreamUsageBufferObserveClaudeStream_KeepsSpeedAcrossDelta(t *testing.T) {
+	for _, tc := range []struct{ start, delta, want string }{
+		{`"speed":"fast"`, ``, "fast"},
+		{``, `,"speed":"fast"`, "fast"},
+		{``, ``, ""},
+	} {
+		var buffer StreamUsageBuffer
+		start := `data: {"type":"message_start","message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":20,"output_tokens":1`
+		if tc.start != "" {
+			start += "," + tc.start
+		}
+		buffer.ObserveClaudeStream([]byte(start + `}}}`))
+		buffer.ObserveClaudeStream([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15` + tc.delta + `}}`))
+		detail, ok := buffer.Detail()
+		if !ok || detail.ResponseServiceTier != tc.want || detail.OutputTokens != 15 || detail.InputTokens != 20 {
+			t.Errorf("start %q delta %q: got tier %q in=%d out=%d ok=%v, want tier %q in=20 out=15",
+				tc.start, tc.delta, detail.ResponseServiceTier, detail.InputTokens, detail.OutputTokens, ok, tc.want)
+		}
 	}
 }
 

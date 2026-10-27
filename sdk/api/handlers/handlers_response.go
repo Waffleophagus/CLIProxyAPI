@@ -38,6 +38,11 @@ func nextStreamChunk(ctx context.Context, closed *bool, chunks <-chan coreexecut
 		case <-ctx.Done():
 			return coreexecutor.StreamChunk{}, false, true
 		case chunk, ok = <-chunks:
+			// A channel closed together with the cancellation was cut by it: the select above picks at random when both are
+			// ready, and the plain close would be reported as a success.
+			if !ok && ctx.Err() != nil {
+				return coreexecutor.StreamChunk{}, false, true
+			}
 		}
 	} else {
 		chunk, ok = <-chunks

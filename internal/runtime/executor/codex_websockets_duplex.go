@@ -136,7 +136,41 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return false
 			}
 		}
+		initialModel := ""
+		if initial != nil {
+			initialModel = strings.TrimSpace(gjson.GetBytes(initial.originalPayload, "model").String())
+		}
+		boundModel := helps.PayloadRequestedModel(opts, initialModel)
+		if boundModel == "" {
+			boundModel = req.Model
+		}
+		authorizePayload := func(payload []byte, forceBoundModel bool) (allowed bool, keepOpen bool) {
+			authPayload := payload
+			explicitModel := strings.TrimSpace(gjson.GetBytes(authPayload, "model").String())
+			if boundModel != "" && json.Valid(authPayload) && (forceBoundModel || explicitModel == "" || explicitModel == req.Model) {
+				if withModel, errSet := sjson.SetBytes(bytes.Clone(authPayload), "model", boundModel); errSet == nil {
+					authPayload = withModel
+				}
+			}
+			errPayload, errAuth := cliproxyexecutor.AuthorizeWebsocketTurn(streamCtx, authPayload)
+			if errAuth != nil {
+				fail(errAuth)
+				return false, false
+			}
+			if len(errPayload) > 0 {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: errPayload}:
+					return false, true
+				case <-streamCtx.Done():
+					return false, false
+				}
+			}
+			return true, true
+		}
 		processCreatePayload := func(payload []byte) bool {
+			if allowed, keepOpen := authorizePayload(payload, false); !allowed {
+				return keepOpen
+			}
 			metadataMu.Lock()
 			isAppend := gjson.GetBytes(payload, "type").String() == "response.append"
 			prevID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
@@ -153,14 +187,14 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return true
 			}
 			model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
-			if model != "" && model != req.Model && model != gjson.GetBytes(initial.originalPayload, "model").String() {
+			if model != "" && model != req.Model && model != boundModel {
 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
 				return false
 			}
 			if model == "" {
 				model = req.Model
 				if model == "" {
-					model = strings.TrimSpace(gjson.GetBytes(initial.originalPayload, "model").String())
+					model = boundModel
 				}
 				payload, _ = sjson.SetBytes(payload, "model", model)
 			}
@@ -278,6 +312,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 				switch gjson.GetBytes(payload, "type").String() {
 				case "response.steer":
+					if allowed, keepOpen := authorizePayload(payload, true); !allowed {
+						if !keepOpen {
+							return
+						}
+						continue
+					}
 					// Steering carries business input but must not inherit response.create defaults.
 					steerReq := req
 					steerReq.Payload = payload
