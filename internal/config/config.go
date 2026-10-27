@@ -89,9 +89,6 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
-	// Devin configures provider-wide Devin request behavior.
-	Devin DevinConfig `yaml:"devin" json:"devin"`
-
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
@@ -137,14 +134,14 @@ type Config struct {
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// claude, codex, kimi, xai, meta, devin.
+	// claude, codex, xai, meta.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
 	// codex-api-key, xai-api-key, meta-api-key, claude-api-key, and openai-compatibility.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
 	// OAuthRequestScopedErrors defines per-provider request-scoped error rules applied to OAuth/file-backed auth entries.
-	// Supported channels include: claude, codex, kimi, xai, meta, and devin.
+	// Supported channels include: claude, codex, xai, and meta.
 	//
 	// NOTE: This applies only to OAuth credentials and does not affect per-credential request-scoped-errors under *-api-key.
 	OAuthRequestScopedErrors map[string][]RequestScopedErrorRule `yaml:"oauth-request-scoped-errors,omitempty" json:"oauth-request-scoped-errors,omitempty"`

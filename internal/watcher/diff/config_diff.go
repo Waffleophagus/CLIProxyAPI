@@ -101,10 +101,6 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("nonstream-keepalive-interval: %d -> %d", oldCfg.NonStreamKeepAliveInterval, newCfg.NonStreamKeepAliveInterval))
 	}
 
-	if !reflect.DeepEqual(oldCfg.Devin.SensitiveWords, newCfg.Devin.SensitiveWords) {
-		changes = append(changes, fmt.Sprintf("devin.sensitive-words: %d -> %d", len(oldCfg.Devin.SensitiveWords), len(newCfg.Devin.SensitiveWords)))
-	}
-
 	if oldCfg.Codex.DisableCodexCloaking != newCfg.Codex.DisableCodexCloaking {
 		changes = append(changes, fmt.Sprintf("codex.disable-codex-cloaking: %t -> %t", oldCfg.Codex.DisableCodexCloaking, newCfg.Codex.DisableCodexCloaking))
 	}

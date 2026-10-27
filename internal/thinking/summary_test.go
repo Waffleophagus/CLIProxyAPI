@@ -46,19 +46,6 @@ func TestExtractSummaryConfig(t *testing.T) {
 		{name: "claude enabled display with zero budget is invalid", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":0,"display":"summarized"}}`, wantMode: SummaryUnspecified},
 		{name: "claude auto compatibility budget summarized", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":-1,"display":"summarized"}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
 		{name: "claude auto compatibility budget omitted", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":-1,"display":"omitted"}}`, wantMode: SummaryDisabled},
-		{name: "interactions auto", format: "interactions", body: `{"generation_config":{"thinking_summaries":"auto"}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
-		{name: "interactions none", format: "interactions", body: `{"generation_config":{"thinking_summaries":"none"}}`, wantMode: SummaryDisabled},
-		{name: "interactions nested snake include false", format: "interactions", body: `{"generation_config":{"thinking_config":{"include_thoughts":false}}}`, wantMode: SummaryDisabled},
-		{name: "interactions nested camel include true", format: "interactions", body: `{"generation_config":{"thinking_config":{"includeThoughts":true}}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
-		{name: "interactions camel config snake include true", format: "interactions", body: `{"generation_config":{"thinkingConfig":{"include_thoughts":true}}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
-		{name: "interactions camel config camel include false", format: "interactions", body: `{"generation_config":{"thinkingConfig":{"includeThoughts":false}}}`, wantMode: SummaryDisabled},
-		{name: "interactions enum wins over compatibility reasoning", format: "interactions", body: `{"generation_config":{"thinking_summaries":"none"},"reasoning":{"summary":"auto"}}`, wantMode: SummaryDisabled},
-		{name: "interactions compatibility reasoning auto", format: "interactions", body: `{"reasoning":{"summary":"auto"}}`, wantMode: SummaryEnabled, wantDetail: "auto"},
-		{name: "interactions compatibility reasoning none", format: "interactions", body: `{"reasoning":{"summary":"none"}}`, wantMode: SummaryDisabled},
-		{name: "interactions enum wins over include alias", format: "interactions", body: `{"generation_config":{"thinking_summaries":"none","thinking_config":{"include_thoughts":true}}}`, wantMode: SummaryDisabled},
-		{name: "interactions string include alias is invalid", format: "interactions", body: `{"generation_config":{"thinking_config":{"include_thoughts":"false"}}}`, wantMode: SummaryUnspecified},
-		{name: "interactions detailed is invalid", format: "interactions", body: `{"generation_config":{"thinking_summaries":"detailed"}}`, wantMode: SummaryUnspecified},
-		{name: "interactions boolean is invalid", format: "interactions", body: `{"generation_config":{"thinking_summaries":true}}`, wantMode: SummaryUnspecified},
 	}
 
 	for _, test := range tests {
@@ -97,7 +84,6 @@ func TestApplySummaryConfig_OpenAIChatProviderDialects(t *testing.T) {
 		{name: "OpenRouter enables visibility", provider: "openrouter", body: `{}`, mode: SummaryEnabled, wantExclude: "false", wantExisting: true},
 		{name: "OpenRouter disables visibility", provider: "prod-openrouter", body: `{}`, mode: SummaryDisabled, wantExclude: "true", wantExisting: true},
 		{name: "DeepSeek preserves documented effort", provider: "deepseek", body: `{"reasoning_effort":"high"}`, mode: SummaryDisabled, wantEffort: "high"},
-		{name: "Kimi preserves documented K3 effort", provider: "kimi", body: `{"reasoning_effort":"max"}`, mode: SummaryEnabled, wantEffort: "max"},
 		{name: "Moonshot does not invent visibility", provider: "moonshot", body: `{"thinking":{"type":"enabled"}}`, mode: SummaryEnabled},
 		{name: "generic provider updates existing OpenRouter field", provider: "openai-compatibility", body: `{"reasoning":{"exclude":false}}`, mode: SummaryDisabled, wantExclude: "true", wantExisting: true},
 	}
@@ -184,8 +170,6 @@ func TestApplySummaryConfig(t *testing.T) {
 		{name: "chat disabled invents no openrouter field", format: "openai", body: `{"reasoning_effort":"high"}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "reasoning", want: ""},
 		{name: "claude enabled", format: "claude", body: `{"thinking":{"type":"adaptive"}}`, config: SummaryConfig{Mode: SummaryEnabled}, path: "thinking.display", want: "summarized"},
 		{name: "claude disabled", format: "claude", body: `{"thinking":{"type":"enabled","budget_tokens":2048}}`, config: SummaryConfig{Mode: SummaryDisabled}, path: "thinking.display", want: "omitted"},
-		{name: "interactions detail collapses to auto", format: "interactions", config: SummaryConfig{Mode: SummaryEnabled, Detail: "detailed"}, path: "generation_config.thinking_summaries", want: "auto"},
-		{name: "interactions disabled", format: "interactions", config: SummaryConfig{Mode: SummaryDisabled}, path: "generation_config.thinking_summaries", want: "none"},
 		{name: "responses concise", format: "openai-response", config: SummaryConfig{Mode: SummaryEnabled, Detail: "concise"}, path: "reasoning.summary", want: "concise"},
 	}
 
@@ -209,9 +193,7 @@ func TestApplySummaryConfigNormalizesTargetAliases(t *testing.T) {
 		body      string
 		canonical string
 		alias     string
-	}{
-		{format: "interactions", body: `{"generation_config":{"thinkingSummaries":"auto"}}`, canonical: "generation_config.thinking_summaries", alias: "generation_config.thinkingSummaries"},
-	}
+	}{}
 	for _, test := range tests {
 		out := ApplySummaryConfigForModel([]byte(test.body), test.format, "", SummaryConfig{Mode: SummaryEnabled})
 		if !gjson.GetBytes(out, test.canonical).Exists() {

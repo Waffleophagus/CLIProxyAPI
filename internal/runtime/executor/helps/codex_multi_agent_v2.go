@@ -10,7 +10,6 @@ import (
 	openaichatclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/chat-completions"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 	codexclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/codex/claude"
-	interactionsclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/interactions/claude"
 	openaiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/claude"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -145,8 +144,6 @@ func translateRequestWithAPIKeyModelCompatibilityForExecutor(ctx context.Context
 	switch {
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatCodex:
 		translated, convertErr = codexclaude.ConvertClaudeRequestToCodexWithCompat(model, payload, stream)
-	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatInteractions:
-		translated, convertErr = interactionsclaude.ConvertClaudeRequestToInteractionsWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatOpenAI:
 		translated, convertErr = openaiclaude.ConvertClaudeRequestToOpenAIWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatOpenAI && to == sdktranslator.FormatClaude:

@@ -121,9 +121,6 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			models = registry.GetCodexProModels()
 		}
 		models = applyExcludedModels(models, excluded)
-	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
-		models = registry.GetKimiModels()
-		models = applyExcludedModels(models, excluded)
 	case "xai":
 		models = registry.GetXAIModels()
 		if entry := resolveConfigXAIKeyForConfig(cfg, a); entry != nil {
@@ -134,9 +131,6 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = applyExcludedModels(models, excluded)
-	case "devin":
-		models = registry.GetDevinModels()
 		models = applyExcludedModels(models, excluded)
 	case "meta":
 		models = registry.GetMetaModels()

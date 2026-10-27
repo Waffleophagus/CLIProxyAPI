@@ -8,7 +8,7 @@ Go 1.26+ personal inference proxy providing OpenAI (Chat Completions + Responses
 - Module path stays `github.com/router-for-me/CLIProxyAPI/v8`.
 
 ## Hard-fork scope
-Do not reintroduce removed subsystems: Google providers (Gemini CLI, Antigravity, AI Studio/wsrelay, Vertex) and the Gemini/Interactions inbound API, CLIProxyAPIHome mode, the native plugin system, Redis queue/port multiplexer, Postgres/git/object-store backends, mDNS discovery, TUI, management.html downloader and GitHub version checks, the `/v0/management` API, and upstream release/registry automation. `/v8/management` is the only management API.
+Do not reintroduce removed subsystems: Google providers (Gemini CLI, Antigravity, AI Studio/wsrelay, Vertex) and the Gemini/Interactions inbound API, the Kimi and Devin providers (and the Interactions translators), CLIProxyAPIHome mode, the native plugin system, Redis queue/port multiplexer, Postgres/git/object-store backends, mDNS discovery, TUI, management.html downloader and GitHub version checks, the `/v0/management` API, and upstream release/registry automation. `/v8/management` is the only management API.
 
 ## Commands
 ```bash
@@ -21,7 +21,7 @@ go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
 docker compose up -d --build # Build and run the local image (cliproxy:local)
 ```
-- Flags: `--config <path>`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`, login flags `--claude-login`, `--codex-login`, `--codex-device-login`, `--siwc-bind <file>`, `--xai-login`, `--kimi-login`, `--kimi-ai-login`, `--meta-login`, `--devin-login`
+- Flags: `--config <path>`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`, login flags `--claude-login`, `--codex-login`, `--codex-device-login`, `--siwc-bind <file>`, `--xai-login`, `--meta-login`
 - The server has no cgo dependencies; the Docker image builds with `CGO_ENABLED=0`.
 - `.github/scripts/refresh-model-catalogs.sh` refreshes the embedded model catalogs in `internal/registry/models/`.
 
@@ -33,16 +33,16 @@ docker compose up -d --build # Build and run the local image (cliproxy:local)
 
 ## Architecture
 - `cmd/server/` — Server entrypoint and login flags
-- `cmd/fetch_codex_models/`, `cmd/fetch_devin_models/`, `cmd/validate_codex_models/` — Model catalog maintenance utilities
+- `cmd/fetch_codex_models/`, `cmd/validate_codex_models/` — Model catalog maintenance utilities
 - `internal/api/` — Gin HTTP server, routes, middleware; `handlers/management/` implements `/v8/management`
 - `internal/access/` — Client API-key access providers and reconciliation
-- `internal/auth/` — Provider OAuth flows (claude, codex incl. SIWC, kimi, xai, meta, devin)
+- `internal/auth/` — Provider OAuth flows (claude, codex incl. SIWC, xai, meta)
 - `internal/cmd/` — CLI login commands and service startup
 - `internal/client/` — Client-specific compatibility (Claude models, Codex apply-patch/live/multi-agent/tool-schema, Grok Build)
 - `internal/config/` — Config types, v8 layout/migration, load/save with comment preservation
 - `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
-- `internal/runtime/executor/` — Per-provider runtime executors (Claude, Codex incl. WebSocket/images/live, xAI, Kimi, Meta, Devin, OpenAI-compatible); helpers in `helps/`
-- `internal/translator/` — Protocol translators (openai, claude, codex, interactions — used by Devin) and shared `common`
+- `internal/runtime/executor/` — Per-provider runtime executors (Claude, Codex incl. WebSocket/images/live, xAI, Meta, OpenAI-compatible); helpers in `helps/`
+- `internal/translator/` — Protocol translators (openai, claude, codex) and shared `common`
 - `internal/slugs/` — Follow-mode slugs: polls OpenAI-compatible `/models` and resolves `follow: true` aliases into the effective runtime config (`Service.cfg`; the loaded config stays in `Service.sourceCfg`)
 - `internal/tailnet/` — Embedded Tailscale node (`tailscale.com/tsnet`): tailnet listeners served via `api.Server.ServeListener` (requests marked via-tailnet), WhoIs identity for `tailscale.management-users`, node status
 - `internal/registry/` — Model registry, embedded catalogs and remote updaters (`StartModelCatalogUpdaters`); `--local-model` disables remote updates

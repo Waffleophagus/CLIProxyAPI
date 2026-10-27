@@ -57,7 +57,7 @@ type ModelInfo struct {
 	Type string `json:"type"`
 	// DisplayName is the human-readable name for the model
 	DisplayName string `json:"display_name,omitempty"`
-	// Name is an optional alternate model name (used by Devin catalog entries)
+	// Name is an optional alternate model name
 	Name string `json:"name,omitempty"`
 	// Version is the model version
 	Version string `json:"version,omitempty"`
@@ -315,7 +315,7 @@ func responsesWebSearchProviderPathSupport(provider string) *bool {
 	switch provider {
 	case "codex", "xai", "claude":
 		return boolPointer(true)
-	case "openai", "openai-compatibility", "kimi", "kimi-ai", "kimi.ai", "kimi.com":
+	case "openai", "openai-compatibility":
 		return boolPointer(false)
 	default:
 		if strings.HasPrefix(provider, "openai-compatible-") {

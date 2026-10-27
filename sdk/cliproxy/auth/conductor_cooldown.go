@@ -376,7 +376,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	// genuine model-scoped 429s carry different messages and stay eligible.
 	liveShadow := state.credentialQuotaShadow.cloneShallow()
 	if liveShadow == nil && !state.credentialQuotaPropagated && state.Quota.Reason != "credential_quota" &&
-		isModelStateActiveCooldown(state, now) && !isDevinQuotaExhaustionMessage(devinStateErrorText(state)) {
+		isModelStateActiveCooldown(state, now) {
 		liveShadow = state.cloneShallow()
 	}
 	wasLiveWrapped := state.credentialQuotaPropagated || state.Quota.Reason == "credential_quota" ||
@@ -398,27 +398,24 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	isWrappedRecord := record.IndependentState != nil || record.CredentialQuotaPropagated || strings.TrimSpace(quota.Reason) == "credential_quota"
 	if !isWrappedRecord && wasLiveWrapped {
 		// An unwrapped independent record landing beneath a live wrap becomes
-		// the model's independent layer (unless it is itself a legacy
-		// credential-derived exhaustion state); the merged outer fields keep
+		// the model's independent layer; the merged outer fields keep
 		// presenting the propagated credential quota.
-		if !isDevinQuotaExhaustionMessage(devinRecordErrorText(record)) {
-			recordShadow := &ModelState{
-				Unavailable:    true,
-				Status:         StatusError,
-				StatusMessage:  reason,
-				NextRetryAfter: record.NextRetryAfter,
-				Quota:          quota,
-				LastError:      cloneError(record.LastError),
-				UpdatedAt:      updatedAt,
-			}
-			preferred := state.credentialQuotaShadow
-			if preferred == nil || (liveShadow != nil && !liveShadow.UpdatedAt.After(updatedAt)) {
-				preferred = recordShadow
-			} else if liveShadow != nil && liveShadow.UpdatedAt.After(updatedAt) {
-				preferred = liveShadow
-			}
-			state.credentialQuotaShadow = preferred
+		recordShadow := &ModelState{
+			Unavailable:    true,
+			Status:         StatusError,
+			StatusMessage:  reason,
+			NextRetryAfter: record.NextRetryAfter,
+			Quota:          quota,
+			LastError:      cloneError(record.LastError),
+			UpdatedAt:      updatedAt,
 		}
+		preferred := state.credentialQuotaShadow
+		if preferred == nil || (liveShadow != nil && !liveShadow.UpdatedAt.After(updatedAt)) {
+			preferred = recordShadow
+		} else if liveShadow != nil && liveShadow.UpdatedAt.After(updatedAt) {
+			preferred = liveShadow
+		}
+		state.credentialQuotaShadow = preferred
 		state.credentialQuotaPropagated = true
 		applyCooldownFields(&state.Quota, QuotaState{
 			Exceeded:      true,
@@ -1116,7 +1113,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								// quota restoration does not supersede). An outer
 								// credential_quota label instead proves a prior wrap whose
 								// state must never be snapshotted as independence.
-								priorIndependent := prevModelRetryAfter.After(now) && !isDevinQuotaExhaustionMessage(devinStateErrorText(savedOuterState))
+								priorIndependent := prevModelRetryAfter.After(now)
 								if priorIndependent {
 									preserved := savedOuterState.cloneShallow()
 									preserved.NextRetryAfter = prevModelRetryAfter
@@ -1150,7 +1147,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 										alreadyPropagated := otherState.credentialQuotaPropagated ||
 											otherState.Quota.Reason == "credential_quota"
 										if !alreadyPropagated {
-											if isModelStateActiveCooldown(otherState, now) && !isDevinQuotaExhaustionMessage(devinStateErrorText(otherState)) {
+											if isModelStateActiveCooldown(otherState, now) {
 												otherState.credentialQuotaShadow = otherState.cloneShallow()
 											} else {
 												otherState.credentialQuotaShadow = nil
@@ -1340,14 +1337,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
 	}
-	// A newly exhausted Devin credential must join the refresh schedule so
-	// quota revalidation can detect early restoration (issue #6690).
-	if authSnapshot != nil {
-		if _, due := devinQuotaRevalidateAt(authSnapshot, now); due {
-			m.queueRefreshReschedule(result.AuthID)
-		} else if scheduleUnauthorizedRefresh {
-			m.queueRefreshReschedule(result.AuthID)
-		}
+	if authSnapshot != nil && scheduleUnauthorizedRefresh {
+		m.queueRefreshReschedule(result.AuthID)
 	}
 
 	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)

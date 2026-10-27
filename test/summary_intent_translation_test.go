@@ -46,8 +46,6 @@ func TestSummaryIntentTranslation(t *testing.T) {
 		{name: "Responses effort alone leaves Claude display absent", from: sdktranslator.FormatOpenAIResponse, to: sdktranslator.FormatClaude, body: `{"model":"claude-opus-5","reasoning":{"effort":"high"},"input":"hi"}`, path: "thinking.display"},
 		{name: "Responses summary enables Claude summary", from: sdktranslator.FormatOpenAIResponse, to: sdktranslator.FormatClaude, body: `{"model":"claude-opus-5","reasoning":{"effort":"high","summary":"auto"},"input":"hi"}`, path: "thinking.display", want: "summarized", wantExists: true},
 		{name: "Responses null summary disables Claude summary", from: sdktranslator.FormatOpenAIResponse, to: sdktranslator.FormatClaude, body: `{"model":"claude-opus-5","reasoning":{"effort":"high","summary":null},"input":"hi"}`, path: "thinking.display", want: "omitted", wantExists: true},
-		{name: "Chat effort enables Interactions summary", from: sdktranslator.FormatOpenAI, to: sdktranslator.FormatInteractions, body: `{"model":"gemini-3.6-flash","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`, path: "generation_config.thinking_summaries", want: "auto", wantExists: true},
-		{name: "Responses concise summary maps to Interactions auto", from: sdktranslator.FormatOpenAIResponse, to: sdktranslator.FormatInteractions, body: `{"model":"gemini-3.6-flash","reasoning":{"effort":"high","summary":"concise"},"input":"hi"}`, path: "generation_config.thinking_summaries", want: "auto", wantExists: true},
 	}
 
 	for _, test := range tests {
@@ -59,24 +57,6 @@ func TestSummaryIntentTranslation(t *testing.T) {
 			}
 			if test.wantExists && result.String() != test.want {
 				t.Fatalf("%s = %q, want %q; body=%s", test.path, result.String(), test.want, out)
-			}
-		})
-	}
-}
-
-func TestInvalidInteractionsSummaryDoesNotWriteTargetControl(t *testing.T) {
-	body := []byte(`{"model":"model","generation_config":{"thinking_summaries":"banana"},"input":"hi"}`)
-	for _, test := range []struct {
-		name string
-		to   sdktranslator.Format
-		path string
-	}{
-		{name: "Codex", to: sdktranslator.FormatCodex, path: "reasoning.summary"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			out := sdktranslator.TranslateRequest(sdktranslator.FormatInteractions, test.to, "model", body, false)
-			if result := gjson.GetBytes(out, test.path); result.Exists() {
-				t.Fatalf("invalid Interactions summary wrote %s=%s; body=%s", test.path, result.Raw, out)
 			}
 		})
 	}

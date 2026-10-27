@@ -6,35 +6,6 @@ import (
 	"testing"
 )
 
-func TestClaudeThinkingReplayClearDoesNotClearKimiState(t *testing.T) {
-	ClearClaudeThinkingReplayCache()
-	ClearKimiThinkingReplayCache()
-	t.Cleanup(ClearClaudeThinkingReplayCache)
-	t.Cleanup(ClearKimiThinkingReplayCache)
-
-	const modelFamily = "shared-model"
-	const sessionKey = "execution:shared-session"
-	kimiContent := []byte(`[{"type":"thinking","signature":"kimi"}]`)
-	claudeContent := []byte(`[{"type":"thinking","signature":"claude"}]`)
-	if !CacheKimiThinkingReplayBestEffort(context.Background(), modelFamily, sessionKey, kimiContent) {
-		t.Fatal("failed to seed Kimi replay state")
-	}
-	if !CacheClaudeThinkingReplayBestEffort(context.Background(), modelFamily, sessionKey, claudeContent) {
-		t.Fatal("failed to seed Claude replay state")
-	}
-
-	ClearClaudeThinkingReplayCache()
-
-	gotKimi, foundKimi, errKimi := GetKimiThinkingReplayRequired(context.Background(), modelFamily, sessionKey)
-	if errKimi != nil || !foundKimi || !bytes.Equal(gotKimi, kimiContent) {
-		t.Fatalf("Kimi replay after Claude clear = %s, found %v, error %v; want preserved state", gotKimi, foundKimi, errKimi)
-	}
-	gotClaude, foundClaude, errClaude := GetClaudeThinkingReplayRequired(context.Background(), modelFamily, sessionKey)
-	if errClaude != nil || foundClaude || len(gotClaude) != 0 {
-		t.Fatalf("Claude replay after Claude clear = %d turns, found %v, error %v; want cleared state", len(gotClaude), foundClaude, errClaude)
-	}
-}
-
 func TestClaudeThinkingReplayAppendsAssistantTurns(t *testing.T) {
 	ClearClaudeThinkingReplayCache()
 	t.Cleanup(ClearClaudeThinkingReplayCache)

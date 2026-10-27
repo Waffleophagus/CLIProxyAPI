@@ -33,11 +33,6 @@ func StripThinkingConfig(body []byte, provider string) []byte {
 		paths = []string{"thinking", "output_config.effort"}
 	case "openai":
 		paths = []string{"reasoning_effort", "reasoning"}
-	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
-		paths = []string{
-			"reasoning_effort",
-			"thinking",
-		}
 	case "codex", "xai":
 		paths = []string{"reasoning"}
 	default:

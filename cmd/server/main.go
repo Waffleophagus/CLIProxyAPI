@@ -61,10 +61,7 @@ func main() {
 	var claudeLogin bool
 	var noBrowser bool
 	var oauthCallbackPort int
-	var kimiLogin bool
-	var kimiAILogin bool
 	var xaiLogin bool
-	var devinLogin bool
 	var metaLogin bool
 	var siwcBind string
 	var configPath string
@@ -76,14 +73,11 @@ func main() {
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
-	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi (.com) using OAuth")
-	flag.BoolVar(&kimiAILogin, "kimi-ai-login", false, "Login to Kimi.ai using OAuth")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
-	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
 	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta using OAuth")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&siwcBind, "siwc-bind", "", "Bind Sign in with ChatGPT (SIWC) credentials to a Codex credential file")
-	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalogs unless models.catalog, models.codex-catalog, or models.devin-catalog explicitly overrides the source")
+	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalogs unless models.catalog or models.codex-catalog explicitly overrides the source")
 
 	// Parse the command-line flags.
 	flag.Parse()
@@ -140,7 +134,7 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
-	commandMode := siwcBind != "" || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin
+	commandMode := siwcBind != "" || codexLogin || codexDeviceLogin || claudeLogin || xaiLogin || metaLogin
 	serverOptions := []api.ServerOption(nil)
 	if shouldEnableExampleAPIKeySafeMode(cfg, commandMode) {
 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)
@@ -164,14 +158,8 @@ func main() {
 		cmd.DoCodexDeviceLogin(cfg, options)
 	case claudeLogin:
 		cmd.DoClaudeLogin(cfg, options)
-	case kimiLogin:
-		cmd.DoKimiLogin(cfg, options)
-	case kimiAILogin:
-		cmd.DoKimiAILogin(cfg, options)
 	case xaiLogin:
 		cmd.DoXAILogin(cfg, options)
-	case devinLogin:
-		cmd.DoDevinLogin(cfg, options)
 	case metaLogin:
 		cmd.DoMetaLogin(cfg, options)
 	default:

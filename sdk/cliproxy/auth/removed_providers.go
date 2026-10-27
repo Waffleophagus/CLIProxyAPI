@@ -15,6 +15,11 @@ var removedAuthProviders = map[string]struct{}{
 	"antigravity": {},
 	"vertex":      {},
 	"aistudio":    {},
+	"kimi":        {},
+	"kimi-ai":     {},
+	"kimi.ai":     {},
+	"kimi.com":    {},
+	"devin":       {},
 }
 
 var removedAuthProviderWarned sync.Map

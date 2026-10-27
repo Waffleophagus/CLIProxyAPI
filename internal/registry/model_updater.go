@@ -84,12 +84,7 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"codex", oldData.CodexTeam, newData.CodexTeam},
 		{"codex", oldData.CodexPlus, newData.CodexPlus},
 		{"codex", oldData.CodexPro, newData.CodexPro},
-		{"kimi", oldData.Kimi, newData.Kimi},
-		{"kimi-ai", oldData.Kimi, newData.Kimi},
-		{"kimi.ai", oldData.Kimi, newData.Kimi},
-		{"kimi.com", oldData.Kimi, newData.Kimi},
 		{"xai", oldData.XAI, newData.XAI},
-		{"devin", oldData.Devin, newData.Devin},
 		{"meta", oldData.Meta, newData.Meta},
 	}
 
@@ -213,7 +208,6 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "codex-team", models: data.CodexTeam},
 		{name: "codex-plus", models: data.CodexPlus},
 		{name: "codex-pro", models: data.CodexPro},
-		{name: "kimi", models: data.Kimi},
 		{name: "xai", models: data.XAI},
 		{name: "meta", models: data.Meta},
 	}

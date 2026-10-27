@@ -5,10 +5,7 @@
     { id: 'claude', label: 'Claude', note: 'Claude Pro / Max subscription (Anthropic sign-in).' },
     { id: 'codex', label: 'Codex', note: 'ChatGPT Plus / Pro / Team account (OpenAI sign-in).' },
     { id: 'xai', label: 'xAI', note: 'Grok account; approve with a code.' },
-    { id: 'kimi', label: 'Kimi (kimi.com)', note: 'Moonshot Kimi account; approve with a code.' },
-    { id: 'kimi-ai', label: 'Kimi (kimi.ai)', note: 'International Kimi account; approve with a code.' },
-    { id: 'meta', label: 'Meta', note: 'Meta AI account; approve with a code.' },
-    { id: 'devin', label: 'Devin', note: 'Devin account (Cognition sign-in).' }
+    { id: 'meta', label: 'Meta', note: 'Meta AI account; approve with a code.' }
   ];
 </script>
 

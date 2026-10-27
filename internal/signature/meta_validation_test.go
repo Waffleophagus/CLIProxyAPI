@@ -211,7 +211,6 @@ func TestMetaSignatureCompatibility_OtherTargets(t *testing.T) {
 	}{
 		{SignatureProviderClaude, SignatureActionDropBlock},
 		{SignatureProviderGemini, SignatureActionReplaceWithGeminiBypass},
-		{SignatureProviderKimi, SignatureActionDropSignature},
 		{SignatureProviderGrok, SignatureActionDropBlock},
 	} {
 		decision := DecideSignatureCompatibility(tc.target, sig, SignatureBlockKindUnknown)

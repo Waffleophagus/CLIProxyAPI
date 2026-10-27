@@ -28,7 +28,6 @@ func purgeExpiredCaches() {
 	now := time.Now()
 	purgeExpiredCodexReasoningReplayCache(now)
 	purgeExpiredXAIReasoningReplayCache(now)
-	purgeExpiredKimiThinkingReplayCache(now)
 	purgeExpiredClaudeThinkingReplayCache(now)
 	purgeExpiredClaudeWebSearchResultCache(now)
 }

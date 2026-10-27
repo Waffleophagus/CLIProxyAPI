@@ -15,7 +15,4 @@ const (
 
 	// OpenaiResponse represents the OpenAI response format identifier.
 	OpenaiResponse = "openai-response"
-
-	// Interactions represents the Interactions wire format spoken by the Devin executor.
-	Interactions = "interactions"
 )

@@ -4,12 +4,11 @@ import (
 	"encoding/base64"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 )
 
-const devinToolIDPrefix = "cpa_tid_v1_"
+const toolCallIDPrefix = "cpa_tid_v1_"
 
 func isPortableToolCallID(id string) bool {
 	if id == "" {
@@ -25,47 +24,18 @@ func isPortableToolCallID(id string) bool {
 	return true
 }
 
-// EncodeDevinToolCallID reserves a namespace so native IDs cannot collide with
-// encoded IDs. Empty deltas remain empty until upstream supplies the call ID.
-func EncodeDevinToolCallID(id string) string {
-	if id == "" || (isPortableToolCallID(id) && !strings.HasPrefix(id, devinToolIDPrefix)) {
+// encodeToolCallID reserves a namespace so native IDs cannot collide with
+// encoded IDs.
+func encodeToolCallID(id string) string {
+	if id == "" || (isPortableToolCallID(id) && !strings.HasPrefix(id, toolCallIDPrefix)) {
 		return id
 	}
-	return devinToolIDPrefix + base64.RawURLEncoding.EncodeToString([]byte(id))
-}
-
-// DecodeDevinToolCallID removes exactly one canonical encoding layer. Ordinary
-// legal IDs, malformed encodings and arbitrary base64-looking IDs stay intact.
-func DecodeDevinToolCallID(id string) string {
-	if !strings.HasPrefix(id, devinToolIDPrefix) {
-		return id
-	}
-	decoded, errDecode := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(id, devinToolIDPrefix))
-	if errDecode != nil || !utf8.Valid(decoded) || len(decoded) == 0 {
-		return id
-	}
-	original := string(decoded)
-	if EncodeDevinToolCallID(original) != id {
-		return id
-	}
-	return original
-}
-
-// RestoreDevinToolCallIDs runs before protobuf construction and user payload
-// rules, keeping assistant calls and tool results in the upstream namespace.
-func RestoreDevinToolCallIDs(prompts []DevinPrompt) {
-	for i := range prompts {
-		for j := range prompts[i].ToolCalls {
-			prompts[i].ToolCalls[j].ID = DecodeDevinToolCallID(prompts[i].ToolCalls[j].ID)
-		}
-		prompts[i].ToolCallID = DecodeDevinToolCallID(prompts[i].ToolCallID)
-		prompts[i].OriginalToolCallID = DecodeDevinToolCallID(prompts[i].OriginalToolCallID)
-	}
+	return toolCallIDPrefix + base64.RawURLEncoding.EncodeToString([]byte(id))
 }
 
 // NormalizeClaudeToolCallIDs repairs only client tool ID fields. Existing legal
-// IDs (including Devin encodings) are never re-encoded. Legacy collisions get
-// a deterministic underscore-prefixed alias, without a process-wide ledger.
+// IDs are never re-encoded. Legacy collisions get a deterministic
+// underscore-prefixed alias, without a process-wide ledger.
 func NormalizeClaudeToolCallIDs(body []byte) []byte {
 	type idField struct {
 		start int
@@ -108,7 +78,7 @@ func NormalizeClaudeToolCallIDs(body []byte) []byte {
 	for _, field := range fields {
 		id := mapped[field.id]
 		if id == "" {
-			id = EncodeDevinToolCallID(field.id)
+			id = encodeToolCallID(field.id)
 			for used[id] {
 				id = "_" + id
 			}

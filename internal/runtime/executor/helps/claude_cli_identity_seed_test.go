@@ -133,7 +133,7 @@ func TestPrepareClaudeCLIFingerprintAuthIsolatesUnlockedMetadataReaders(t *testi
 	go func() {
 		defer wg.Done()
 		for range 200 {
-			// Same unlocked read Kimi OpenAI-compat requests perform via kimiCreds.
+			// Unlocked metadata read racing identity seeding.
 			_ = shared.Metadata["access_token"].(string)
 		}
 	}()

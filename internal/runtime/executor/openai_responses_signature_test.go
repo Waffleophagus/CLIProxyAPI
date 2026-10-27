@@ -3,10 +3,12 @@ package executor
 import (
 	"context"
 	"encoding/base64"
+	"math/rand"
 	"strings"
 	"testing"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
@@ -486,28 +488,6 @@ func TestSanitizeOpenAIResponsesReasoningEncryptedContent_StripsRouterSuffixOnNo
 		}
 	}
 
-	// Cache-prefixed compatible signatures (e.g. "swe#sealed.v1.sig" or "gpt#...")
-	// must be rewritten to their normalized unprefixed form in encrypted_content.
-	prefixedSWEBody := []byte(`{"store":false,"input":[{"type":"reasoning","summary":[],"encrypted_content":"swe#sealed.v1.token"}]}`)
-	gotSWE := sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(
-		context.Background(),
-		"test",
-		prefixedSWEBody,
-		true,
-		"devin/swe-2",
-		"https://openrouter.ai/api/v1",
-	)
-	if gotSig := gjson.GetBytes(gotSWE, "input.0.encrypted_content").String(); gotSig != "sealed.v1.token" {
-		t.Fatalf("prefixed SWE encrypted_content = %q, want normalized %q", gotSig, "sealed.v1.token")
-	}
-
-	// Gemini carrier wrapping a Meta signature must never be misclassified as a
-	// Devin sealed signature.
-	metaCarrier := base64.StdEncoding.EncodeToString([]byte("cpa-codex-gemini-carrier-v1:Q-PaDgE" + strings.Repeat("A", 1419)))
-	if sigBytes, sigType := parseSignatureBytes(metaCarrier); len(sigBytes) != 0 || sigType != "" {
-		t.Fatalf("parseSignatureBytes(metaCarrier) = (%q, %q), want empty", sigBytes, sigType)
-	}
-
 	// Replay cache backfill + channel switch: a routed signature cached from
 	// OpenRouter is preserved on OpenRouter and stripped to native on official Codex.
 	internalcache.ClearCodexReasoningReplayCache()
@@ -549,5 +529,34 @@ func BenchmarkSanitizeOpenAIResponsesReasoningEncryptedContentLargeNoopPayload(b
 	b.ResetTimer()
 	for b.Loop() {
 		benchmarkSanitizeOpenAIResponsesReasoningOutput = sanitizeOpenAIResponsesReasoningEncryptedContent(context.Background(), "benchmark", body)
+	}
+}
+
+// Kimi is no longer served, but replayed Kimi history must still be recognized
+// as foreign: forwarded as an unknown blob, its signature makes the upstream
+// fail to decrypt the request.
+func TestSanitizeOpenAIResponsesReasoningEncryptedContentKeepForeign_StripsKimiSignature(t *testing.T) {
+	raw := make([]byte, 3255)
+	rand.New(rand.NewSource(1)).Read(raw)
+	kimiSig := base64.StdEncoding.EncodeToString(raw)
+	if !signature.IsValidKimiThinkingSignature(kimiSig) {
+		t.Fatalf("fixture is not a Kimi-shaped signature (len %d)", len(kimiSig))
+	}
+	body := []byte(`{"store":false,"input":[{"type":"reasoning","summary":[],"encrypted_content":"` + kimiSig + `"}]}`)
+	got := sanitizeOpenAIResponsesReasoningEncryptedContentKeepForeign(context.Background(), "test", body)
+	if gjson.GetBytes(got, "input.0.encrypted_content").Exists() {
+		t.Fatalf("Kimi signature should be stripped as foreign: %.200s", got)
+	}
+}
+
+// SWE sealed.v1 envelopes (formerly served through Devin) must likewise stay
+// recognized as foreign, both bare and with this repo's cache prefixes.
+func TestSanitizeOpenAIResponsesReasoningEncryptedContentKeepForeign_StripsSWESignature(t *testing.T) {
+	for _, sig := range []string{"sealed.v1.token", "swe#sealed.v1.token", "sealed#sealed.v1.token"} {
+		body := []byte(`{"store":false,"input":[{"type":"reasoning","summary":[],"encrypted_content":"` + sig + `"}]}`)
+		got := sanitizeOpenAIResponsesReasoningEncryptedContentKeepForeign(context.Background(), "test", body)
+		if gjson.GetBytes(got, "input.0.encrypted_content").Exists() {
+			t.Fatalf("%s should be stripped as foreign: %s", sig, got)
+		}
 	}
 }

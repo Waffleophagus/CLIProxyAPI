@@ -34,27 +34,11 @@ func TestTranslateRequestReturningErrorRefusesEmptiedAttachmentTurns(t *testing.
 			wantType: "file",
 		},
 		{
-			name:     "openai chat to interactions",
-			from:     sdktranslator.FormatOpenAI,
-			to:       sdktranslator.FormatInteractions,
-			refused:  `{"model":"m","messages":[` + chatHistory + `,{"role":"user","content":[{"type":"file","file":{"file_id":"file-1"}}]}]}`,
-			accepted: `{"model":"m","messages":[` + chatHistory + `,{"role":"user","content":[{"type":"file","file":{"file_data":"data:application/pdf;base64,JVBERi0xLjQK","filename":"a.pdf"}}]}]}`,
-			wantType: "file",
-		},
-		{
 			name:     "responses to openai chat",
 			from:     sdktranslator.FormatOpenAIResponse,
 			to:       sdktranslator.FormatOpenAI,
 			refused:  `{"model":"m","input":[` + responsesHistory + `,{"type":"message","role":"user","content":[{"type":"input_file","file_url":"https://example.test/a.pdf"}]}]}`,
 			accepted: `{"model":"m","input":[` + responsesHistory + `,{"type":"message","role":"user","content":[{"type":"input_file","file_id":"file-1"}]}]}`,
-			wantType: "input_file",
-		},
-		{
-			name:     "responses to interactions",
-			from:     sdktranslator.FormatOpenAIResponse,
-			to:       sdktranslator.FormatInteractions,
-			refused:  `{"model":"m","input":[` + responsesHistory + `,{"type":"message","role":"user","content":[{"type":"input_file","file_id":"file-1"}]}]}`,
-			accepted: `{"model":"m","input":[` + responsesHistory + `,{"type":"message","role":"user","content":[{"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}]}]}`,
 			wantType: "input_file",
 		},
 	}

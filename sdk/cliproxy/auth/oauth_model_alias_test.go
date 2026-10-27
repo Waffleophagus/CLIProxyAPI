@@ -173,16 +173,6 @@ func createAuthForChannel(channel string) *Auth {
 	}
 }
 
-func TestOAuthModelAliasChannel_Kimi(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range []string{"kimi", "kimi-ai", "kimi.ai", "kimi.com"} {
-		if got := OAuthModelAliasChannel(provider, "oauth"); got != provider {
-			t.Fatalf("OAuthModelAliasChannel(%q) = %q, want %q", provider, got, provider)
-		}
-	}
-}
-
 func TestOAuthModelAliasChannel_Meta(t *testing.T) {
 	t.Parallel()
 
@@ -311,50 +301,6 @@ func TestApplyOAuthModelAlias_PerAuthAliasSkipsAPIKey(t *testing.T) {
 	resolvedModel := mgr.applyOAuthModelAlias(auth, "gpt-5.5")
 	if resolvedModel != "gpt-5.5" {
 		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gpt-5.5")
-	}
-}
-
-func TestApplyOAuthModelAlias_Devin(t *testing.T) {
-	t.Parallel()
-
-	aliases := map[string][]internalconfig.OAuthModelAlias{
-		"devin": {
-			{
-				Name:         "devin/claude-fable-5-1",
-				Alias:        "fable-5-1",
-				Fork:         true,
-				ForceMapping: true,
-			},
-		},
-	}
-
-	mgr := NewManager(nil, nil, nil)
-	mgr.SetConfig(&internalconfig.Config{})
-	mgr.SetOAuthModelAlias(aliases)
-
-	auth := &Auth{ID: "devin-auth", Provider: "devin", Attributes: map[string]string{"auth_kind": "oauth"}}
-
-	resolvedModel := mgr.applyOAuthModelAlias(auth, "fable-5-1")
-	if resolvedModel != "devin/claude-fable-5-1" {
-		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "devin/claude-fable-5-1")
-	}
-
-	// Suffix preservation with Devin thinking effort
-	suffixed := mgr.applyOAuthModelAlias(auth, "fable-5-1(max)")
-	if suffixed != "devin/claude-fable-5-1(max)" {
-		t.Errorf("applyOAuthModelAlias() suffixed model = %q, want %q", suffixed, "devin/claude-fable-5-1(max)")
-	}
-
-	// Force mapping result
-	result := mgr.applyOAuthModelAliasWithResult(auth, "fable-5-1(max)")
-	if result.UpstreamModel != "devin/claude-fable-5-1(max)" {
-		t.Errorf("UpstreamModel = %q, want %q", result.UpstreamModel, "devin/claude-fable-5-1(max)")
-	}
-	if !result.ForceMapping {
-		t.Errorf("ForceMapping = false, want true")
-	}
-	if result.OriginalAlias != "fable-5-1" {
-		t.Errorf("OriginalAlias = %q, want %q", result.OriginalAlias, "fable-5-1")
 	}
 }
 

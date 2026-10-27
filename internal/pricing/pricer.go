@@ -302,7 +302,6 @@ var providerHomes = map[string]string{
 	"claude": "anthropic",
 	"codex":  "openai",
 	"xai":    "xai",
-	"kimi":   "moonshotai",
 	"meta":   "meta",
 }
 

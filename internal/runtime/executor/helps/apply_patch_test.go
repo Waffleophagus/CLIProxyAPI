@@ -44,21 +44,3 @@ func TestApplyPatchTokenUsageHelperRetainsFailureState(t *testing.T) {
 		t.Fatalf("failure frames=%d", failed)
 	}
 }
-
-func TestApplyPatchInteractionsOnlyValidSourceDoneClosesTransport(t *testing.T) {
-	var param any
-	translate := func(payload string) [][]byte {
-		return sdktranslator.TranslateStream(context.Background(), sdktranslator.FormatInteractions, sdktranslator.FormatOpenAIResponse, "model", nil, nil, []byte(payload), &param)
-	}
-	_ = translate(`{"event_type":"interaction.completed","interaction":{"id":"r"}}`)
-	if chunks := translate(`{"event_type":"done",`); len(chunks) != 0 {
-		t.Fatalf("malformed post-terminal event was accepted as a sentinel: %s", chunks)
-	}
-	chunks := translate("[DONE]")
-	if len(chunks) != 1 || !bytes.Equal(chunks[0], []byte("data: [DONE]")) {
-		t.Fatalf("first real source sentinel was swallowed: %s", chunks)
-	}
-	if len(translate("[DONE]")) != 0 || len(translate(`{"event_type":"done"}`)) != 0 {
-		t.Fatal("duplicate source sentinel was forwarded")
-	}
-}

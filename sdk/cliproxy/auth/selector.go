@@ -1428,8 +1428,6 @@ func canonicalLCPProvider(provider string) string {
 		return "openai"
 	case "claude", "anthropic":
 		return "claude"
-	case "devin":
-		return "devin"
 	default:
 		return provider
 	}

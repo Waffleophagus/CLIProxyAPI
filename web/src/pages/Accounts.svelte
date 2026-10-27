@@ -26,7 +26,7 @@
   ] as const;
   type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number]['id'];
 
-  const ORDER = ['claude', 'codex', 'xai', 'kimi', 'meta', 'devin'];
+  const ORDER = ['claude', 'codex', 'xai', 'meta'];
 
   let creds = $state<Credential[] | null>(null);
   let counters = $state<KeyCounters>({});
@@ -232,7 +232,7 @@
     {#if grouped.length === 0}
       <div class="card empty-state">
         <h2>No signed-in accounts</h2>
-        <p class="muted">Sign in with a Claude, Codex, xAI, Kimi, Meta or Devin account to route requests through it.</p>
+        <p class="muted">Sign in with a Claude, Codex, xAI or Meta account to route requests through it.</p>
         <div class="row wrap center">
           {#each OAUTH_PROVIDERS as p (p.id)}
             <button class="btn" type="button" onclick={() => addAccount(p.id)}>{p.label}</button>

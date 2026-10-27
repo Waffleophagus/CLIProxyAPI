@@ -126,8 +126,8 @@ func TestApplyClaudeHeaders_CustomHeadersCannotOverrideAnthropicIdentity(t *test
 	}
 }
 
-// Kimi rewrites base_url to api.kimi.com and custom gateways set their own host,
-// yet both delegate to ClaudeExecutor and are therefore cloaked. Keying the
+// Custom gateways set their own host, yet delegate to ClaudeExecutor and are
+// therefore cloaked. Keying the
 // context_management injection on the cloaked flag alone leaked a Claude Code
 // field into their traffic.
 func TestClaudeExecutor_ContextManagementNeverLeaksToOtherUpstreams(t *testing.T) {

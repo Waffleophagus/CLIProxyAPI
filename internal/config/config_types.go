@@ -107,12 +107,6 @@ type XAIConfig struct {
 	InjectXSearch bool `yaml:"inject-x-search" json:"inject-x-search"`
 }
 
-// DevinConfig configures provider-wide Devin request behavior.
-type DevinConfig struct {
-	// SensitiveWords is a list of words to obfuscate with zero-width characters in system prompts and messages.
-	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
-}
-
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
@@ -438,7 +432,7 @@ type RoutingConfig struct {
 
 	// SessionAffinitySubagents controls whether subagents (child sessions with parent references)
 	// inherit and bind to the parent's upstream credential across all providers (Claude, Codex,
-	// xAI, Devin), maximizing prompt and KV cache reuse.
+	// xAI), maximizing prompt and KV cache reuse.
 	// When false, subagents are distributed across the credential pool via the fallback selector.
 	// Default: true. Ignored when SessionAffinity is false.
 	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
@@ -649,15 +643,14 @@ type ClaudeKey struct {
 	// FingerprintProfile selects the Claude Code request fingerprint for this
 	// credential on Anthropic Messages. Empty/default keeps the caller request
 	// fingerprint and headers, including first-party api.anthropic.com API keys.
-	// "claude-code-cli" opts official Anthropic API keys, custom gateways, and
-	// delegated providers such as Kimi into the Claude Code OAuth CLI Messages
-	// shape (OAuth betas, CCH signing, stable CLI identity) without treating the
-	// credential as a real OAuth token for refresh/profile/runtime semantics.
+	// "claude-code-cli" opts official Anthropic API keys and custom gateways
+	// into the Claude Code OAuth CLI Messages shape (OAuth betas, CCH signing,
+	// stable CLI identity) without treating the credential as a real OAuth token
+	// for refresh/profile/runtime semantics.
 	// CCH is a per-request hash and follows the native gate: it is emitted only on
 	// api.anthropic.com and Vertex, so an opt-in on any other gateway sends the
-	// billing block unsigned and cannot bust that gateway's prompt cache. Kimi
-	// strips the attribution entirely by default and keeps it, unsigned, after an
-	// explicit opt-in. count_tokens keeps the native model/messages/tools shape.
+	// billing block unsigned and cannot bust that gateway's prompt cache.
+	// count_tokens keeps the native model/messages/tools shape.
 	// Recognized values are defined by NormalizeClaudeFingerprintProfile.
 	FingerprintProfile string `yaml:"fingerprint-profile,omitempty" json:"fingerprint-profile,omitempty"`
 
@@ -842,7 +835,7 @@ type OpenAICompatibility struct {
 	// Disabled prevents this provider from being used for routing.
 	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 
-	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
+	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/glm-5").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.

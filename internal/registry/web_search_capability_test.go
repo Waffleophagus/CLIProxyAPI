@@ -25,7 +25,7 @@ func TestResolveResponsesWebSearchCapability(t *testing.T) {
 		{name: "supported xai", routes: []NativeCapabilityRoute{{Provider: "xai", NativeCapabilities: testNativeCapabilities(&trueValue)}}, want: true, present: true},
 		{name: "supported claude", routes: []NativeCapabilityRoute{{Provider: "claude", NativeCapabilities: testNativeCapabilities(&trueValue)}}, want: true, present: true},
 		{name: "explicit unsupported model", routes: []NativeCapabilityRoute{{Provider: "codex", NativeCapabilities: testNativeCapabilities(&falseValue)}}, want: false, present: true},
-		{name: "unsupported provider path", routes: []NativeCapabilityRoute{{Provider: "kimi", NativeCapabilities: testNativeCapabilities(&trueValue)}}, want: false, present: true},
+		{name: "unsupported provider path", routes: []NativeCapabilityRoute{{Provider: "openai", NativeCapabilities: testNativeCapabilities(&trueValue)}}, want: false, present: true},
 		{name: "unknown metadata", routes: []NativeCapabilityRoute{{Provider: "codex"}}, present: false},
 		{name: "unknown provider", routes: []NativeCapabilityRoute{{Provider: "custom", NativeCapabilities: testNativeCapabilities(&trueValue)}}, present: false},
 		{name: "explicit false on unknown provider", routes: []NativeCapabilityRoute{{Provider: "custom", NativeCapabilities: testNativeCapabilities(&falseValue)}}, want: false, present: true},
@@ -62,7 +62,7 @@ func TestModelRegistryResponsesWebSearchCapabilityChecksEveryExactClientRoute(t 
 		{ID: "mixed-same-provider", MetadataModelID: "upstream-incapable", NativeCapabilities: testNativeCapabilities(&falseValue)},
 		{ID: "mixed-provider", NativeCapabilities: testNativeCapabilities(&trueValue)},
 	})
-	reg.RegisterClient("kimi-a", "kimi", []*ModelInfo{
+	reg.RegisterClient("openai-a", "openai", []*ModelInfo{
 		{ID: "mixed-provider", NativeCapabilities: testNativeCapabilities(&trueValue)},
 	})
 	reg.RegisterClient("missing-info", "codex", []*ModelInfo{

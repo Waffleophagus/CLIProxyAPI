@@ -483,7 +483,7 @@ effect when it was made (to 15-minute precision), and requests before the
 earliest `from` use the automatic price. Otherwise the served model (upstream, then
 response; the requested alias only when neither was recorded) is looked up
 under the provider's models.dev home (`claude` → `anthropic`, `codex` →
-`openai`, `xai`, `kimi` → `moonshotai`, `meta`), then first-party providers,
+`openai`, `xai`, `meta`), then first-party providers,
 then any provider when all listings agree on price. Lookups also try the ID
 without a `[1m]`/`(high)` suffix, an organization prefix, a date suffix and
 `-thinking`.
@@ -589,7 +589,7 @@ to prompt for a price after a model swap. Summaries report
 ## OAuth
 
 The login URL is shared by all providers. Set the required `provider` query
-parameter to `claude`, `codex`, `kimi`, `kimi-ai`, `xai`, `devin`, or `meta`. For example:
+parameter to `claude`, `codex`, `xai`, or `meta`. For example:
 
 ```http
 GET /v8/management/oauth/auth-url?provider=codex

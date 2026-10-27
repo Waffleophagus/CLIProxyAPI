@@ -66,7 +66,7 @@ type UsageReporter struct {
 
 	upstreamModelMu sync.RWMutex
 	// upstreamModel holds the canonical upstream model expected to be served when
-	// it differs from the requested model (e.g. local Kimi model mappings).
+	// it differs from the requested model (e.g. local model mappings).
 	upstreamModel string
 }
 
@@ -1253,67 +1253,8 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 	return detail
 }
 
-func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
-	cacheRead := firstExistingUsageNode(node, "cache_read_tokens", "cacheReadTokens")
-	toolUseTokens := firstExistingUsageNode(node, "tool_use_tokens", "total_tool_use_tokens", "toolUseTokens", "totalToolUseTokens").Int()
-	inputTokens, okInput := safeUsageTokenSum(
-		firstExistingUsageNode(node, "input_tokens", "prompt_tokens", "total_input_tokens").Int(),
-		toolUseTokens,
-	)
-	detail := usage.Detail{
-		InputTokens:         inputTokens,
-		OutputTokens:        firstExistingUsageNode(node, "output_tokens", "completion_tokens", "total_output_tokens").Int(),
-		ReasoningTokens:     firstExistingUsageNode(node, "reasoning_tokens", "thoughtsTokenCount", "total_thought_tokens").Int(),
-		TotalTokens:         firstExistingUsageNode(node, "total_tokens", "totalTokenCount").Int(),
-		CachedTokens:        firstExistingUsageNode(node, "cached_tokens", "cachedContentTokenCount", "total_cached_tokens").Int(),
-		CacheReadTokens:     cacheRead.Int(),
-		CacheCreationTokens: firstExistingUsageNode(node, "cache_creation_tokens", "cacheCreationTokens", "cache_write_tokens", "cacheWriteTokens").Int(),
-	}
-	if !okInput {
-		detail.TokenBreakdown = invalidUsageTokenBreakdown(detail.TotalTokens)
-		return detail
-	}
-	if !cacheRead.Exists() && detail.CachedTokens > 0 {
-		detail.CacheReadTokens = detail.CachedTokens
-	}
-	if detail.TotalTokens == 0 {
-		var okTotal bool
-		detail.TotalTokens, okTotal = safeUsageTokenSum(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens)
-		if !okTotal {
-			detail.TotalTokens = 0
-			detail.TokenBreakdown = invalidUsageTokenBreakdown(0)
-			return detail
-		}
-	}
-	detail.TokenBreakdown = usage.NewSeparateReasoningTokenBreakdown(
-		detail.InputTokens,
-		detail.CacheReadTokens,
-		detail.CacheCreationTokens,
-		detail.OutputTokens,
-		detail.ReasoningTokens,
-		detail.TotalTokens,
-	)
-	return detail
-}
-
 func hasUsageDetail(detail usage.Detail) bool {
 	return hasNonZeroTokenUsage(detail)
-}
-
-func ParseInteractionsUsage(data []byte) usage.Detail {
-	root := gjson.ParseBytes(data)
-	node := firstExistingUsageNode(root, "usage", "total_usage", "metadata.total_usage", "metadata.usage", "usageMetadata", "usage_metadata", "interaction.usage", "interaction.total_usage", "interaction.metadata.total_usage")
-	if !node.Exists() {
-		return usage.Detail{}
-	}
-	if node.Get("promptTokenCount").Exists() || node.Get("candidatesTokenCount").Exists() {
-		detail := parseGeminiFamilyUsageDetail(node)
-		detail.ResponseServiceTier = extractResponseServiceTier(data)
-		return detail
-	}
-	detail := parseInteractionsUsageDetail(node)
-	detail.ResponseServiceTier = extractResponseServiceTier(data)
-	return detail
 }
 
 func extractResponseServiceTier(payload []byte) string {
@@ -1330,21 +1271,6 @@ func extractResponseServiceTierFromValidJSON(payload []byte) string {
 		}
 	}
 	return ""
-}
-
-func ParseInteractionsStreamUsage(line []byte) (usage.Detail, bool) {
-	payload := jsonPayload(line)
-	if len(payload) == 0 {
-		payload = line
-	}
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return usage.Detail{}, false
-	}
-	detail := ParseInteractionsUsage(payload)
-	if !hasUsageDetail(detail) {
-		return usage.Detail{}, false
-	}
-	return detail, true
 }
 
 func firstExistingUsageNode(root gjson.Result, paths ...string) gjson.Result {

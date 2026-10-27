@@ -130,19 +130,19 @@ func TestExecuteModelStreamContextCancel(t *testing.T) {
 }
 
 func TestExecuteProtocolWithAuthManagerUsesForcedProvider(t *testing.T) {
-	model := "interactions-agent-target"
-	requestBody := []byte(`{"agent":"agents/test-agent","input":"hi"}`)
+	model := "forced-provider-target"
+	requestBody := []byte(`{"model":"forced-provider-target","messages":[{"role":"user","content":"hi"}]}`)
 	executor := &modelExecutionCaptureExecutor{
 		provider: "gemini",
 		execute: func(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
-			return coreexecutor.Response{Payload: []byte(`{"id":"interaction_1"}`)}, nil
+			return coreexecutor.Response{Payload: []byte(`{"id":"chatcmpl_1"}`)}, nil
 		},
 	}
 	handler := newModelExecutionHandler(t, model, executor, &sdkconfig.SDKConfig{})
 
 	resp, errMsg := handler.ExecuteProtocolWithAuthManager(context.Background(), ProtocolExecutionRequest{
-		EntryProtocol:  "interactions",
-		ExitProtocol:   "interactions",
+		EntryProtocol:  "openai",
+		ExitProtocol:   "openai",
 		ForcedProvider: "gemini",
 		Model:          model,
 		Body:           requestBody,
@@ -150,19 +150,19 @@ func TestExecuteProtocolWithAuthManagerUsesForcedProvider(t *testing.T) {
 	if errMsg != nil {
 		t.Fatalf("ExecuteProtocolWithAuthManager() error = %+v", errMsg)
 	}
-	if string(resp.Body) != `{"id":"interaction_1"}` {
-		t.Fatalf("body = %q, want native interactions response", resp.Body)
+	if string(resp.Body) != `{"id":"chatcmpl_1"}` {
+		t.Fatalf("body = %q, want native openai response", resp.Body)
 	}
 
 	gotReq, gotOpts := executor.captured()
 	if gotReq.Model != model {
 		t.Fatalf("executor model = %q, want %q", gotReq.Model, model)
 	}
-	if gotOpts.SourceFormat != sdktranslator.FormatInteractions {
-		t.Fatalf("SourceFormat = %q, want %q", gotOpts.SourceFormat, sdktranslator.FormatInteractions)
+	if gotOpts.SourceFormat != sdktranslator.FormatOpenAI {
+		t.Fatalf("SourceFormat = %q, want %q", gotOpts.SourceFormat, sdktranslator.FormatOpenAI)
 	}
-	if gotOpts.ResponseFormat != sdktranslator.FormatInteractions {
-		t.Fatalf("ResponseFormat = %q, want %q", gotOpts.ResponseFormat, sdktranslator.FormatInteractions)
+	if gotOpts.ResponseFormat != sdktranslator.FormatOpenAI {
+		t.Fatalf("ResponseFormat = %q, want %q", gotOpts.ResponseFormat, sdktranslator.FormatOpenAI)
 	}
 	if gotOpts.Metadata[coreexecutor.RequestedModelMetadataKey] != model {
 		t.Fatalf("requested model metadata = %#v, want %q", gotOpts.Metadata[coreexecutor.RequestedModelMetadataKey], model)

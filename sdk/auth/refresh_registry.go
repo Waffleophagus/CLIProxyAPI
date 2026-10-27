@@ -9,11 +9,7 @@ import (
 func init() {
 	registerRefreshLead("codex", func() Authenticator { return NewCodexAuthenticator() })
 	registerRefreshLead("claude", func() Authenticator { return NewClaudeAuthenticator() })
-	registerRefreshLead("kimi", func() Authenticator { return NewKimiAuthenticator() })
-	registerRefreshLead("kimi-ai", func() Authenticator { return NewKimiAIAuthenticator() })
-	registerRefreshLead("kimi.ai", func() Authenticator { return NewKimiAIDotAuthenticator() })
 	registerRefreshLead("xai", func() Authenticator { return NewXAIAuthenticator() })
-	registerRefreshLead("devin", func() Authenticator { return NewDevinAuthenticator() })
 	registerRefreshLead("meta", func() Authenticator { return NewMetaAuthenticator() })
 }
 

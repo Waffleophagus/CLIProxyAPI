@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	// oauthSessionTTL must cover device-code flows (xAI ~30m, Kimi ~15m).
+	// oauthSessionTTL must cover device-code flows (xAI ~30m).
 	oauthSessionTTL          = 30 * time.Minute
 	oauthCompletedSessionTTL = time.Minute
 	maxOAuthStateLength      = 128
@@ -334,8 +334,6 @@ func NormalizeOAuthProvider(provider string) (string, error) {
 		return "codex", nil
 	case "xai", "x-ai", "x.ai", "grok":
 		return "xai", nil
-	case "devin", "cognition":
-		return "devin", nil
 	case "meta", "muse":
 		return "meta", nil
 	default:

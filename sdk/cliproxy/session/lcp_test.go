@@ -1754,12 +1754,6 @@ func TestExtractCanonicalTurnsProtocols(t *testing.T) {
 			body:   `{"instructions":"Be helpful","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}`,
 			roles:  []string{"system", "user", "assistant"},
 		},
-		{
-			name:   "interactions",
-			format: sdktranslator.FormatInteractions,
-			body:   `{"system_instruction":"Be helpful","input":[{"type":"user_input","content":[{"type":"text","text":"hello"}]},{"type":"model_output","content":[{"type":"text","text":"hi"}]}]}`,
-			roles:  []string{"system", "user", "assistant"},
-		},
 	}
 
 	for _, test := range tests {

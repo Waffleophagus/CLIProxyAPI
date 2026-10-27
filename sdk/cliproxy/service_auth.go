@@ -22,11 +22,7 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 		sdkAuth.GetTokenStore(),
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
-		sdkAuth.NewKimiAuthenticator(),
-		sdkAuth.NewKimiAIAuthenticator(),
-		sdkAuth.NewKimiAIDotAuthenticator(),
 		sdkAuth.NewXAIAuthenticator(),
-		sdkAuth.NewDevinAuthenticator(),
 		sdkAuth.NewMetaAuthenticator(),
 	)
 }

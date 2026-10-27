@@ -33,17 +33,15 @@ func benchmarkRequestTranslation(b *testing.B, turns int) {
 		"gemini":          benchmarkGeminiRequest(turns),
 		"openai":          benchmarkOpenAIRequest(turns),
 		"openai-response": benchmarkOpenAIResponsesRequest(turns),
-		"interactions":    benchmarkInteractionsRequest(turns),
 	}
 	routes := []struct {
 		source  string
 		targets []string
 	}{
-		{source: "claude", targets: []string{"openai", "gemini", "codex", "interactions", "acme"}},
-		{source: "gemini", targets: []string{"openai", "claude", "codex", "interactions", "acme", "gemini"}},
-		{source: "openai", targets: []string{"claude", "gemini", "codex", "interactions", "acme", "openai"}},
-		{source: "openai-response", targets: []string{"claude", "gemini", "codex", "interactions", "openai"}},
-		{source: "interactions", targets: []string{"claude", "gemini", "codex", "openai", "openai-response", "acme"}},
+		{source: "claude", targets: []string{"openai", "gemini", "codex", "acme"}},
+		{source: "gemini", targets: []string{"openai", "claude", "codex", "acme", "gemini"}},
+		{source: "openai", targets: []string{"claude", "gemini", "codex", "acme", "openai"}},
+		{source: "openai-response", targets: []string{"claude", "gemini", "codex", "openai"}},
 	}
 
 	for _, route := range routes {
@@ -165,29 +163,6 @@ func benchmarkOpenAIResponsesRequest(turns int) []byte {
 		"tools": []any{map[string]any{
 			"type": "function", "name": "lookup", "description": payload, "parameters": benchmarkSchema(),
 		}},
-	})
-}
-
-func benchmarkInteractionsRequest(turns int) []byte {
-	payload := strings.Repeat("x", 1024)
-	input := make([]any, 0, turns*3)
-	for i := 0; i < turns; i++ {
-		callID := fmt.Sprintf("call_%d", i)
-		input = append(input,
-			map[string]any{"type": "model_output", "content": []any{map[string]any{"type": "text", "text": payload}}},
-			map[string]any{"type": "function_call", "call_id": callID, "name": "lookup", "arguments": map[string]any{"query": payload}},
-			map[string]any{"type": "function_result", "call_id": callID, "name": "lookup", "result": payload},
-		)
-	}
-	if turns > 0 {
-		input = append(input, map[string]any{"type": "user_input", "content": []any{map[string]any{"type": "text", "text": benchmarkHistorySentinel}}})
-	}
-	return benchmarkJSON(map[string]any{
-		"system_instruction": payload,
-		"input":              input,
-		"tools": []any{map[string]any{"function_declarations": []any{
-			map[string]any{"name": "lookup", "description": payload, "parameters": benchmarkSchema()},
-		}}},
 	})
 }
 

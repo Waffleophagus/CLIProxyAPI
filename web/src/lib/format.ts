@@ -121,9 +121,7 @@ export function providerName(p: string): string {
     anthropic: 'Claude',
     codex: 'Codex',
     xai: 'xAI',
-    kimi: 'Kimi',
     meta: 'Meta',
-    devin: 'Devin',
     'openai-compatibility': 'OpenAI-compatible'
   };
   if (names[key]) return names[key];

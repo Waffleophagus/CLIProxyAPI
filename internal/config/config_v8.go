@@ -93,7 +93,7 @@ func buildV8Paths() []configPath {
 		{"claude", "upstream.claude"}, {"claude-code", "upstream.claude"},
 		{"disable-claude-cloak-mode", "upstream.claude.disable-claude-cloak-mode"},
 		{"claude-header-defaults", "upstream.claude.header-defaults"},
-		{"xai", "upstream.xai"}, {"devin", "oauth.providers.devin"},
+		{"xai", "upstream.xai"},
 		{"disable-image-generation", "multimedia.disable-image-generation"}, {"gpt-image-2-base-model", "multimedia.gpt-image-2-base-model"},
 		{"video-result-auth-cache-ttl", "multimedia.video-result-auth-cache-ttl"},
 		{"debug", "observability.logs.debug"}, {"logging-to-file", "observability.logs.logging-to-file"},

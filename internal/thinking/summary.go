@@ -68,29 +68,6 @@ func ExtractSummaryConfig(body []byte, format string) SummaryConfig {
 		if config, ok := claudeSummaryConfig(body, "thinking.display"); ok {
 			return config
 		}
-	case "interactions":
-		for _, path := range []string{
-			"generation_config.thinking_summaries",
-			"generation_config.thinkingSummaries",
-		} {
-			if config, ok := interactionsSummaryConfig(body, path); ok {
-				return config
-			}
-		}
-		// Existing Interactions translators accept the OpenAI-style top-level
-		// compatibility object. Keep the official generation_config selector
-		// authoritative when both are present.
-		if config, ok := interactionsSummaryConfig(body, "reasoning.summary"); ok {
-			return config
-		}
-		if config, ok := firstSummaryBoolConfig(body, []string{
-			"generation_config.thinking_config.include_thoughts",
-			"generation_config.thinking_config.includeThoughts",
-			"generation_config.thinkingConfig.include_thoughts",
-			"generation_config.thinkingConfig.includeThoughts",
-		}); ok {
-			return config
-		}
 	}
 
 	return SummaryConfig{}
@@ -186,15 +163,6 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 			value = "summarized"
 		}
 		body, _ = sjson.SetBytes(body, "thinking.display", value)
-	case "interactions":
-		// The Interactions format (used by Devin) only accepts auto or none. OpenAI's concise and
-		// detailed selectors therefore collapse to the supported enabled value.
-		value := "none"
-		if enabled {
-			value = "auto"
-		}
-		body, _ = sjson.SetBytes(body, "generation_config.thinking_summaries", value)
-		body, _ = sjson.DeleteBytes(body, "generation_config.thinkingSummaries")
 	case "openai-response", "codex":
 		if enabled {
 			body, _ = sjson.SetBytes(body, "reasoning.summary", normalizedSummaryDetail(config.Detail))
@@ -216,7 +184,7 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 // intent that this package can read or write.
 func summaryFormatSupported(format string) bool {
 	switch format {
-	case "openai", "openai-response", "codex", "claude", "interactions":
+	case "openai", "openai-response", "codex", "claude":
 		return true
 	default:
 		return false
@@ -348,15 +316,6 @@ func extractOpenAIExplicitSummaryConfig(body []byte) (SummaryConfig, bool) {
 	return SummaryConfig{}, false
 }
 
-func firstSummaryBoolConfig(body []byte, paths []string) (SummaryConfig, bool) {
-	for _, path := range paths {
-		if config, ok := summaryBoolConfig(body, path); ok {
-			return config, true
-		}
-	}
-	return SummaryConfig{}, false
-}
-
 func summaryBoolConfig(body []byte, path string) (SummaryConfig, bool) {
 	switch value := gjson.GetBytes(body, path); value.Type {
 	case gjson.True:
@@ -402,21 +361,6 @@ func claudeSummaryConfig(body []byte, path string) (SummaryConfig, bool) {
 	case "summarized":
 		return SummaryConfig{Mode: SummaryEnabled, Detail: "auto"}, true
 	case "omitted":
-		return SummaryConfig{Mode: SummaryDisabled}, true
-	default:
-		return SummaryConfig{}, false
-	}
-}
-
-func interactionsSummaryConfig(body []byte, path string) (SummaryConfig, bool) {
-	value := gjson.GetBytes(body, path)
-	if value.Type != gjson.String {
-		return SummaryConfig{}, false
-	}
-	switch strings.ToLower(strings.TrimSpace(value.String())) {
-	case "auto":
-		return SummaryConfig{Mode: SummaryEnabled, Detail: "auto"}, true
-	case "none":
 		return SummaryConfig{Mode: SummaryDisabled}, true
 	default:
 		return SummaryConfig{}, false

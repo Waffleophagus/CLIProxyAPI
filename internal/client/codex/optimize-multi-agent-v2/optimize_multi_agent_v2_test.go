@@ -1157,7 +1157,6 @@ func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
 	}{
 		{name: "Claude", to: sdktranslator.FormatClaude, path: "messages.0.content", want: "task", model: "claude-sonnet-4-5"},
 		{name: "OpenAI", to: sdktranslator.FormatOpenAI, path: "messages.0.content.0.text", want: "task", model: "chat-model"},
-		{name: "Interactions", to: sdktranslator.FormatInteractions, path: "input.0.content.0.text", want: "task", model: "interaction-model"},
 	}
 	for _, tt := range translations {
 		t.Run(tt.name, func(t *testing.T) {

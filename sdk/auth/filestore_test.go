@@ -336,6 +336,8 @@ func TestFileTokenStoreListSkipsRemovedProviders(t *testing.T) {
 		"antigravity.json": `{"type":"antigravity","email":"user@example.com"}`,
 		"vertex.json":      `{"type":"vertex","project_id":"p"}`,
 		"aistudio.json":    `{"type":"aistudio"}`,
+		"kimi.json":        `{"type":"kimi"}`,
+		"devin.json":       `{"type":"devin"}`,
 		"claude.json":      `{"type":"claude","email":"user@example.com"}`,
 	} {
 		if err := os.WriteFile(filepath.Join(baseDir, name), []byte(content), 0o600); err != nil {

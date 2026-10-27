@@ -1,7 +1,7 @@
 // Gemini thought signature validation notes.
 //
-// Gemini-family models are still reachable through Devin, so their thought
-// signatures must be recognized for cross-provider signature compatibility.
+// No route serves Gemini models, but clients can still replay Gemini history,
+// so thought signatures are recognized to keep them away from other providers.
 //
 // Gemini 3 and later models can return thoughtSignature on model content parts.
 // Function-call parts are the strict case: when a model functionCall is replayed

@@ -127,7 +127,7 @@ func TestUploadAuthFile_RejectsRemovedProviders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	// Mixed case and surrounding whitespace must be rejected too.
-	for _, provider := range []string{"gemini", "gemini-cli", "antigravity", "vertex", "aistudio", "GeMiNi-ClI", " vertex "} {
+	for _, provider := range []string{"gemini", "gemini-cli", "antigravity", "vertex", "aistudio", "GeMiNi-ClI", " vertex ", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "devin"} {
 		for _, multipartUpload := range []bool{false, true} {
 			authDir := t.TempDir()
 			manager := coreauth.NewManager(nil, nil, nil)

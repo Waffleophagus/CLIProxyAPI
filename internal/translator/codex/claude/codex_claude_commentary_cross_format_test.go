@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	interactionsclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/interactions/claude"
 	openaiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/claude"
 	"github.com/tidwall/gjson"
 )
@@ -42,16 +41,5 @@ func TestCommentaryMarkerRestoredByOpenAIChatTranslator(t *testing.T) {
 	assertCommentaryRestoredAsText(t, "openai compat", out, err)
 	if got := gjson.GetBytes(out, "messages.1.reasoning_content").String(); got == "COMMENTARY_SENTINEL" {
 		t.Fatalf("openai compat: commentary must not become reasoning_content: %s", out)
-	}
-}
-
-func TestCommentaryMarkerRestoredByInteractionsTranslator(t *testing.T) {
-	out, err := interactionsclaude.ConvertClaudeRequestToInteractions("test-model", []byte(crossFormatCommentaryPayload), false)
-	assertCommentaryRestoredAsText(t, "interactions default", out, err)
-
-	out, err = interactionsclaude.ConvertClaudeRequestToInteractionsWithCompat("test-model", []byte(crossFormatCommentaryPayload), false)
-	assertCommentaryRestoredAsText(t, "interactions compat", out, err)
-	if strings.Contains(string(out), `"type":"thought"`) {
-		t.Fatalf("interactions compat: commentary must not become a thought step: %s", out)
 	}
 }

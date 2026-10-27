@@ -345,7 +345,7 @@ func sanitizeOpenAIResponsesReasoningEncryptedContentWithOptions(ctx context.Con
 								rewrittenSignature = stripRouterSuffix(rawSignature, grokInfo.RouterSuffix)
 							}
 						}
-					case signature.SignatureProviderGemini, signature.SignatureProviderClaude, signature.SignatureProviderKimi, signature.SignatureProviderSWE:
+					case signature.SignatureProviderGemini, signature.SignatureProviderClaude:
 						var normalized string
 						normalized, keep = signature.CompatibleSignatureForProvider(targetProvider, rawSignature)
 						if keep && normalized != "" && normalized != rawSignature {

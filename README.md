@@ -18,9 +18,7 @@ this fork removes features its owner does not use and does not track upstream.
 | Claude (Anthropic) | yes | yes, including Messages-compatible gateways |
 | Codex (ChatGPT / OpenAI) | yes, incl. device code and Sign in with ChatGPT binding | yes |
 | xAI (Grok), incl. video and TTS | yes | yes |
-| Kimi (kimi.com / kimi.ai) | yes | via Claude-compatible keys |
 | Meta | yes | yes |
-| Devin | yes | no |
 | Any OpenAI-compatible server (vLLM, SGLang, llama.cpp, OpenRouter, ...) | n/a | `api-keys.openai-compatibility` |
 
 ## Inbound APIs
@@ -91,9 +89,7 @@ running server automatically.
 | `--codex-device-login` | Codex (device code) |
 | `--siwc-bind <file>` | Bind Sign in with ChatGPT to an existing Codex credential file |
 | `--xai-login` | xAI |
-| `--kimi-login` / `--kimi-ai-login` | Kimi (kimi.com / kimi.ai) |
 | `--meta-login` | Meta |
-| `--devin-login` | Devin |
 
 Modifiers: `--no-browser` (print the URL instead of opening a browser),
 `--oauth-callback-port <port>` (override the callback port). Other flags:
@@ -110,10 +106,9 @@ curl -H "Authorization: Bearer $MGMT_KEY" \
 
 Open the returned `url`, finish the login, then poll
 `/v8/management/oauth/status?state=<state>` until it reports `ok` (`wait` means
-still pending). Providers: `claude`, `codex`, `kimi`, `kimi-ai`, `xai`, `meta`,
-`devin`.
+still pending). Providers: `claude`, `codex`, `xai`, `meta`.
 
-- `kimi`, `kimi-ai`, `xai` and `meta` use a device-code flow: open the URL
+- `xai` and `meta` use a device-code flow: open the URL
   (the response may also include a `user_code`); no callback is involved.
 - `claude` and `codex` redirect the browser to `http://localhost:54545/callback`
   and `http://localhost:1455/auth/callback`. With `is_webui=true` the server
@@ -124,8 +119,6 @@ still pending). Providers: `claude`, `codex`, `kimi`, `kimi-ai`, `xai`, `meta`,
   published (`docker-compose.yml` does this), and the forwarder only helps when
   the browser runs on the Docker host and can also reach the proxy at
   `127.0.0.1:<server.port>`.
-- `devin` redirects to `http://127.0.0.1:<server.port>/callback`, so it
-  completes directly when the browser is on the proxy host.
 
 When the browser is not on the proxy host, the final redirect to
 `localhost`/`127.0.0.1` fails to load. Copy the full URL from the address bar
@@ -240,6 +233,7 @@ The proxy can be embedded as a Go library (`sdk/cliproxy`); see
 
 - Google providers: Gemini CLI, Antigravity, AI Studio, Vertex, and the
   Gemini/Interactions inbound APIs
+- Kimi and Devin providers (and the Interactions translators Devin used)
 - CLIProxyAPIHome control-plane mode and the native plugin system
 - Redis queue / port multiplexer, Postgres, git and object-store backends
   (credentials are plain files in `oauth.auth-dir`)

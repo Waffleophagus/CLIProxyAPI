@@ -44,7 +44,11 @@ type claudeThinkingReplayEntry struct {
 }
 
 // ClaudeThinkingReplaySnapshot identifies the exact replay generation read for one request.
-type ClaudeThinkingReplaySnapshot = KimiThinkingReplaySnapshot
+type ClaudeThinkingReplaySnapshot struct {
+	generation string
+	loaded     bool
+	found      bool
+}
 
 var (
 	claudeThinkingReplayMu         sync.Mutex

@@ -64,8 +64,6 @@ func applyPatchTestFrames(protocol, name string) (string, string) {
 		first := fmt.Sprintf("data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"a1\",\"call_id\":\"c1\",\"name\":%q,\"arguments\":\"\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"a1\",\"delta\":%q}\n\n", name, applyPatchTestPartial)
 		last := fmt.Sprintf("data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"a1\",\"delta\":%q}\n\ndata: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"a1\",\"arguments\":%q}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":%s}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[%s]}}\n\n", applyPatchTestRemainder, args, item, item)
 		return first, last
-	case "devin":
-		return string(task6DevinFrames(applyPatchTestPartial, false, "", name)), string(task6DevinFrames(applyPatchTestRemainder, false, `{}`, name))
 	case "gemini", "acme":
 		first := `{"responseId":"r1","candidates":[{"content":{"parts":[{"text":"preparing"}]}}]}`
 		last := fmt.Sprintf(`{"responseId":"r1","candidates":[{"content":{"parts":[{"functionCall":{"name":%q,"args":%s}}]},"finishReason":"STOP"}]}`, name, args)
@@ -96,12 +94,6 @@ func applyPatchTestDeclaration(t *testing.T, protocol string, body []byte) {
 	case "acme":
 		tool = gjson.GetBytes(body, "request.tools.0.functionDeclarations.0")
 		parameters = "parameters"
-	case "devin":
-		if len(body) < 5 {
-			t.Fatal("missing Connect envelope")
-		}
-		wire := applyPatchTestWireField(body[5:], 10)
-		tool = gjson.Parse(fmt.Sprintf(`{"name":%q,"description":%q,"parameters":%s}`, applyPatchTestWireField(wire, 1), applyPatchTestWireField(wire, 2), applyPatchTestWireField(wire, 3)))
 	default:
 		tool = gjson.GetBytes(body, "tools.0")
 		if protocol == "claude" {
@@ -309,45 +301,6 @@ func TestApplyPatchBridgeOrdinaryFunctionControl(t *testing.T) {
 			arguments := gjson.GetBytes(response.Payload, path).String()
 			if arguments != args || !gjson.Valid(arguments) || bytes.Contains(response.Payload, []byte(`"custom_tool_call"`)) {
 				t.Fatalf("ordinary JSON function promoted to freeform: %s", response.Payload)
-			}
-		})
-	}
-}
-
-// Kimi selects its reused Chat and Claude executors for these ordinary clients.
-// Custom Responses clients select Kimi's Responses branch, covered by the HTTP matrix.
-func TestApplyPatchBridgeKimiReusedClientControls(t *testing.T) {
-	for _, source := range []sdktranslator.Format{sdktranslator.FormatOpenAI, sdktranslator.FormatClaude} {
-		t.Run(source.String(), func(t *testing.T) {
-			args := `{"input":"RAW_SECRET","extra":7}`
-			reply := applyPatchTestChatReply(args)
-			payload := []byte(`{"messages":[{"role":"user","content":"edit"}],"tools":[{"type":"function","function":{"name":"apply_patch","parameters":{"type":"object","properties":{"input":{"type":"string"},"extra":{"type":"integer"}}}}}]}`)
-			if source == sdktranslator.FormatClaude {
-				payload = []byte(`{"messages":[{"role":"user","content":"edit"}],"tools":[{"name":"apply_patch","input_schema":{"type":"object","properties":{"input":{"type":"string"},"extra":{"type":"integer"}}}}]}`)
-				reply = fmt.Sprintf(`{"id":"r1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"c1","name":"apply_patch","input":%s}],"stop_reason":"tool_use"}`, args)
-			}
-			_, auth, bodies := newApplyPatchCompatTestExecutor(t, reply)
-			auth.Provider = "kimi"
-			exec := NewKimiExecutor(&config.Config{}).ForAPIKey()
-			response, errExecute := exec.Execute(t.Context(), auth, cliproxyexecutor.Request{Model: "kimi-k2.5", Payload: payload}, cliproxyexecutor.Options{SourceFormat: source, OriginalRequest: payload})
-			if errExecute != nil {
-				t.Fatal(errExecute)
-			}
-			body := <-bodies
-			tool := gjson.GetBytes(body, "tools.0.function")
-			parameters := "parameters"
-			if source == sdktranslator.FormatClaude {
-				tool, parameters = gjson.GetBytes(body, "tools.0"), "input_schema"
-			}
-			if !tool.Get(parameters+".properties.extra").Exists() || strings.Contains(tool.Get("description").String(), "*** Begin Patch") || bytes.Contains(response.Payload, []byte("custom_tool_call")) || !bytes.Contains(response.Payload, []byte("RAW_SECRET")) {
-				t.Fatalf("ordinary reused client was promoted or restricted: request=%s response=%s", body, response.Payload)
-			}
-			arguments := gjson.GetBytes(response.Payload, "choices.0.message.tool_calls.0.function.arguments").String()
-			if source == sdktranslator.FormatClaude {
-				arguments = gjson.GetBytes(response.Payload, "content.0.input").Raw
-			}
-			if !gjson.Valid(arguments) || gjson.Get(arguments, "extra").Int() != 7 {
-				t.Fatalf("ordinary function lost valid JSON: %s", response.Payload)
 			}
 		})
 	}

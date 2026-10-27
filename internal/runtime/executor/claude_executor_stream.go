@@ -58,7 +58,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		req, replayScope = prepareClaudeThinkingReplayRequest(ctx, auth, req, opts)
 	}
 	defer func() {
-		if err != nil && replayScope.replayApplied && shouldClearKimiThinkingReplayAfterError(err) {
+		if err != nil && replayScope.replayApplied && shouldClearClaudeThinkingReplayAfterError(err) {
 			clearClaudeThinkingReplayContent(ctx, replayScope)
 		}
 	}()
@@ -234,7 +234,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			return nil, fmt.Errorf("finalize Claude CCH: %w", err)
 		}
 	}
-	bodyForUpstream = stripDefaultKimiClaudeCodeAttribution(auth, url, fp.ProfileClaudeCodeCLI, bodyForUpstream)
 	bodyForUpstream = applyClaudePreservedThinkingBinding(bodyForUpstream)
 	// User rules match the fully prepared business body and are applied only once.
 	var touchedPayloadPaths map[string]bool

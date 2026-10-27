@@ -87,18 +87,6 @@ func extractGenericResponseModelEvent(data []byte) (model string, terminal bool)
 			return served, terminal
 		}
 	}
-	if m := gjson.GetBytes(data, "interaction.model"); m.Type == gjson.String {
-		served := strings.TrimSpace(m.String())
-		if len(served) <= maxResponseModelLength {
-			eventType := gjson.GetBytes(data, "event_type").String()
-			if eventType == "" {
-				eventType = gjson.GetBytes(data, "type").String()
-			}
-			status := gjson.GetBytes(data, "interaction.status").String()
-			terminal := isInteractionsTerminal(eventType, status)
-			return served, terminal
-		}
-	}
 	if m := gjson.GetBytes(data, "modelVersion"); m.Type == gjson.String {
 		served := strings.TrimSpace(m.String())
 		if len(served) <= maxResponseModelLength {
@@ -129,27 +117,10 @@ func extractGenericResponseModelEvent(data []byte) (model string, terminal bool)
 			return served, terminal
 		}
 	}
-	eventType := gjson.GetBytes(data, "event_type").String()
-	if eventType == "" {
-		eventType = gjson.GetBytes(data, "type").String()
-	}
-	status := gjson.GetBytes(data, "interaction.status").String()
-	if isInteractionsTerminal(eventType, status) || eventType == "message_stop" {
+	if gjson.GetBytes(data, "type").String() == "message_stop" {
 		return "", true
 	}
 	return "", false
-}
-
-func isInteractionsTerminal(eventType, status string) bool {
-	switch eventType {
-	case "interaction.completed", "interaction.done", "interaction.failed", "interaction.cancelled":
-		return true
-	}
-	switch status {
-	case "completed", "incomplete", "cancelled", "failed":
-		return true
-	}
-	return false
 }
 
 // extractCodexResponseModelEvent returns the model a codex upstream reports serving, read

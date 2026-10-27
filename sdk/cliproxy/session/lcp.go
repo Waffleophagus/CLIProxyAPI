@@ -102,8 +102,6 @@ func ExtractCanonicalTurns(format sdktranslator.Format, payload []byte) []Canoni
 	switch {
 	case formatEqual(format, sdktranslator.FormatClaude):
 		appendMessagesTurns(&turns, root, true)
-	case formatEqual(format, sdktranslator.FormatInteractions):
-		appendInteractionTurns(&turns, root)
 	case formatEqual(format, sdktranslator.FormatOpenAIResponse), formatEqual(format, sdktranslator.FormatCodex):
 		appendResponsesTurns(&turns, root)
 	default:
@@ -116,16 +114,7 @@ func inferCanonicalFormat(root gjson.Result) sdktranslator.Format {
 	if root.Get("instructions").Exists() {
 		return sdktranslator.FormatOpenAIResponse
 	}
-	if input := root.Get("input"); input.Exists() {
-		if input.Type == gjson.String {
-			return sdktranslator.FormatInteractions
-		}
-		for _, item := range input.Array() {
-			typ := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
-			if strings.Contains(typ, "user_input") || strings.Contains(typ, "instruction") {
-				return sdktranslator.FormatInteractions
-			}
-		}
+	if root.Get("input").Exists() {
 		return sdktranslator.FormatOpenAIResponse
 	}
 	if root.Get("system").Exists() {
@@ -206,74 +195,6 @@ func appendResponsesTurns(turns *[]CanonicalTurn, root gjson.Result) {
 		appendTurn(turns, role, parts)
 		return true
 	})
-}
-
-func appendInteractionTurns(turns *[]CanonicalTurn, root gjson.Result) {
-	if system := root.Get("system_instruction"); system.Exists() {
-		appendTurn(turns, "system", canonicalPartsFromJSON(system))
-	} else if system := root.Get("systemInstruction"); system.Exists() {
-		appendTurn(turns, "system", canonicalPartsFromJSON(system))
-	}
-	appendInteractionValue(turns, root.Get("input"), "")
-}
-
-func appendInteractionValue(turns *[]CanonicalTurn, value gjson.Result, inheritedRole string) bool {
-	if !value.Exists() {
-		return true
-	}
-	if !hasCanonicalTurnCapacity(turns) {
-		return false
-	}
-	if value.Type == gjson.JSON && value.IsArray() {
-		value.ForEach(func(_, child gjson.Result) bool {
-			return appendInteractionValue(turns, child, inheritedRole)
-		})
-		return hasCanonicalTurnCapacity(turns)
-	}
-	if value.Type != gjson.JSON {
-		appendTurn(turns, defaultInteractionRole(inheritedRole), canonicalPartsFromJSON(value))
-		return hasCanonicalTurnCapacity(turns)
-	}
-	if steps := value.Get("steps"); steps.IsArray() {
-		role := canonicalRole(value.Get("role").String())
-		if role == "" {
-			role = inheritedRole
-		}
-		steps.ForEach(func(_, child gjson.Result) bool {
-			return appendInteractionValue(turns, child, role)
-		})
-		return hasCanonicalTurnCapacity(turns)
-	}
-	typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
-	role := canonicalRole(value.Get("role").String())
-	if role == "" {
-		switch {
-		case strings.Contains(typ, "system") || strings.Contains(typ, "developer"):
-			role = "system"
-		case strings.Contains(typ, "user"):
-			role = "user"
-		case strings.Contains(typ, "model") || strings.Contains(typ, "assistant"):
-			role = "assistant"
-		case strings.Contains(typ, "tool") || strings.Contains(typ, "function"):
-			role = "tool"
-		default:
-			role = defaultInteractionRole(inheritedRole)
-		}
-	}
-	content := value.Get("content")
-	parts := canonicalPartsFromJSON(content)
-	if len(parts) == 0 && !content.Exists() {
-		parts = canonicalPartsFromJSON(value)
-	}
-	appendTurn(turns, role, parts)
-	return hasCanonicalTurnCapacity(turns)
-}
-
-func defaultInteractionRole(inheritedRole string) string {
-	if role := canonicalRole(inheritedRole); role != "" {
-		return role
-	}
-	return "user"
 }
 
 func appendTurn(turns *[]CanonicalTurn, role string, parts []CanonicalPart) {

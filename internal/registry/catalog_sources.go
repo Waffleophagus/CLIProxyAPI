@@ -189,16 +189,6 @@ var codexCatalogUpdater = &catalogUpdater{
 		return nil, errLoad
 	},
 }
-var devinCatalogUpdater = &catalogUpdater{
-	fetch: catalogFetcher(embeddedDevinModelsJSON, devinModelsURLs, validateDevinCatalogBytes),
-	publish: func(data []byte) ([]string, error) {
-		changed, errLoad := loadDevinModelsFromBytes(data, "catalog")
-		if errLoad == nil && changed {
-			return []string{"devin"}, nil
-		}
-		return nil, errLoad
-	},
-}
 
 var catalogRuntime struct {
 	sync.Mutex
@@ -240,7 +230,6 @@ func configureCatalogs(ctx context.Context, sources CatalogSources, local bool) 
 	sources = effectiveCatalogSources(sources, local)
 	generalCatalogUpdater.configure(ctx, sources.Catalog)
 	codexCatalogUpdater.configure(ctx, sources.CodexCatalog)
-	devinCatalogUpdater.configure(ctx, sources.DevinCatalog)
 }
 
 func effectiveCatalogSources(sources CatalogSources, local bool) CatalogSources {
@@ -250,10 +239,5 @@ func effectiveCatalogSources(sources CatalogSources, local bool) CatalogSources 
 		}
 		return source
 	}
-	return CatalogSources{Catalog: selectSource(sources.Catalog), CodexCatalog: selectSource(sources.CodexCatalog), DevinCatalog: selectSource(sources.DevinCatalog)}
-}
-
-func validateDevinCatalogBytes(data []byte) error {
-	_, errValidate := ValidateDevinModelsJSON(data)
-	return errValidate
+	return CatalogSources{Catalog: selectSource(sources.Catalog), CodexCatalog: selectSource(sources.CodexCatalog)}
 }

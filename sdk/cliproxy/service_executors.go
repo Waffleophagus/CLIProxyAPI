@@ -124,11 +124,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 	providers := []string{
 		"codex",
 		"claude",
-		"kimi",
-		"kimi-ai",
-		"kimi.ai",
 		"xai",
-		"devin",
 		"meta",
 		"openai-compatibility",
 	}
@@ -205,8 +201,6 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	switch strings.ToLower(a.Provider) {
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
-	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
-		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
 	case "xai":
 		if !forceReplace {
 			existingExecutor, hasExecutor := s.coreManager.Executor("xai")
@@ -218,8 +212,6 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 			}
 		}
 		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
-	case "devin":
-		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "meta":
 		s.coreManager.RegisterExecutor(executor.NewMetaExecutor(cfg))
 	default:

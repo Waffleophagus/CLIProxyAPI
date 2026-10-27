@@ -476,31 +476,6 @@ func TestParseClaudeUsageFallsBackToTopLevelThinkingTokens(t *testing.T) {
 	}
 }
 
-func TestParseInteractionsUsage(t *testing.T) {
-	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"output_tokens":4,"reasoning_tokens":5,"cached_tokens":2}}`))
-	if detail.InputTokens != 3 {
-		t.Fatalf("input tokens = %d, want 3", detail.InputTokens)
-	}
-	if detail.OutputTokens != 4 {
-		t.Fatalf("output tokens = %d, want 4", detail.OutputTokens)
-	}
-	if detail.ReasoningTokens != 5 {
-		t.Fatalf("reasoning tokens = %d, want 5", detail.ReasoningTokens)
-	}
-	if detail.TotalTokens != 12 {
-		t.Fatalf("total tokens = %d, want 12", detail.TotalTokens)
-	}
-	if detail.CachedTokens != 2 {
-		t.Fatalf("cached tokens = %d, want 2", detail.CachedTokens)
-	}
-	if detail.CacheReadTokens != 2 {
-		t.Fatalf("cache read tokens = %d, want 2", detail.CacheReadTokens)
-	}
-	if detail.TokenBreakdown.Input.UncachedTokens != 1 || detail.TokenBreakdown.Output.TotalTokens != 9 {
-		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
-	}
-}
-
 func TestNormalizeUsageDetailTotalDoesNotDoubleCountReasoning(t *testing.T) {
 	detail := normalizeUsageDetailTotal(usage.Detail{
 		InputTokens:     100,
@@ -512,59 +487,6 @@ func TestNormalizeUsageDetailTotalDoesNotDoubleCountReasoning(t *testing.T) {
 	}
 	if detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete || detail.TokenBreakdown.Output.ReasoningTokens != 12 {
 		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
-	}
-}
-
-func TestParseInteractionsUsageNormalizesCacheWriteAlias(t *testing.T) {
-	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"cache_write_tokens":2}}`))
-	if detail.CacheCreationTokens != 2 {
-		t.Fatalf("cache creation tokens = %d, want 2", detail.CacheCreationTokens)
-	}
-}
-
-func TestParseInteractionsUsageIncludesToolUseTokens(t *testing.T) {
-	detail := ParseInteractionsUsage([]byte(`{"usage":{"total_input_tokens":2,"total_output_tokens":6,"total_thought_tokens":3,"total_tool_use_tokens":4,"total_tokens":15}}`))
-	if detail.InputTokens != 6 || detail.OutputTokens != 6 || detail.ReasoningTokens != 3 || detail.TotalTokens != 15 {
-		t.Fatalf("detail = %+v", detail)
-	}
-	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete ||
-		detail.TokenBreakdown.Input.UncachedTokens != 6 || detail.TokenBreakdown.Output.TotalTokens != 9 {
-		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
-	}
-}
-
-func TestParseInteractionsStreamUsage(t *testing.T) {
-	detail, ok := ParseInteractionsStreamUsage([]byte(`{"type":"interaction.completed","interaction":{"usage":{"input_tokens":2,"output_tokens":6,"total_tokens":8}}}`))
-	if !ok {
-		t.Fatal("ParseInteractionsStreamUsage() ok = false, want true")
-	}
-	if detail.TotalTokens != 8 {
-		t.Fatalf("total tokens = %d, want 8", detail.TotalTokens)
-	}
-}
-
-func TestParseInteractionsStreamUsageOfficialMetadata(t *testing.T) {
-	detail, ok := ParseInteractionsStreamUsage([]byte(`data: {"event_type":"finish","metadata":{"total_usage":{"total_input_tokens":2,"total_output_tokens":6,"total_thought_tokens":3,"total_cached_tokens":1,"total_tokens":11}}}`))
-	if !ok {
-		t.Fatal("ParseInteractionsStreamUsage() ok = false, want true")
-	}
-	if detail.InputTokens != 2 {
-		t.Fatalf("input tokens = %d, want 2", detail.InputTokens)
-	}
-	if detail.OutputTokens != 6 {
-		t.Fatalf("output tokens = %d, want 6", detail.OutputTokens)
-	}
-	if detail.ReasoningTokens != 3 {
-		t.Fatalf("reasoning tokens = %d, want 3", detail.ReasoningTokens)
-	}
-	if detail.CachedTokens != 1 {
-		t.Fatalf("cached tokens = %d, want 1", detail.CachedTokens)
-	}
-	if detail.CacheReadTokens != 1 {
-		t.Fatalf("cache read tokens = %d, want 1", detail.CacheReadTokens)
-	}
-	if detail.TotalTokens != 11 {
-		t.Fatalf("total tokens = %d, want 11", detail.TotalTokens)
 	}
 }
 

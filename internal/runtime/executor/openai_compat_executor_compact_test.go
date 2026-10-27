@@ -183,14 +183,6 @@ func TestOpenAICompatExecutorApplyPromptCacheKey(t *testing.T) {
 			wantPresent: true,
 		},
 		{
-			name:        "Interactions",
-			support:     true,
-			from:        "interactions",
-			payload:     `{"model":"gpt-5.6","input":"hello"}`,
-			metadata:    map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:interactions"},
-			wantPresent: true,
-		},
-		{
 			name:        "Codex",
 			support:     true,
 			from:        "codex",

@@ -79,7 +79,7 @@ requests:
 
   # Payload rules edit the final upstream request body. Paths use gjson/sjson syntax.
   # Model rules support "*" wildcards and may restrict by protocol (upstream format:
-  # openai, claude, codex, devin), from-protocol (inbound: openai, responses, claude),
+  # openai, claude, codex), from-protocol (inbound: openai, responses, claude),
   # headers, match/not-match values, and exist/not-exist paths.
   # payload:
   #   default: # Set values only when missing.
@@ -128,7 +128,6 @@ requests:
 # models:
 #   catalog: ""
 #   codex-catalog: ""
-#   devin-catalog: ""
 
 # Client-facing compatibility (applies to OAuth and API-key routes).
 # client:
@@ -264,7 +263,7 @@ oauth:
   auth-dir: "~/.cli-proxy-api" # Supports ~. The Docker image mounts /root/.cli-proxy-api.
   # auth-auto-refresh-workers: 16 # Token refresh worker pool size.
 
-  # Per-channel settings below accept: claude, codex, kimi, xai, meta, devin.
+  # Per-channel settings below accept: claude, codex, xai, meta.
   # They do not apply to api-keys groups.
   # model-alias: # Rename models for listing and routing.
   #   claude:
@@ -299,8 +298,6 @@ oauth:
   #       public-ip: "" # Advertised address when behind 1:1 NAT.
   #       udp-port-min: 0 # Set both bounds to restrict the UDP range.
   #       udp-port-max: 0
-  #   devin:
-  #     sensitive-words: ["proxy"] # Obfuscated with zero-width characters.
 
 # Image and video endpoints.
 # multimedia:

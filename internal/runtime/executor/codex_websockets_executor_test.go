@@ -1491,7 +1491,7 @@ func TestApplyCodexPromptCacheHeadersUsesDerivedSessionUUID(t *testing.T) {
 		Payload:  []byte(`{"input":"hello"}`),
 		Metadata: map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "ctx:v1:derived-root"},
 	}
-	body, headers := applyCodexPromptCacheHeaders(sdktranslator.FormatInteractions, req, []byte(`{"model":"gpt-5-codex"}`))
+	body, headers := applyCodexPromptCacheHeaders(sdktranslator.FormatOpenAI, req, []byte(`{"model":"gpt-5-codex"}`))
 	cacheKey := gjson.GetBytes(body, "prompt_cache_key").String()
 	if _, errParse := uuid.Parse(cacheKey); errParse != nil {
 		t.Fatalf("prompt_cache_key %q is not a UUID: %v", cacheKey, errParse)

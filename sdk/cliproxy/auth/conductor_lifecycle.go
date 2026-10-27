@@ -441,13 +441,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		} else {
 			applyPreservedRejectedTokens(existing, auth, false)
 		}
-		// A refresh that confirms quota restoration (issue #6690) releases the
-		// credential-wide cooldown early; otherwise the active credential
-		// quota below is preserved exactly as before.
-		devinQuotaRestored := mode == updateModeRefresh && applyDevinQuotaRestoration(auth, existing, now)
-		if devinQuotaRestored {
-			cooldownStateChanged = true
-		} else if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
+		if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
 			auth.Unavailable = existing.Unavailable
 			auth.NextRetryAfter = existing.NextRetryAfter
 			// Preserve cooldown fields; keep the newest observation snapshot.

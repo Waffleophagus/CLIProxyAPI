@@ -7,16 +7,16 @@ import (
 
 func TestEffectiveCatalogSources(t *testing.T) {
 	for _, local := range []bool{false, true} {
-		for mask := 0; mask < 8; mask++ {
+		for mask := 0; mask < 4; mask++ {
 			sources := CatalogSources{}
-			fields := []*string{&sources.Catalog, &sources.CodexCatalog, &sources.DevinCatalog}
+			fields := []*string{&sources.Catalog, &sources.CodexCatalog}
 			for index, field := range fields {
 				if mask&(1<<index) != 0 {
 					*field = "https://example.com/catalog.json"
 				}
 			}
 			got := effectiveCatalogSources(sources, local)
-			values := []string{got.Catalog, got.CodexCatalog, got.DevinCatalog}
+			values := []string{got.Catalog, got.CodexCatalog}
 			for index, field := range fields {
 				want := *field
 				if want == "" && local {
