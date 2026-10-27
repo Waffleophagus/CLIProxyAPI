@@ -53,10 +53,14 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		Model:   normalizedModel,
 		Payload: payload,
 	}
+	originalRequest := rawJSON
+	if ctxOriginal := originalRequestFromContext(ctx); len(ctxOriginal) > 0 {
+		originalRequest = ctxOriginal
+	}
 	opts := coreexecutor.Options{
 		Stream:          false,
 		Alt:             alt,
-		OriginalRequest: rawJSON,
+		OriginalRequest: originalRequest,
 		SourceFormat:    sdktranslator.FromString(entryProtocol),
 		ResponseFormat:  sdktranslator.FromString(responseProtocol),
 		Headers:         modelExecutionHeaders(ctx, execOptions.Headers),
