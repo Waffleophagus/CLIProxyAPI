@@ -28,7 +28,7 @@ func (s *Server) ServeListener(ln net.Listener, opts ListenerOptions) error {
 	if s == nil || ln == nil {
 		return fmt.Errorf("serve listener: server or listener not initialized")
 	}
-	srv := &http.Server{Handler: s.Handler()}
+	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: inboundReadHeaderTimeout}
 	if opts.Tailnet {
 		srv.ConnContext = func(ctx context.Context, _ net.Conn) context.Context {
 			return tailnet.WithViaTailnet(ctx)
