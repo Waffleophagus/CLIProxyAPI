@@ -271,7 +271,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 
 func isRequestTerminatedError(err error) bool {
 	var terminated *cliproxyexecutor.RequestTerminatedError
-	return errors.As(err, &terminated) && terminated != nil
+	return (errors.As(err, &terminated) && terminated != nil) || cliproxyexecutor.IsUpstreamWebsocketTurnError(err)
 }
 
 func executorForAuth(executor ProviderExecutor, auth *Auth) ProviderExecutor {
@@ -812,7 +812,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				lastErr = errStream
 				continue
 			}
-			if isRequestInvalidError(errStream) {
+			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
 				return nil, errStream
 			}
 			lastErr = errStream
