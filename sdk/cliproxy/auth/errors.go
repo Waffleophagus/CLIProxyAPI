@@ -31,6 +31,14 @@ const transientTransportErrorCode = ErrorCodeTransientTransport
 // ErrorCodeForceCooldown marks failures that must enforce credential cooldown.
 const ErrorCodeForceCooldown = "force_cooldown"
 
+// ErrorCodeStreamTruncated marks locally synthesized failures for accepted
+// upstream streams that ended without a terminal frame. The public status
+// stays 502, but the credential must not cool and the generation must not be
+// replayed on another credential.
+const ErrorCodeStreamTruncated = "stream_truncated"
+
+const streamTruncatedErrorCode = ErrorCodeStreamTruncated
+
 // ErrorCodeTransientRateLimit marks a transient per-model capacity or
 // admission 429 (for example a Codex turn_rate_limit_exceeded rejection).
 // The public status stays 429, but the credential quota is not exhausted:

@@ -242,6 +242,15 @@ type RequestScopedError interface {
 	IsRequestScoped() bool
 }
 
+// StreamTruncatedError identifies a locally synthesized failure for an
+// accepted upstream stream that ended without its terminal frame. The
+// upstream generation was already submitted, so auth managers must not cool
+// the credential or replay the request on another credential because of it.
+type StreamTruncatedError interface {
+	error
+	IsStreamTruncated() bool
+}
+
 // TransientRateLimitError identifies a transient per-model capacity or
 // admission rejection (for example a Codex turn_rate_limit_exceeded 429).
 // The credential's plan quota is not exhausted, so auth managers must not
