@@ -199,34 +199,87 @@ func ToolNameMapFromClaudeRequest(rawJSON []byte) map[string]string {
 	}
 
 	tools := gjson.GetBytes(rawJSON, "tools")
-	if !tools.Exists() || !tools.IsArray() {
+	hasTools := tools.Exists() && tools.IsArray()
+	hasToolAddition := claudePayloadMayContainToolAddition(rawJSON)
+	if !hasTools && !hasToolAddition {
 		return nil
 	}
 
-	toolResults := tools.Array()
-	out := make(map[string]string, len(toolResults))
-	tools.ForEach(func(_, tool gjson.Result) bool {
+	var out map[string]string
+	recordTool := func(tool gjson.Result) {
 		name := strings.TrimSpace(tool.Get("name").String())
 		if name == "" {
 			name = strings.TrimSpace(tool.Get("function.name").String())
 		}
 		if name == "" {
-			return true
+			return
 		}
 		key := CanonicalToolName(name)
 		if key == "" {
-			return true
+			return
+		}
+		if out == nil {
+			out = make(map[string]string, 4)
 		}
 		if _, exists := out[key]; !exists {
 			out[key] = name
 		}
-		return true
-	})
+	}
+
+	if hasTools {
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			recordTool(tool)
+			return true
+		})
+	}
+	if hasToolAddition {
+		forEachClaudeInlineToolAdditionDefinition(rawJSON, recordTool)
+	}
 
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func claudePayloadMayContainToolAddition(rawJSON []byte) bool {
+	return bytes.Contains(rawJSON, []byte("tool_addition")) ||
+		bytes.Contains(rawJSON, []byte(`\u`)) ||
+		bytes.Contains(rawJSON, []byte(`\U`))
+}
+
+// forEachClaudeInlineToolAdditionDefinition visits the tool definitions carried by
+// mid-conversation tool_addition blocks in role=system messages.
+func forEachClaudeInlineToolAdditionDefinition(rawJSON []byte, fn func(def gjson.Result)) {
+	if !claudePayloadMayContainToolAddition(rawJSON) {
+		return
+	}
+	messages := gjson.GetBytes(rawJSON, "messages")
+	if !messages.IsArray() {
+		return
+	}
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if message.Get("role").String() != "system" {
+			return true
+		}
+		content := message.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		content.ForEach(func(_, part gjson.Result) bool {
+			if part.Get("type").String() != "tool_addition" {
+				return true
+			}
+			toolSpec := part.Get("tool")
+			if toolSpec.Get("type").String() == "tool_definition" || toolSpec.Get("definition").IsObject() {
+				if def := toolSpec.Get("definition"); def.IsObject() {
+					fn(def)
+				}
+			}
+			return true
+		})
+		return true
+	})
 }
 
 func MapToolName(toolNameMap map[string]string, name string) string {
