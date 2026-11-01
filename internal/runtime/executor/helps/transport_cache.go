@@ -63,20 +63,23 @@ func (c *TransportCache[K]) Get(key K, build func() (*http.Transport, error)) (*
 	}
 
 	c.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			c.mu.Unlock()
+		}
+	}()
 	if element, ok := c.items[key]; ok {
 		c.order.MoveToFront(element)
 		transport := element.Value.(*transportCacheEntry[K]).transport
-		c.mu.Unlock()
 		return transport, nil
 	}
 
 	transport, errBuild := build()
 	if errBuild != nil {
-		c.mu.Unlock()
 		return nil, errBuild
 	}
 	if transport == nil {
-		c.mu.Unlock()
 		return nil, errors.New("transport cache: build returned no transport")
 	}
 
@@ -84,6 +87,7 @@ func (c *TransportCache[K]) Get(key K, build func() (*http.Transport, error)) (*
 	if element, ok := c.items[key]; ok {
 		c.order.MoveToFront(element)
 		existing := element.Value.(*transportCacheEntry[K]).transport
+		locked = false
 		c.mu.Unlock()
 		transport.CloseIdleConnections()
 		return existing, nil
@@ -91,6 +95,7 @@ func (c *TransportCache[K]) Get(key K, build func() (*http.Transport, error)) (*
 
 	c.items[key] = c.order.PushFront(&transportCacheEntry[K]{key: key, transport: transport})
 	evicted := c.evictLocked()
+	locked = false
 	c.mu.Unlock()
 
 	for _, t := range evicted {
