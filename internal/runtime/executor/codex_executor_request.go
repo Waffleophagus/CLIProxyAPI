@@ -234,7 +234,6 @@ func stripCodexSIWCUnsupportedFields(body []byte, hasExplicitInstructions bool, 
 	body = thinking.CollapseConfigurationUpdates(body, len(opts) > 0 && opts[0].KeepTopLevelEffort)
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_options")
-	body, _ = sjson.DeleteBytes(body, "max_output_tokens")
 	body, _ = sjson.DeleteBytes(body, "max_completion_tokens")
 	body, _ = sjson.DeleteBytes(body, "temperature")
 	if !hasExplicitInstructions {
