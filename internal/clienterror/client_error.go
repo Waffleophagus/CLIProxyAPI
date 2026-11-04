@@ -2,6 +2,7 @@
 package clienterror
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -148,7 +149,7 @@ func IsItemNotPersisted(message string) bool {
 // message object or a streaming message_delta event) and returns the refusal explanation
 // when stop_details indicates a policy/cyber refusal block.
 func ClaudePolicyRefusalMessage(payload []byte) (string, bool) {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 || !bytes.Contains(payload, []byte("stop_details")) || !gjson.ValidBytes(payload) {
 		return "", false
 	}
 	for _, prefix := range []string{"delta", ""} {
