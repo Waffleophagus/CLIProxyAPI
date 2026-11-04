@@ -102,6 +102,22 @@ func TestHTTPStatusFromError(t *testing.T) {
 	}
 }
 
+func TestClaudePolicyRefusalMessage(t *testing.T) {
+	deltaFrame := []byte(`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_sequence":null,"stop_details":{"type":"refusal","category":"cyber","explanation":"This request triggered restrictions on violative cyber content and was blocked under Anthropic's Usage Policy. To learn more, see https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback."},"container":null},"usage":{"input_tokens":4,"output_tokens":0}}`)
+	msg, blocked := ClaudePolicyRefusalMessage(deltaFrame)
+	if !blocked || msg == "" {
+		t.Fatalf("ClaudePolicyRefusalMessage(deltaFrame) = (%q, %v), want non-empty true", msg, blocked)
+	}
+	if !IsRequestFault(http.StatusBadGateway, errors.New(msg)) {
+		t.Fatalf("IsRequestFault() = false for %q, want true", msg)
+	}
+
+	plainRefusalWithoutDetails := []byte(`{"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"output_tokens":2}}`)
+	if gotMsg, gotBlocked := ClaudePolicyRefusalMessage(plainRefusalWithoutDetails); gotBlocked {
+		t.Fatalf("ClaudePolicyRefusalMessage(plainRefusalWithoutDetails) = (%q, true), want false when stop_details absent", gotMsg)
+	}
+}
+
 type statusAndUnwrapError struct {
 	status int
 	body   string

@@ -115,7 +115,7 @@ func IsRequestFault(status int, err error) bool {
 	if hasRequestFaultBody(err) {
 		return true
 	}
-	if err != nil && IsItemNotPersisted(err.Error()) {
+	if err != nil && (IsItemNotPersisted(err.Error()) || IsClaudePolicyRefusalError(err)) {
 		return true
 	}
 	switch status {
@@ -142,6 +142,75 @@ func IsItemNotPersisted(message string) bool {
 	return strings.Contains(lower, "item with id") &&
 		strings.Contains(lower, "not found") &&
 		strings.Contains(lower, "items are not persisted when `store` is set to false")
+}
+
+// ClaudePolicyRefusalMessage inspects a Claude Messages JSON payload (either a non-stream
+// message object or a streaming message_delta event) and returns the refusal explanation
+// when stop_details indicates a policy/cyber refusal block.
+func ClaudePolicyRefusalMessage(payload []byte) (string, bool) {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return "", false
+	}
+	for _, prefix := range []string{"delta", ""} {
+		stopReasonPath := "stop_reason"
+		stopDetailsPath := "stop_details"
+		if prefix != "" {
+			stopReasonPath = prefix + ".stop_reason"
+			stopDetailsPath = prefix + ".stop_details"
+		}
+		stopReason := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, stopReasonPath).String()))
+		details := gjson.GetBytes(payload, stopDetailsPath)
+		if !details.Exists() || details.Type != gjson.JSON {
+			continue
+		}
+		detailsType := strings.ToLower(strings.TrimSpace(details.Get("type").String()))
+		category := strings.ToLower(strings.TrimSpace(details.Get("category").String()))
+		explanation := strings.TrimSpace(details.Get("explanation").String())
+		if stopReason == "refusal" || detailsType == "refusal" || category == "cyber" {
+			if explanation != "" {
+				if category != "" {
+					return "claude refusal (" + category + "): " + explanation, true
+				}
+				return "claude refusal: " + explanation, true
+			}
+			if category != "" {
+				return "claude refusal (" + category + ")", true
+			}
+			return string(details.Raw), true
+		}
+	}
+	return "", false
+}
+
+// IsClaudePolicyRefusalError reports whether err represents a Claude policy/cyber refusal block.
+func IsClaudePolicyRefusalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isClaudePolicyRefusalText(err.Error()) {
+		return true
+	}
+	type responseBodyProvider interface {
+		ResponseBody() []byte
+	}
+	var responseBody responseBodyProvider
+	if errors.As(err, &responseBody) && responseBody != nil && len(responseBody.ResponseBody()) > 0 {
+		if _, ok := ClaudePolicyRefusalMessage(responseBody.ResponseBody()); ok {
+			return true
+		}
+		if isClaudePolicyRefusalText(string(responseBody.ResponseBody())) {
+			return true
+		}
+	}
+	return false
+}
+
+func isClaudePolicyRefusalText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.HasPrefix(lower, "claude refusal (") ||
+		strings.HasPrefix(lower, "claude refusal:") ||
+		(strings.Contains(lower, "triggered restrictions on violative cyber content") &&
+			strings.Contains(lower, "anthropic's usage policy"))
 }
 
 // IsClaudeThreadNotFound reports the Claude 404 response for a stale
