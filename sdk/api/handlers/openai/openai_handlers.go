@@ -577,10 +577,14 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 			stopKeepAlive()
 			commitSSE()
 
-			initialHasFinishReason := chunkHasFinishReason(chunk)
+			termErr := chunkTerminalError(chunk)
+			if termErr != nil {
+				h.LoggingAPIResponseError(c, termErr)
+			}
+			initialHasFinishReason := termErr != nil || chunkHasFinishReason(chunk)
 			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
 			flusher.Flush()
-			if termErr := chunkTerminalError(chunk); termErr != nil {
+			if termErr != nil {
 				cliCancel(termErr.Error)
 				return
 			}
@@ -737,6 +741,14 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			// Success! Set headers.
 			stopKeepAlive()
 			commitSSE()
+
+			if termErr := chunkTerminalError(chunk); termErr != nil {
+				h.LoggingAPIResponseError(c, termErr)
+				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
+				flusher.Flush()
+				cliCancel(termErr.Error)
+				return
+			}
 
 			// Write the first chunk
 			converted := convertChatCompletionsStreamChunkToCompletions(chunk)

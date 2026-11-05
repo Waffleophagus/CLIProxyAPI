@@ -116,6 +116,18 @@ func TestClaudePolicyRefusalMessage(t *testing.T) {
 	if gotMsg, gotBlocked := ClaudePolicyRefusalMessage(plainRefusalWithoutDetails); gotBlocked {
 		t.Fatalf("ClaudePolicyRefusalMessage(plainRefusalWithoutDetails) = (%q, true), want false when stop_details absent", gotMsg)
 	}
+
+	sparseRefusal := []byte(`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal"}},"usage":{"output_tokens":0}}`)
+	sparseMsg, sparseBlocked := ClaudePolicyRefusalMessage(sparseRefusal)
+	if !sparseBlocked || sparseMsg == "" {
+		t.Fatalf("ClaudePolicyRefusalMessage(sparseRefusal) = (%q, %v), want non-empty true", sparseMsg, sparseBlocked)
+	}
+	if !IsClaudePolicyRefusalError(errors.New(sparseMsg)) {
+		t.Fatalf("IsClaudePolicyRefusalError(%q) = false, want true", sparseMsg)
+	}
+	if !IsRequestFault(http.StatusBadGateway, errors.New(sparseMsg)) {
+		t.Fatalf("IsRequestFault() = false for sparse refusal %q, want true", sparseMsg)
+	}
 }
 
 type statusAndUnwrapError struct {

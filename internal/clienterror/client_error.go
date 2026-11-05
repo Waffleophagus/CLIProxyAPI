@@ -177,7 +177,10 @@ func ClaudePolicyRefusalMessage(payload []byte) (string, bool) {
 			if category != "" {
 				return "claude refusal (" + category + ")", true
 			}
-			return string(details.Raw), true
+			if raw := strings.TrimSpace(string(details.Raw)); raw != "" {
+				return "claude refusal: " + raw, true
+			}
+			return "claude refusal", true
 		}
 	}
 	return "", false
@@ -189,6 +192,9 @@ func IsClaudePolicyRefusalError(err error) bool {
 		return false
 	}
 	if isClaudePolicyRefusalText(err.Error()) {
+		return true
+	}
+	if _, ok := ClaudePolicyRefusalMessage([]byte(err.Error())); ok {
 		return true
 	}
 	type responseBodyProvider interface {
@@ -208,7 +214,8 @@ func IsClaudePolicyRefusalError(err error) bool {
 
 func isClaudePolicyRefusalText(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
-	return strings.HasPrefix(lower, "claude refusal (") ||
+	return lower == "claude refusal" ||
+		strings.HasPrefix(lower, "claude refusal (") ||
 		strings.HasPrefix(lower, "claude refusal:") ||
 		(strings.Contains(lower, "triggered restrictions on violative cyber content") &&
 			strings.Contains(lower, "anthropic's usage policy"))
