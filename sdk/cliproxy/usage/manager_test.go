@@ -2,8 +2,11 @@ package usage
 
 import (
 	"context"
+	"net/http"
+	"runtime"
 	"testing"
 	"time"
+	"weak"
 )
 
 func TestStreamFromContextDefaultsMissingToFalse(t *testing.T) {
@@ -286,5 +289,65 @@ func TestManagerPublishUsesCapturedEndpointNotGinContext(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for usage record")
+	}
+}
+
+type notifyUsagePlugin struct {
+	delivered chan struct{}
+}
+
+func (p *notifyUsagePlugin) HandleUsage(_ context.Context, _ Record) {
+	p.delivered <- struct{}{}
+}
+
+type retainedRequestPayload struct {
+	data [64 << 10]byte
+}
+
+type retainedRequestContextKey struct{}
+
+//go:noinline
+func publishConsumableRecord(mgr *Manager) (weak.Pointer[retainedRequestPayload], weak.Pointer[string]) {
+	ctxPayload := &retainedRequestPayload{}
+	headerSlice := []string{"req-header-value"}
+
+	ctx := context.WithValue(context.Background(), retainedRequestContextKey{}, ctxPayload)
+	mgr.Publish(ctx, Record{
+		Provider:        "openai",
+		Model:           "gpt-5.4",
+		ResponseHeaders: http.Header{"X-Request-Id": headerSlice},
+	})
+
+	return weak.Make(ctxPayload), weak.Make(&headerSlice[0])
+}
+
+func TestManagerReleasesConsumedQueueItemReferencesWhenIdle(t *testing.T) {
+	mgr := NewManager(10)
+	t.Cleanup(mgr.Stop)
+
+	plugin := &notifyUsagePlugin{delivered: make(chan struct{}, 1)}
+	mgr.Register(plugin)
+
+	ctxWeak, headerWeak := publishConsumableRecord(mgr)
+
+	select {
+	case <-plugin.delivered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for usage record dispatch")
+	}
+
+	for range 10 {
+		runtime.Gosched()
+		runtime.GC()
+		if ctxWeak.Value() == nil && headerWeak.Value() == nil {
+			break
+		}
+	}
+
+	if ctxWeak.Value() != nil {
+		t.Fatalf("consumed request context payload is still retained while manager is idle")
+	}
+	if headerWeak.Value() != nil {
+		t.Fatalf("consumed record ResponseHeaders backing value is still retained while manager is idle")
 	}
 }
