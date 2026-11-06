@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 // ResolveSIWCBindPath resolves a target Codex credential file path (either an absolute path
@@ -157,6 +158,17 @@ func DoSIWCBind(cfg *config.Config, target string, options *LoginOptions) {
 		log.Errorf("siwc-bind: %v", errDevice)
 		return
 	}
+	credentialBytes, errRead := os.ReadFile(authFilePath)
+	if errRead != nil {
+		log.Errorf("siwc-bind: failed to read saved registration: %v", errRead)
+		return
+	}
+	registration := gjson.GetBytes(credentialBytes, "siwc.client_id")
+	if !gjson.ValidBytes(credentialBytes) || (registration.Exists() && registration.Type != gjson.String) {
+		log.Error("siwc-bind: invalid saved registration")
+		return
+	}
+	savedClientID := strings.TrimSpace(registration.Str)
 
 	callbackPort := codex.SIWCCallbackPort
 	if options.CallbackPort > 0 {
@@ -200,6 +212,9 @@ func DoSIWCBind(cfg *config.Config, target string, options *LoginOptions) {
 
 	authSvc := codex.NewCodexAuth(cfg)
 	authURL, errURL := authSvc.GenerateSIWCAuthURL(state, nonce, deviceID, redirectURI, pkceCodes)
+	if savedClientID != "" {
+		authURL, errURL = authSvc.GenerateSIWCReauthURL(savedClientID, state, nonce, deviceID, redirectURI, pkceCodes)
+	}
 	if errURL != nil {
 		log.Errorf("siwc-bind: failed to generate authorization URL: %v", errURL)
 		return
@@ -305,12 +320,20 @@ waitForCallback:
 		fmt.Println("Sign in with ChatGPT authentication failed: state mismatch")
 		return
 	}
-	if strings.TrimSpace(result.ClientID) == "" {
+	issuedClientID := strings.TrimSpace(result.ClientID)
+	if savedClientID != "" {
+		if issuedClientID != "" && issuedClientID != savedClientID {
+			fmt.Println("Sign in with ChatGPT authentication failed: callback client ID does not match the saved registration")
+			return
+		}
+		issuedClientID = savedClientID
+	}
+	if issuedClientID == "" || issuedClientID == codex.SIWCDynamicClientID {
 		fmt.Println("Sign in with ChatGPT authentication failed: callback did not contain an issued client ID")
 		return
 	}
 
-	siwcData, errExchange := authSvc.ExchangeSIWCCodeForTokens(context.Background(), result.Code, result.ClientID, redirectURI, deviceID, pkceCodes)
+	siwcData, errExchange := authSvc.ExchangeSIWCCodeForTokens(context.Background(), result.Code, issuedClientID, redirectURI, deviceID, pkceCodes)
 	if errExchange != nil {
 		fmt.Printf("Sign in with ChatGPT token exchange failed: %v\n", errExchange)
 		return
