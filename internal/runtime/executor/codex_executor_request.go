@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -57,26 +58,29 @@ func translateCodexRequestPairChecked(from, to sdktranslator.Format, model strin
 	return originalTranslated, body, err
 }
 
-// normalizeCodexClaudeOutputBudget bridges Claude's smaller valid budgets to Codex's minimum.
-func normalizeCodexClaudeOutputBudget(body []byte, from sdktranslator.Format, payload []byte) []byte {
-	if len(body) == 0 || from != sdktranslator.FormatClaude {
-		return body
-	}
-	requested := gjson.GetBytes(payload, "max_tokens")
-	if !requested.Exists() {
-		requested = gjson.GetBytes(payload, "max_output_tokens")
-	}
-	if requested.Type != gjson.Number {
-		return body
-	}
-	requestedTokens, errParse := strconv.ParseInt(requested.Raw, 10, 64)
-	if errParse != nil || requestedTokens < 1 || requestedTokens >= 16 {
+// codexMinOutputTokens is the smallest integer max_output_tokens value the ChatGPT
+// Codex backend accepts; smaller integers are rejected with invalid_request_error.
+const codexMinOutputTokens = 16
+
+// normalizeCodexOutputBudget raises small positive integer output budgets to the
+// Codex minimum. It judges the translated payload (max_output_tokens) rather than the
+// client payload so every source format and budget field (max_tokens,
+// max_completion_tokens, ...) is covered uniformly. Budgets that are missing,
+// non-numeric, non-integral, or <= 0 are left untouched for the upstream to reject.
+// This runs before user payload rules so overrides and filters stay final.
+func normalizeCodexOutputBudget(body []byte) []byte {
+	if len(body) == 0 {
 		return body
 	}
 	translated := gjson.GetBytes(body, "max_output_tokens")
-	if translated.Type == gjson.Number && translated.Int() > 0 && translated.Int() < 16 {
-		body, _ = sjson.SetBytes(body, "max_output_tokens", 16)
+	if translated.Type != gjson.Number {
+		return body
 	}
+	tokens, errFloat := strconv.ParseFloat(translated.Raw, 64)
+	if errFloat != nil || tokens < 1 || tokens >= codexMinOutputTokens || tokens != math.Trunc(tokens) {
+		return body
+	}
+	body, _ = sjson.SetBytes(body, "max_output_tokens", codexMinOutputTokens)
 	return body
 }
 
