@@ -1053,7 +1053,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						} else {
 							state.NextRetryAfter = now.Add(30 * time.Minute)
 						}
-					} else if isTransientRateLimitResultError(result.Error) && statusCode == http.StatusTooManyRequests {
+					} else if !result.CredentialScope && isTransientRateLimitResultError(result.Error) && statusCode == http.StatusTooManyRequests {
 						// Transient per-turn capacity rejection (issue 7017): cool
 						// only the reporting model until the provider retry hint.
 						// The credential quota is not exhausted, so no quota state
@@ -1830,12 +1830,12 @@ func errorCodeFromError(err error) string {
 }
 
 func isRequestScopedError(err error) bool {
-	if err == nil {
+	if err == nil || isCredentialScopedError(err) {
 		return false
 	}
 	// A preserved terminal response belongs to this request unless the executor
 	// explicitly classifies the rejection as safe to retry on another credential.
-	if isRequestTerminatedError(err) && !isCredentialScopedError(err) {
+	if isRequestTerminatedError(err) {
 		return true
 	}
 	requestErr, ok := errors.AsType[cliproxyexecutor.RequestScopedError](err)
@@ -1846,7 +1846,7 @@ func isRequestScopedError(err error) bool {
 // upstream streams that ended without a terminal frame. Unlike a received
 // HTTP refusal, the generation was already submitted upstream.
 func isStreamTruncatedError(err error) bool {
-	if err == nil {
+	if err == nil || isCredentialScopedError(err) {
 		return false
 	}
 	truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err)
@@ -1882,6 +1882,18 @@ func resultErrorFromError(err error) *Error {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
 	switch {
+	case isCredentialScopedError(err):
+		// A credential-scoped failure always stays on the credential quota path;
+		// normalize conflicting model-only or cooldown-skipping codes so MarkResult
+		// cannot downgrade whole-credential exhaustion.
+		switch strings.ToLower(strings.TrimSpace(resultErr.Code)) {
+		case transientRateLimitErrorCode,
+			requestScopedErrorCode,
+			streamTruncatedErrorCode,
+			connectionLifecycleErrorCode,
+			transientTransportErrorCode:
+			resultErr.Code = credentialQuotaErrorCode
+		}
 	case isStreamTruncatedError(err):
 		// Preserve the local truncation classification alongside the public
 		// 502 status so MarkResult can skip credential cooldown.
@@ -2248,7 +2260,10 @@ func isCredentialScopedError(err error) bool {
 		IsCredentialScoped() bool
 	}
 	var csp credentialScopedProvider
-	return errors.As(err, &csp) && csp != nil && csp.IsCredentialScoped()
+	if errors.As(err, &csp) && csp != nil && csp.IsCredentialScoped() {
+		return true
+	}
+	return strings.EqualFold(errorCodeFromError(err), credentialQuotaErrorCode)
 }
 
 func statusCodeFromResult(err *Error) int {
