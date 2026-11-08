@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/tidwall/gjson"
@@ -841,6 +842,15 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexOrphanDelegation(c *gin.Context,
 	return multiagentv2.RewriteCodexOrphanDelegationInput(requestCtx, requestHeaders, payload, true)
 }
 
+// prepareCodexRequestPayload applies the Codex request rewrites for /v1/responses,
+// then turns orphan tool outputs that lack a call_id into user messages.
+func (h *OpenAIResponsesAPIHandler) prepareCodexRequestPayload(c *gin.Context, payload []byte) []byte {
+	payload = h.prepareCodexMultiAgentV2Tools(c, payload)
+	payload = h.prepareCodexOrphanDelegation(c, payload)
+	payload, _ = translatorcommon.SanitizeOrphanResponsesToolOutputs(payload)
+	return payload
+}
+
 // Responses handles the /v1/responses endpoint.
 // It determines whether the request is for a streaming or non-streaming response
 // and calls the appropriate handler based on the model provider.
@@ -860,8 +870,7 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	rawJSON = h.prepareCodexMultiAgentV2Tools(c, rawJSON)
-	rawJSON = h.prepareCodexOrphanDelegation(c, rawJSON)
+	rawJSON = h.prepareCodexRequestPayload(c, rawJSON)
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
@@ -886,6 +895,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	}
 
 	rawJSON = h.prepareCodexOrphanDelegation(c, rawJSON)
+	rawJSON, _ = translatorcommon.SanitizeOrphanResponsesToolOutputs(rawJSON)
 
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if streamResult.Type == gjson.True {
