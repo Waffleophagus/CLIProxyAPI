@@ -261,7 +261,7 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel string, pooled bool) string {
 	stateModel := executionResultModel(routeModel, upstreamModel, pooled)
 	selectionModel := m.selectionModelForAuth(auth, routeModel)
-	if canonicalModelKey(selectionModel) == canonicalModelKey(upstreamModel) && strings.TrimSpace(selectionModel) != "" {
+	if sameCanonicalModelKey(selectionModel, upstreamModel) && strings.TrimSpace(selectionModel) != "" {
 		return strings.TrimSpace(upstreamModel)
 	}
 	return stateModel

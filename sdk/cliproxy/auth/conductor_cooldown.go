@@ -913,12 +913,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 		now = time.Now()
 		responseHeaders := internallogging.GetResponseHeaders(ctx)
-		modelState := existingModelState(auth, modelKey)
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
 		if trackCooldownState {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
+		if m != nil {
+			_ = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false)
+			if modelKey != "" {
+				modelKey = m.resolveMarkResultModelKeyLocked(auth, modelKey, result.RouteModel)
+			}
+		}
+		modelState := existingModelState(auth, modelKey)
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {
 			auth.Success++
@@ -1355,7 +1361,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		var targetModels []string
 		if !credentialScopedResult && modelKey != "" {
 			targetModels = append(targetModels, modelKey)
-			if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && routeKey != modelKey {
+			if routeKey := canonicalModelKey(result.RouteModel); routeKey != "" && !sameCanonicalModelKey(routeKey, modelKey) {
 				targetModels = append(targetModels, routeKey)
 			}
 		}
@@ -1446,10 +1452,28 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 
 func existingModelState(auth *Auth, model string) *ModelState {
 	model = canonicalModelKey(model)
-	if auth == nil || model == "" {
+	if auth == nil || model == "" || len(auth.ModelStates) == 0 {
 		return nil
 	}
-	return auth.ModelStates[model]
+	if state, ok := auth.ModelStates[model]; ok && state != nil {
+		return state
+	}
+	lookupKey := canonicalModelLookupKey(model)
+	if lookupKey == "" {
+		return nil
+	}
+	var matched *ModelState
+	for stateModel, state := range auth.ModelStates {
+		if state == nil || canonicalModelLookupKey(stateModel) != lookupKey {
+			continue
+		}
+		if matched == nil {
+			matched = state
+		} else {
+			matched = mergeModelState(matched.Clone(), state)
+		}
+	}
+	return matched
 }
 
 func ensureModelState(auth *Auth, model string) *ModelState {
@@ -1464,6 +1488,12 @@ func ensureModelState(auth *Auth, model string) *ModelState {
 	if state, ok := auth.ModelStates[model]; ok && state != nil {
 		return state
 	}
+	lookupKey := canonicalModelLookupKey(model)
+	for stateModel, state := range auth.ModelStates {
+		if canonicalModelLookupKey(stateModel) == lookupKey && state != nil {
+			return state
+		}
+	}
 	state := &ModelState{Status: StatusActive}
 	auth.ModelStates[model] = state
 	return state
@@ -1473,9 +1503,18 @@ func normalizeModelStates(auth *Auth) bool {
 	if auth == nil || len(auth.ModelStates) == 0 {
 		return false
 	}
+	keys := make([]string, 0, len(auth.ModelStates))
+	for model := range auth.ModelStates {
+		keys = append(keys, model)
+	}
+	if len(keys) > 1 {
+		sort.Strings(keys)
+	}
 	normalized := make(map[string]*ModelState, len(auth.ModelStates))
+	keyByLookup := make(map[string]string, len(auth.ModelStates))
 	changed := false
-	for model, state := range auth.ModelStates {
+	for _, model := range keys {
+		state := auth.ModelStates[model]
 		modelKey := canonicalModelKey(model)
 		if modelKey == "" {
 			modelKey = strings.TrimSpace(model)
@@ -1483,11 +1522,27 @@ func normalizeModelStates(auth *Auth) bool {
 		if modelKey != model {
 			changed = true
 		}
-		if existing, ok := normalized[modelKey]; ok {
-			normalized[modelKey] = mergeModelState(existing, state)
+		lookupKey := canonicalModelLookupKey(modelKey)
+		if lookupKey == "" {
+			lookupKey = strings.ToLower(modelKey)
+		}
+		if existingKey, ok := keyByLookup[lookupKey]; ok {
+			var existingClone *ModelState
+			if normalized[existingKey] != nil {
+				existingClone = normalized[existingKey].Clone()
+			}
+			merged := mergeModelState(existingClone, state)
+			targetKey := existingKey
+			if modelKey == lookupKey && existingKey != lookupKey {
+				delete(normalized, existingKey)
+				targetKey = modelKey
+				keyByLookup[lookupKey] = targetKey
+			}
+			normalized[targetKey] = merged
 			changed = true
 			continue
 		}
+		keyByLookup[lookupKey] = modelKey
 		normalized[modelKey] = state
 	}
 	if changed {
@@ -1613,6 +1668,56 @@ func isModelStateActiveCooldown(state *ModelState, now time.Time) bool {
 		return true
 	}
 	return false
+}
+
+func (m *Manager) registryModelsForAuthAndModel(auth *Auth, authID, modelKey string) []string {
+	authID = strings.TrimSpace(authID)
+	modelKey = strings.TrimSpace(modelKey)
+	if authID == "" && auth != nil {
+		authID = auth.ID
+	}
+	if auth == nil && m != nil && authID != "" {
+		m.mu.RLock()
+		auth = m.auths[authID]
+		m.mu.RUnlock()
+	}
+	if authID == "" || modelKey == "" {
+		return nil
+	}
+
+	targetCanonical := canonicalModelLookupKey(modelKey)
+	supportedModels := registry.GetGlobalRegistry().GetModelsForClient(authID)
+	if len(supportedModels) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(supportedModels))
+	seen := make(map[string]struct{}, len(supportedModels))
+
+	for _, model := range supportedModels {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		regModelID := strings.TrimSpace(model.ID)
+		stateKey := ""
+		if m != nil {
+			stateKey = m.selectionModelKeyForAuth(auth, regModelID)
+		}
+		if stateKey == "" {
+			stateKey = canonicalModelKey(regModelID)
+		}
+		if canonicalModelLookupKey(stateKey) == targetCanonical {
+			if _, exists := seen[regModelID]; !exists {
+				seen[regModelID] = struct{}{}
+				out = append(out, regModelID)
+			}
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func modelStateIsClean(state *ModelState) bool {

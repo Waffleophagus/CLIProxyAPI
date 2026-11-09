@@ -408,6 +408,18 @@ func canonicalModelKey(model string) string {
 	return modelName
 }
 
+func canonicalModelLookupKey(model string) string {
+	return strings.ToLower(canonicalModelKey(model))
+}
+
+func sameCanonicalModelKey(left, right string) bool {
+	leftKey := canonicalModelLookupKey(left)
+	if leftKey == "" {
+		return false
+	}
+	return leftKey == canonicalModelLookupKey(right)
+}
+
 func authWebsocketsEnabled(auth *Auth) bool {
 	if auth == nil {
 		return false
@@ -613,7 +625,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
-	key := provider + ":" + canonicalModelKey(model)
+	key := provider + ":" + canonicalModelLookupKey(model)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lastPicked == nil {
@@ -672,7 +684,7 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	stateModel := weightedSelectorStateModel(ctx, model)
-	key := provider + ":" + canonicalModelKey(stateModel)
+	key := provider + ":" + canonicalModelLookupKey(stateModel)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -838,13 +850,13 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	}
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
-			modelKey := canonicalModelKey(model)
+			modelKey := canonicalModelLookupKey(model)
 			matched := false
 			blocked := false
 			blockedReason := blockReasonNone
 			nextRetry := time.Time{}
 			for stateModel, state := range auth.ModelStates {
-				if state == nil || canonicalModelKey(stateModel) != modelKey {
+				if state == nil || canonicalModelLookupKey(stateModel) != modelKey {
 					continue
 				}
 				matched = true
@@ -986,9 +998,9 @@ func isAuthBlockedByQuotaOrAuthForModel(auth *Auth, model string, now time.Time)
 		return true
 	}
 	if model != "" && len(auth.ModelStates) > 0 {
-		modelKey := canonicalModelKey(model)
+		modelKey := canonicalModelLookupKey(model)
 		for stateModel, state := range auth.ModelStates {
-			if state == nil || canonicalModelKey(stateModel) != modelKey {
+			if state == nil || canonicalModelLookupKey(stateModel) != modelKey {
 				continue
 			}
 			if state.Status == StatusDisabled {
