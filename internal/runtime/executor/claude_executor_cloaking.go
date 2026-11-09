@@ -1866,12 +1866,156 @@ const claudeCacheControlTTL1h = "1h"
 // suppress system/latest-user breakpoints. Callers still run enforceCacheControlLimit.
 // See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 func ensureCacheControl(payload []byte) []byte {
+	payload, _, materializedInMessages := materializeTopLevelCacheControl(payload)
 	if !claudePayloadHasCacheableSystem(payload) {
 		payload = injectToolsCacheControl(payload)
 	}
 	payload = injectSystemCacheControl(payload)
-	payload = injectMessagesCacheControl(payload)
+	if !materializedInMessages {
+		payload = injectMessagesCacheControl(payload)
+	}
 	return payload
+}
+
+func isBareEphemeralClaudeCacheControl(cc gjson.Result) bool {
+	if !isValidClaudeCacheControl(cc) {
+		return false
+	}
+	return len(cc.Map()) == 1
+}
+
+func buildTextBlockWithRawCacheControl(text, rawCC string) string {
+	if rawCC != "" {
+		return `{"type":"text","text":` + marshalJSONStringWithoutHTMLEscape(text) + `,"cache_control":` + rawCC + `}`
+	}
+	return buildTextBlock(text, nil)
+}
+
+// applyTopLevelCacheControlToBlock moves the top-level cache_control onto the
+// block at blockPath unless that block already carries an equal or more specific
+// marker, then removes the top-level field. On failure payload is returned unchanged.
+func applyTopLevelCacheControlToBlock(payload []byte, blockPath string, topCC gjson.Result) ([]byte, bool) {
+	updated := payload
+	ccPath := blockPath + ".cache_control"
+	existingCC := gjson.GetBytes(payload, ccPath)
+	if !isValidClaudeCacheControl(existingCC) || (isBareEphemeralClaudeCacheControl(existingCC) && !isBareEphemeralClaudeCacheControl(topCC)) {
+		var errSet error
+		if updated, errSet = sjson.SetRawBytes(updated, ccPath, []byte(topCC.Raw)); errSet != nil {
+			return payload, false
+		}
+	}
+	updated, errDel := sjson.DeleteBytes(updated, "cache_control")
+	if errDel != nil {
+		return payload, false
+	}
+	return updated, true
+}
+
+// replaceStringWithTopLevelCacheControlBlock turns the string at path into a single
+// text block carrying the top-level cache_control, then removes the top-level field.
+func replaceStringWithTopLevelCacheControlBlock(payload []byte, path, text string, topCC gjson.Result) ([]byte, bool) {
+	newContent := "[" + buildTextBlockWithRawCacheControl(text, topCC.Raw) + "]"
+	updated, errSet := sjson.SetRawBytes(payload, path, []byte(newContent))
+	if errSet != nil {
+		return payload, false
+	}
+	updated, errDel := sjson.DeleteBytes(updated, "cache_control")
+	if errDel != nil {
+		return payload, false
+	}
+	return updated, true
+}
+
+// materializeTopLevelCacheControl moves a top-level cache_control (Anthropic
+// automatic prompt caching) onto the last cacheable block in the request and
+// removes the top-level field so it participates in the 4-breakpoint limit and
+// TTL normalization/upgrades without duplicating the final breakpoint. It
+// reports whether the payload changed and whether the marker landed in messages.
+func materializeTopLevelCacheControl(payload []byte) ([]byte, bool, bool) {
+	if len(payload) == 0 {
+		return payload, false, false
+	}
+	topCC := gjson.GetBytes(payload, "cache_control")
+	if !isValidClaudeCacheControl(topCC) {
+		return payload, false, false
+	}
+
+	if messages := gjson.GetBytes(payload, "messages"); messages.IsArray() {
+		lastMessageIndex := int(messages.Get("#").Int()) - 1
+		lastEligibleIndex := -1
+		messages.ForEach(func(index gjson.Result, message gjson.Result) bool {
+			if role := message.Get("role").String(); role != "user" && role != "assistant" {
+				return true
+			}
+			if claudeMessageEligibleForRollingCache(message) {
+				lastEligibleIndex = int(index.Int())
+			}
+			return true
+		})
+		if lastMessageIndex >= 0 && lastEligibleIndex >= 0 {
+			finalMessage := messages.Get(fmt.Sprintf("%d", lastMessageIndex))
+			finalContent := finalMessage.Get("content")
+			if finalMessage.Get("role").String() == "system" && finalContent.Type == gjson.String && strings.TrimSpace(finalContent.String()) != "" {
+				if updated, ok := replaceStringWithTopLevelCacheControlBlock(payload, fmt.Sprintf("messages.%d.content", lastMessageIndex), finalContent.String(), topCC); ok {
+					return updated, true, true
+				}
+			}
+			eligible := messages.Get(fmt.Sprintf("%d", lastEligibleIndex))
+			content := eligible.Get("content")
+			if content.IsArray() {
+				if targetBlockIndex := lastCacheableClaudeMessageContentBlockIndex(eligible); targetBlockIndex >= 0 {
+					if updated, ok := applyTopLevelCacheControlToBlock(payload, fmt.Sprintf("messages.%d.content.%d", lastEligibleIndex, targetBlockIndex), topCC); ok {
+						return updated, true, true
+					}
+				}
+			} else if content.Type == gjson.String && strings.TrimSpace(content.String()) != "" {
+				if updated, ok := replaceStringWithTopLevelCacheControlBlock(payload, fmt.Sprintf("messages.%d.content", lastEligibleIndex), content.String(), topCC); ok {
+					return updated, true, true
+				}
+			}
+		}
+	}
+
+	system := gjson.GetBytes(payload, "system")
+	if system.IsArray() {
+		if lastSysIdx := lastCacheableClaudeSystemIndex(system); lastSysIdx >= 0 {
+			updated, ok := applyTopLevelCacheControlToBlock(payload, fmt.Sprintf("system.%d", lastSysIdx), topCC)
+			return updated, ok, false
+		}
+	} else if system.Type == gjson.String && strings.TrimSpace(system.String()) != "" {
+		updated, ok := replaceStringWithTopLevelCacheControlBlock(payload, "system", system.String(), topCC)
+		return updated, ok, false
+	}
+
+	if tools := gjson.GetBytes(payload, "tools"); tools.IsArray() {
+		lastEligibleToolIndex := -1
+		tools.ForEach(func(index, tool gjson.Result) bool {
+			if !tool.Get("defer_loading").Bool() {
+				lastEligibleToolIndex = int(index.Int())
+			}
+			return true
+		})
+		if lastEligibleToolIndex >= 0 {
+			updated, ok := applyTopLevelCacheControlToBlock(payload, fmt.Sprintf("tools.%d", lastEligibleToolIndex), topCC)
+			return updated, ok, false
+		}
+	}
+
+	return payload, false, false
+}
+
+func claudeCacheControlPath(path string) string {
+	if path == "" {
+		return "cache_control"
+	}
+	return path + ".cache_control"
+}
+
+func claudeCacheControlTTLPath(path string) string {
+	if path == "" {
+		return "cache_control.ttl"
+	}
+	return path + ".cache_control.ttl"
 }
 
 // claudePayloadHasCacheableSystem reports whether the payload has a system prompt
@@ -1955,7 +2099,7 @@ func upgradeClaudeCacheControlTTL(payload []byte, ttl string) []byte {
 			upgraded += `,"scope":` + scope.Raw
 		}
 		upgraded += "}"
-		updated, errSet := sjson.SetRawBytes(payload, path+".cache_control", []byte(upgraded))
+		updated, errSet := sjson.SetRawBytes(payload, claudeCacheControlPath(path), []byte(upgraded))
 		if errSet != nil {
 			return
 		}
@@ -1981,7 +2125,7 @@ func stripClaudeCacheControlTTL(payload []byte) []byte {
 		if !cacheControl.IsObject() || !cacheControl.Get("ttl").Exists() {
 			return
 		}
-		updated, errDel := sjson.DeleteBytes(payload, path+".cache_control.ttl")
+		updated, errDel := sjson.DeleteBytes(payload, claudeCacheControlTTLPath(path))
 		if errDel != nil {
 			return
 		}
@@ -1993,7 +2137,9 @@ func stripClaudeCacheControlTTL(payload []byte) []byte {
 }
 
 // forEachClaudeCacheControlBlock walks every block that can carry cache_control
-// in Anthropic's evaluation order: tools, then system, then messages.
+// in Anthropic's evaluation order: tools, then system, then messages. A top-level
+// cache_control (automatic caching) marks the end of the prompt, so it is visited
+// last with an empty path and the whole payload as its block.
 func forEachClaudeCacheControlBlock(payload []byte, visit func(path string, block gjson.Result)) {
 	if tools := gjson.GetBytes(payload, "tools"); tools.IsArray() {
 		tools.ForEach(func(idx, item gjson.Result) bool {
@@ -2019,6 +2165,9 @@ func forEachClaudeCacheControlBlock(payload []byte, visit func(path string, bloc
 			})
 			return true
 		})
+	}
+	if root := gjson.ParseBytes(payload); root.IsObject() && root.Get("cache_control").Exists() {
+		visit("", root)
 	}
 }
 
@@ -2071,6 +2220,9 @@ func shouldEnsureCacheControl(payload []byte, cloaked, confirmedClaudeCode bool,
 
 func countCacheControls(payload []byte) int {
 	count := 0
+	if isValidClaudeCacheControl(gjson.GetBytes(payload, "cache_control")) {
+		count++
+	}
 
 	// Check system
 	system := gjson.GetBytes(payload, "system")
@@ -2147,8 +2299,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 		if !seen5m {
 			return
 		}
-		ttlPath := path + ".cache_control.ttl"
-		updated, errDel := sjson.DeleteBytes(payload, ttlPath)
+		updated, errDel := sjson.DeleteBytes(payload, claudeCacheControlTTLPath(path))
 		if errDel != nil {
 			return
 		}
@@ -2185,6 +2336,10 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 			})
 			return true
 		})
+	}
+
+	if root := gjson.ParseBytes(payload); root.IsObject() {
+		processBlock("", root)
 	}
 
 	if !modified {
@@ -2373,6 +2528,16 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 			excess--
 			return true
 		})
+	}
+
+	if excess <= 0 {
+		return payload
+	}
+
+	if isValidClaudeCacheControl(gjson.GetBytes(payload, "cache_control")) {
+		if updated, errDel := sjson.DeleteBytes(payload, "cache_control"); errDel == nil {
+			payload = updated
+		}
 	}
 
 	return payload

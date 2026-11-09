@@ -58,6 +58,9 @@ func referenceClaudePayloadHas1hTTL(payload []byte) bool {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return false
 	}
+	if topCC := gjson.GetBytes(payload, "cache_control"); topCC.IsObject() && topCC.Get("ttl").String() == "1h" {
+		return true
+	}
 	has1h := false
 	checkBlock := func(item gjson.Result) bool {
 		cc := item.Get("cache_control")
