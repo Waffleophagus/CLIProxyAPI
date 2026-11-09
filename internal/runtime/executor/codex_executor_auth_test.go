@@ -58,27 +58,34 @@ func startCodexMockOAuthServers(t *testing.T, idToken string) (proxyURL string, 
 
 	mockProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
-			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
-			if errDial != nil {
-				http.Error(w, errDial.Error(), http.StatusServiceUnavailable)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
-				_ = destConn.Close()
 				http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 				return
 			}
-			clientConn, _, errHijack := hijacker.Hijack()
+			clientConn, clientBuf, errHijack := hijacker.Hijack()
 			if errHijack != nil {
-				_ = destConn.Close()
 				return
+			}
+			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
+			if errDial != nil {
+				_, _ = clientConn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+				_ = clientConn.Close()
+				return
+			}
+			if _, errWrite := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); errWrite != nil {
+				_ = destConn.Close()
+				_ = clientConn.Close()
+				return
+			}
+			var clientReader io.Reader = clientConn
+			if clientBuf != nil && clientBuf.Reader != nil {
+				clientReader = clientBuf.Reader
 			}
 			go func() {
 				defer func() { _ = destConn.Close() }()
 				defer func() { _ = clientConn.Close() }()
-				_, _ = io.Copy(destConn, clientConn)
+				_, _ = io.Copy(destConn, clientReader)
 			}()
 			go func() {
 				defer func() { _ = destConn.Close() }()
@@ -110,7 +117,7 @@ func TestCodexExecutorRefresh_MissingPlanTypeDefaultsToFree(t *testing.T) {
 	proxyURL, teardown := startCodexMockOAuthServers(t, idTokenWithoutPlan)
 	defer teardown()
 
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthDir: t.TempDir()}
 	executor := NewCodexExecutor(cfg)
 
 	storage := &codexauth.CodexTokenStorage{
@@ -186,7 +193,7 @@ func TestCodexExecutorRefresh_ExtractsPlanTypeWhenPresent(t *testing.T) {
 	proxyURL, teardown := startCodexMockOAuthServers(t, idTokenWithPlan)
 	defer teardown()
 
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthDir: t.TempDir()}
 	executor := NewCodexExecutor(cfg)
 
 	storage := &codexauth.CodexTokenStorage{
@@ -262,7 +269,7 @@ func TestCodexExecutorRefresh_EmptyAttributesSnapshotIsolation(t *testing.T) {
 	proxyURL, teardown := startCodexMockOAuthServers(t, idTokenWithoutPlan)
 	defer teardown()
 
-	cfg := &config.Config{}
+	cfg := &config.Config{AuthDir: t.TempDir()}
 	executor := NewCodexExecutor(cfg)
 
 	emptyAttrs := map[string]string{}
@@ -279,7 +286,7 @@ func TestCodexExecutorRefresh_EmptyAttributesSnapshotIsolation(t *testing.T) {
 		ProxyURL:   proxyURL,
 		Attributes: emptyAttrs,
 		Metadata: map[string]any{
-			"refresh_token": "valid-refresh-token",
+			"refresh_token": "valid-refresh-token-empty-attrs",
 		},
 	}
 
@@ -293,6 +300,9 @@ func TestCodexExecutorRefresh_EmptyAttributesSnapshotIsolation(t *testing.T) {
 
 	if got := refreshed.Attributes["plan_type"]; got != "free" {
 		t.Errorf("refreshed.Attributes[plan_type] = %q, want free", got)
+	}
+	if got := refreshed.Metadata["account_id"]; got != "acc-codex-empty-attrs" {
+		t.Errorf("refreshed.Metadata[account_id] = %v, want acc-codex-empty-attrs", got)
 	}
 	// Verify original empty map was not modified
 	if _, exists := emptyAttrs["plan_type"]; exists {
@@ -340,26 +350,34 @@ func startDualCodexAndSIWCMockOAuthServer(t *testing.T, idToken string, failSIWC
 
 	mockProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
-			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
-			if errDial != nil {
-				http.Error(w, errDial.Error(), http.StatusServiceUnavailable)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
-				_ = destConn.Close()
+				http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 				return
 			}
-			clientConn, _, errHijack := hijacker.Hijack()
+			clientConn, clientBuf, errHijack := hijacker.Hijack()
 			if errHijack != nil {
-				_ = destConn.Close()
 				return
+			}
+			destConn, errDial := net.Dial("tcp", mockAuthServer.Listener.Addr().String())
+			if errDial != nil {
+				_, _ = clientConn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+				_ = clientConn.Close()
+				return
+			}
+			if _, errWrite := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); errWrite != nil {
+				_ = destConn.Close()
+				_ = clientConn.Close()
+				return
+			}
+			var clientReader io.Reader = clientConn
+			if clientBuf != nil && clientBuf.Reader != nil {
+				clientReader = clientBuf.Reader
 			}
 			go func() {
 				defer func() { _ = destConn.Close() }()
 				defer func() { _ = clientConn.Close() }()
-				_, _ = io.Copy(destConn, clientConn)
+				_, _ = io.Copy(destConn, clientReader)
 			}()
 			go func() {
 				defer func() { _ = destConn.Close() }()
