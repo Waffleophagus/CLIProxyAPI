@@ -386,13 +386,22 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			// the read and closes the connection instead of pooling it. This is
 			// the AGENTS.md post-message_stop drain exception. The drain is
 			// skipped unless the response completed.
+			//
+			// The cap stays armed until decodedBody is closed: a decoder that
+			// reads ahead in the background (zstd) can be blocked in a read of
+			// the unfinished upstream body, and its Close waits for that read.
+			// Without the cap, the drain returning at its byte limit would leave
+			// that Close, and releaseUpstream after it, blocked forever.
+			var drainCap *time.Timer
 			if detached {
-				drainCap := time.AfterFunc(claudeStreamDrainTimeout, releaseUpstream)
+				drainCap = time.AfterFunc(claudeStreamDrainTimeout, releaseUpstream)
 				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64<<10))
-				drainCap.Stop()
 			}
 			if errClose := decodedBody.Close(); errClose != nil {
 				log.Errorf("response body close error: %v", errClose)
+			}
+			if drainCap != nil {
+				drainCap.Stop()
 			}
 			releaseUpstream()
 		}()
