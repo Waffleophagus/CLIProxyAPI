@@ -162,9 +162,9 @@ upstream:
     # disable-cloaking-model-list: false # Return original model IDs in Anthropic model lists.
     # Claude Code CLI fingerprint defaults. Change only after measuring a new Claude Code release.
     # header-defaults:
-    #   user-agent: "claude-cli/2.1.280 (external, cli)"
-    #   package-version: "0.112.1"
-    #   runtime-version: "v26.3.0"
+    #   user-agent: "claude-cli/2.1.321 (external, cli)"
+    #   package-version: "0.128.0"
+    #   runtime-version: "v26.12.1"
     #   os: "MacOS"
     #   arch: "arm64"
     #   timeout: "600"
