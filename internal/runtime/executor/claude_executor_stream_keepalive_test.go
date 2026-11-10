@@ -295,12 +295,9 @@ func TestClaudeExecutor_ExecuteStream_ClosesChunksWhenUpstreamStallsAfterMessage
 // while the test runs, so only the drain cap can end the request and close the
 // connection.
 func TestClaudeExecutor_ExecuteStream_CapsDrainWhenUpstreamNeverFinishes(t *testing.T) {
-	previous := claudeStreamDrainTimeout
-	claudeStreamDrainTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { claudeStreamDrainTimeout = previous })
-
 	stall := make(chan struct{})
 	h := newKeepaliveHarness(t, stall, false)
+	h.exec.streamDrainTimeout = 50 * time.Millisecond
 	// Released only after the assertions, so it cannot end the drain itself.
 	t.Cleanup(func() { close(stall) })
 

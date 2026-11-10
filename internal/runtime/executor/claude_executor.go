@@ -35,6 +35,10 @@ type ClaudeExecutor struct {
 	// oauthToolAliases is shared by every ForAPIKey copy of this executor;
 	// constructors allocate it so copies made per request reuse one store.
 	oauthToolAliases *claudeOAuthToolAliasStore
+	// streamDrainTimeout overrides claudeStreamDrainTimeout when positive.
+	// Tests set it per executor so no test mutates shared state that a
+	// previous test's still-running drain may read.
+	streamDrainTimeout time.Duration
 }
 
 type claudeOAuthCancellationError struct {

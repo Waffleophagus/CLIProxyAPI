@@ -23,8 +23,15 @@ import (
 // claudeStreamDrainTimeout caps the best-effort drain of a completed Claude
 // stream. It runs only after message_stop, once the client has every event, so
 // it bounds connection-reuse cleanup rather than inference traffic (see the
-// AGENTS.md timeout exceptions). It is a variable so tests can shorten it.
-var claudeStreamDrainTimeout = 5 * time.Second
+// AGENTS.md timeout exceptions).
+const claudeStreamDrainTimeout = 5 * time.Second
+
+func (e *ClaudeExecutor) streamDrainCap() time.Duration {
+	if e != nil && e.streamDrainTimeout > 0 {
+		return e.streamDrainTimeout
+	}
+	return claudeStreamDrainTimeout
+}
 
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
@@ -387,14 +394,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			// the AGENTS.md post-message_stop drain exception. The drain is
 			// skipped unless the response completed.
 			//
-			// The cap stays armed until decodedBody is closed: a decoder that
-			// reads ahead in the background (zstd) can be blocked in a read of
-			// the unfinished upstream body, and its Close waits for that read.
-			// Without the cap, the drain returning at its byte limit would leave
-			// that Close, and releaseUpstream after it, blocked forever.
+			// The cap stays armed until decodedBody is closed, so a decoder whose
+			// Close waits on a read of the unfinished upstream body is bounded
+			// too. zstd decoders are synchronous (see decodeResponseBody), so
+			// after message_stop the drain is the only reader of httpResp.Body.
 			var drainCap *time.Timer
 			if detached {
-				drainCap = time.AfterFunc(claudeStreamDrainTimeout, releaseUpstream)
+				drainCap = time.AfterFunc(e.streamDrainCap(), releaseUpstream)
 				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64<<10))
 			}
 			if errClose := decodedBody.Close(); errClose != nil {
