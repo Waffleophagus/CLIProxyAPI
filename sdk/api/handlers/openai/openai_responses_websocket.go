@@ -747,7 +747,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 
-		requestJSON = h.prepareCodexRequestPayload(c, requestJSON)
+		requestJSON = h.prepareCodexMultiAgentV2Tools(c, requestJSON)
+		requestJSON = h.prepareCodexOrphanDelegation(c, requestJSON)
 
 		if isPrewarm {
 			if updated, errDelete := sjson.DeleteBytes(requestJSON, "generate"); errDelete == nil {
