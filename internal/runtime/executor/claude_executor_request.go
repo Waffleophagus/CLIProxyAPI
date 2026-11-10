@@ -1034,7 +1034,10 @@ func decodeResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadClos
 					},
 				}, nil
 			case len(magic) >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd:
-				decoder, zdErr := zstd.NewReader(pb)
+				// Synchronous decoding (concurrency 1): a background read-ahead goroutine
+				// would keep reading the upstream body concurrently with the
+				// post-message_stop drain, which HTTP/2 bodies do not allow.
+				decoder, zdErr := zstd.NewReader(pb, zstd.WithDecoderConcurrency(1))
 				if zdErr != nil {
 					_ = pb.Close()
 					return nil, fmt.Errorf("magic-byte zstd: failed to create reader: %w", zdErr)
@@ -1083,7 +1086,8 @@ func decodeResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadClos
 		case "br":
 			reader = brotli.NewReader(reader)
 		case "zstd":
-			decoder, errZstd := zstd.NewReader(reader)
+			// Synchronous decoding; see the magic-byte zstd case above.
+			decoder, errZstd := zstd.NewReader(reader, zstd.WithDecoderConcurrency(1))
 			if errZstd != nil {
 				cleanup()
 				return nil, fmt.Errorf("failed to create zstd reader: %w", errZstd)
