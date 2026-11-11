@@ -53,6 +53,24 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode bool) boo
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login commands or server mode).
 func main() {
+	os.Exit(run())
+}
+
+// logStartupErrorf logs a startup failure and also writes it to stderr when the
+// log output was redirected (for example to a log file), so the failure stays
+// visible next to the non-zero exit status.
+func logStartupErrorf(format string, args ...any) {
+	if log.StandardLogger().Out != os.Stderr {
+		_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
+	log.Errorf(format, args...)
+}
+
+// run finishes deferred cleanup before main applies the process exit status.
+func run() int {
+	// Startup diagnostics go to stderr until the configured log output takes over.
+	log.SetOutput(os.Stderr)
+
 	fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Command-line flags to control the application's behavior.
@@ -84,8 +102,8 @@ func main() {
 
 	wd, err := os.Getwd()
 	if err != nil {
-		log.Errorf("failed to get working directory: %v", err)
-		return
+		logStartupErrorf("failed to get working directory: %v", err)
+		return 1
 	}
 
 	// Load environment variables from .env if present.
@@ -102,8 +120,8 @@ func main() {
 	}
 	cfg, err := config.LoadConfig(configFilePath)
 	if err != nil {
-		log.Errorf("failed to load config: %v", err)
-		return
+		logStartupErrorf("failed to load config: %v", err)
+		return 1
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
@@ -112,8 +130,8 @@ func main() {
 	coreauth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
-		log.Errorf("failed to configure log output: %v", err)
-		return
+		logStartupErrorf("failed to configure log output: %v", err)
+		return 1
 	}
 
 	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
@@ -122,8 +140,8 @@ func main() {
 	util.SetLogLevel(cfg)
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
-		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)
-		return
+		logStartupErrorf("failed to resolve auth directory: %v", errResolveAuthDir)
+		return 1
 	} else {
 		cfg.AuthDir = resolvedAuthDir
 	}
@@ -167,6 +185,10 @@ func main() {
 			log.Info("Local model mode: using embedded catalogs unless an explicit catalog source is configured")
 		}
 		registry.SetLocalModelCatalogs(localModel)
-		cmd.StartService(cfg, configFilePath, serverOptions...)
+		if errStart := cmd.StartService(cfg, configFilePath, serverOptions...); errStart != nil {
+			logStartupErrorf("proxy service failed: %v", errStart)
+			return 1
+		}
 	}
+	return 0
 }
