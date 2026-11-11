@@ -185,7 +185,13 @@ func codexTerminalFailureStatus(body []byte) int {
 	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
 	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
 	switch {
-	case errorCode == "cyber_policy":
+	case errorCode == "cyber_policy",
+		errorCode == "cyber_policy_violation",
+		errorCode == "bio_policy",
+		errorCode == "misalignment_policy_violation",
+		errorCode == "invalid_prompt",
+		errorCode == "content_policy_violation",
+		errorCode == "image_content_policy_violation":
 		return http.StatusBadRequest
 	case errorType == "not_found_error", errorCode == "not_found", errorCode == "model_not_found":
 		return http.StatusNotFound
@@ -257,7 +263,7 @@ func codexTerminalErrorBody(eventData []byte, path string) []byte {
 	}
 	if strings.TrimSpace(gjson.GetBytes(body, "error.message").String()) == "" {
 		if code := strings.TrimSpace(gjson.GetBytes(body, "error.code").String()); code != "" {
-			body, _ = sjson.SetBytes(body, "error.message", code)
+			body, _ = sjson.SetBytes(body, "error.message", codexPolicyFallbackMessage(code))
 		}
 	}
 	if strings.TrimSpace(gjson.GetBytes(body, "error.message").String()) == "" {
@@ -292,12 +298,27 @@ func codexTerminalTopLevelErrorBody(eventData []byte) []byte {
 	}
 	if strings.TrimSpace(gjson.GetBytes(body, "error.message").String()) == "" {
 		if code != "" {
-			body, _ = sjson.SetBytes(body, "error.message", code)
+			body, _ = sjson.SetBytes(body, "error.message", codexPolicyFallbackMessage(code))
 		} else if errorType != "" {
 			body, _ = sjson.SetBytes(body, "error.message", errorType)
 		}
 	}
 	return body
+}
+
+func codexPolicyFallbackMessage(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "bio_policy":
+		return "This content was flagged for possible biological risk."
+	case "cyber_policy", "cyber_policy_violation":
+		return "This request has been flagged for possible cybersecurity risk."
+	case "misalignment_policy_violation":
+		return "This request was blocked due to a misalignment policy violation."
+	case "invalid_prompt":
+		return "Invalid request."
+	default:
+		return code
+	}
 }
 
 func codexTerminalErrorIsContextLength(body []byte) bool {

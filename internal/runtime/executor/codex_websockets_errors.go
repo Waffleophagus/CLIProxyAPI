@@ -88,16 +88,31 @@ func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
 	out := []byte(`{}`)
 	out, _ = sjson.SetBytes(out, "status", status)
 
+	fillBlankErrorMessage := func() {
+		if strings.TrimSpace(gjson.GetBytes(out, "error.message").String()) != "" {
+			return
+		}
+		if code := strings.TrimSpace(gjson.GetBytes(out, "error.code").String()); code != "" {
+			out, _ = sjson.SetBytes(out, "error.message", codexPolicyFallbackMessage(code))
+		} else if errType := strings.TrimSpace(gjson.GetBytes(out, "error.type").String()); errType != "" {
+			out, _ = sjson.SetBytes(out, "error.message", errType)
+		} else {
+			out, _ = sjson.SetBytes(out, "error.message", http.StatusText(status))
+		}
+	}
+
 	if bodyNode := gjson.GetBytes(payload, "body"); bodyNode.Exists() {
 		out, _ = sjson.SetRawBytes(out, "body", []byte(bodyNode.Raw))
 		if bodyErrorNode := bodyNode.Get("error"); bodyErrorNode.Exists() {
 			out, _ = sjson.SetRawBytes(out, "error", []byte(bodyErrorNode.Raw))
+			fillBlankErrorMessage()
 			return out
 		}
 	}
 
 	if errNode := gjson.GetBytes(payload, "error"); errNode.Exists() {
 		out, _ = sjson.SetRawBytes(out, "error", []byte(errNode.Raw))
+		fillBlankErrorMessage()
 		return out
 	}
 

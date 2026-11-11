@@ -1268,6 +1268,11 @@ func responsesStreamErrorText(errMsg *interfaces.ErrorMessage, status int) strin
 			errorNode, hasError = resp["error"].(map[string]any)
 		}
 	}
+	if !hasError {
+		if bodyMap, ok := root["body"].(map[string]any); ok {
+			errorNode, hasError = bodyMap["error"].(map[string]any)
+		}
+	}
 
 	if hasError {
 		cleanedError := sanitizeResponsesStreamErrorNode(errorNode)
