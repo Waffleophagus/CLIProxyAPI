@@ -5745,9 +5745,12 @@ func TestApplyCloaking_PreservesConfiguredStrictModeAndSensitiveWordsWhenModeOmi
 }
 
 func TestApplyCloaking_Opus55FallbackOnlyForUnconfirmedClients(t *testing.T) {
-	cfg := &config.Config{ClaudeKey: []config.ClaudeKey{{
-		APIKey: "sk-ant-oat-opus55-test", Cloak: &config.CloakConfig{},
-	}}}
+	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "sk-ant-oat-opus55-test", Cloak: &config.CloakConfig{},
+		}},
+	}
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-opus55-test"}}
 	for _, tt := range []struct {
 		name      string
@@ -5801,7 +5804,7 @@ func TestClaudeExecutor_CloakedOpus55PairsFallbackAndBetas(t *testing.T) {
 		"api_key": "sk-ant-oat-cloaked-opus55", "base_url": server.URL,
 	}}
 	payload := []byte(`{"model":"claude-opus-5-5","thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"test"}]}`)
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{Claude: config.ClaudeConfig{ServerSideFallback: true}})
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model: "claude-opus-5-5", Payload: payload,
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
@@ -5860,6 +5863,7 @@ func TestClaudeOpus55FallbackReconcilesAfterModelOverride(t *testing.T) {
 
 func TestApplyCloaking_FableInjectsFallbacksAndDisplayUpdates(t *testing.T) {
 	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "sk-ant-oat-fable-test",
 			Cloak:  &config.CloakConfig{},
@@ -6238,6 +6242,7 @@ func TestClaudeExecutor_PayloadOverrideFableModelLeavesBuiltinsUnchanged(t *test
 	defer server.Close()
 
 	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "sk-ant-oat-payload-fable-test",
 			Cloak:  &config.CloakConfig{},
@@ -6294,6 +6299,7 @@ func TestClaudeExecutor_PayloadOverrideNonFableModelDoesNotInjectFableBuiltins(t
 	defer server.Close()
 
 	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "sk-ant-oat-payload-fable-test-2",
 			Cloak:  &config.CloakConfig{},
@@ -6405,6 +6411,7 @@ func TestClaudeExecutor_PayloadUnrelatedRuleLeavesBuiltinFallbacksUnchanged(t *t
 	defer server.Close()
 
 	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "sk-ant-oat-payload-fable-test-4",
 			Cloak:  &config.CloakConfig{},
@@ -6519,6 +6526,7 @@ func TestClaudeExecutor_PayloadFableProbeOverrideKeepsBuiltinAdditions(t *testin
 	defer server.Close()
 
 	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "sk-ant-oat-payload-fable-probe-strip-test",
 			Cloak:  &config.CloakConfig{},
@@ -6574,6 +6582,7 @@ func TestClaudeExecutor_PayloadProbeToNormalDoesNotReinitializeBuiltins(t *testi
 	defer server.Close()
 
 	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "sk-ant-oat-payload-declassify-probe-test",
 			Cloak:  &config.CloakConfig{},
@@ -7590,6 +7599,7 @@ func TestClaudeExecutor_PayloadFilterFallbacksPreservesRemovalOnFable(t *testing
 	defer server.Close()
 
 	cfg := &config.Config{
+		Claude: config.ClaudeConfig{ServerSideFallback: true},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "sk-ant-oat-payload-fable-filter-test",
 			Cloak:  &config.CloakConfig{},

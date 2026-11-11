@@ -1524,9 +1524,10 @@ type claudeWirePolicy struct {
 }
 
 type claudeCloakSettings struct {
-	strictMode     bool
-	sensitiveWords []string
-	cacheUserID    bool
+	strictMode         bool
+	sensitiveWords     []string
+	cacheUserID        bool
+	serverSideFallback bool
 }
 
 func isClaudeCodeIdentitySystemText(text string) bool {
@@ -1625,9 +1626,10 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 		cloakMode = "never"
 	}
 	settings := claudeCloakSettings{
-		strictMode:     attrStrict,
-		sensitiveWords: attrWords,
-		cacheUserID:    attrCache,
+		strictMode:         attrStrict,
+		sensitiveWords:     attrWords,
+		cacheUserID:        attrCache,
+		serverSideFallback: cfg != nil && cfg.Claude.ServerSideFallback,
 	}
 	explicitMode := strings.ToLower(strings.TrimSpace(attrMode))
 	if attrMode != "" {
@@ -1780,14 +1782,13 @@ func applyCloakingInternal(
 		turnOriginArgs...,
 	)
 
-	// In native Claude Code 2.1.258, claude-fable-5-1 requests carry:
-	// "fallbacks": [{"model": "claude-opus-5"}]
-	model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
-	if isClaudeOpus55Model(model) && !isProbeOrHelper && !gjson.GetBytes(payload, "fallbacks").Exists() {
-		payload, _ = sjson.SetRawBytes(payload, "fallbacks", []byte(`[{"model":"claude-opus-4-8"}]`))
-	}
-	if isClaudeFable51Model(model) && !isProbeOrHelper {
-		if !gjson.GetBytes(payload, "fallbacks").Exists() {
+	// Inject cross-model server-side refusal fallbacks only when explicitly
+	// enabled via upstream.claude.server-side-fallback.
+	if settings.serverSideFallback && !isProbeOrHelper && !gjson.GetBytes(payload, "fallbacks").Exists() {
+		model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
+		if isClaudeOpus55Model(model) {
+			payload, _ = sjson.SetRawBytes(payload, "fallbacks", []byte(`[{"model":"claude-opus-4-8"}]`))
+		} else if isClaudeFable51Model(model) {
 			payload, _ = sjson.SetRawBytes(payload, "fallbacks", []byte(`[{"model":"claude-opus-5"}]`))
 		}
 	}
