@@ -79,7 +79,7 @@ requests:
 
   # Payload rules edit the final upstream request body. Paths use gjson/sjson syntax.
   # Model rules support "*" wildcards and may restrict by protocol (upstream format:
-  # openai, claude, codex), from-protocol (inbound: openai, responses, claude),
+  # openai, claude, codex, meta), from-protocol (inbound: openai, responses, claude),
   # headers, match/not-match values, and exist/not-exist paths.
   # payload:
   #   default: # Set values only when missing.
@@ -88,6 +88,11 @@ requests:
   #           protocol: "claude"
   #       params:
   #         "thinking.budget_tokens": 32768
+  #     - models:
+  #         - name: "muse-*"
+  #           protocol: "meta"
+  #       params:
+  #         prompt_cache_retention: "24h" # opt into Meta's 24h prompt cache when the client omits it
   #   default-raw: # Like default, but values are raw JSON strings.
   #     - models:
   #         - name: "gpt-*"
