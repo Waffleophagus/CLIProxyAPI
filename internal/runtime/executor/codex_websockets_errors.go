@@ -34,7 +34,7 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
 	if len(payload) == 0 {
 		return nil, false
 	}
-	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "error" {
+	if helps.CodexResponseEventType(payload) != "error" {
 		return nil, false
 	}
 	status := int(gjson.GetBytes(payload, "status").Int())
@@ -85,10 +85,17 @@ func clearCodexReasoningReplayOnWebsocketError(ctx context.Context, scope codexR
 }
 
 func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
-	out := []byte(`{}`)
+	out := []byte(`{"type":"error"}`)
 	out, _ = sjson.SetBytes(out, "status", status)
+	if seq := gjson.GetBytes(payload, "sequence_number"); seq.Exists() {
+		out, _ = sjson.SetBytes(out, "sequence_number", seq.Int())
+	}
 
 	fillBlankErrorMessage := func() {
+		if node := gjson.GetBytes(out, "error"); node.Type == gjson.String && strings.TrimSpace(node.String()) != "" {
+			out, _ = sjson.SetBytes(out, "error", map[string]any{"message": node.String()})
+			return
+		}
 		if strings.TrimSpace(gjson.GetBytes(out, "error.message").String()) != "" {
 			return
 		}
@@ -103,15 +110,22 @@ func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
 
 	if bodyNode := gjson.GetBytes(payload, "body"); bodyNode.Exists() {
 		out, _ = sjson.SetRawBytes(out, "body", []byte(bodyNode.Raw))
-		if bodyErrorNode := bodyNode.Get("error"); bodyErrorNode.Exists() {
+		if bodyErrorNode := bodyNode.Get("error"); bodyErrorNode.Exists() && bodyErrorNode.Type != gjson.Null {
 			out, _ = sjson.SetRawBytes(out, "error", []byte(bodyErrorNode.Raw))
 			fillBlankErrorMessage()
 			return out
 		}
 	}
 
-	if errNode := gjson.GetBytes(payload, "error"); errNode.Exists() {
-		out, _ = sjson.SetRawBytes(out, "error", []byte(errNode.Raw))
+	for _, path := range []string{"error", "response.error"} {
+		if errNode := gjson.GetBytes(payload, path); errNode.Exists() && errNode.Type != gjson.Null {
+			out, _ = sjson.SetRawBytes(out, "error", []byte(errNode.Raw))
+			fillBlankErrorMessage()
+			return out
+		}
+	}
+	if topLevel := codexTerminalTopLevelErrorBody(payload); topLevel != nil {
+		out, _ = sjson.SetRawBytes(out, "error", []byte(gjson.GetBytes(topLevel, "error").Raw))
 		fillBlankErrorMessage()
 		return out
 	}

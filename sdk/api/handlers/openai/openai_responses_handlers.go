@@ -343,14 +343,61 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 
 func responsesSSEPayloadErrorMessage(payload []byte) *interfaces.ErrorMessage {
 	status := http.StatusBadGateway
+	foundStatus := false
 	for _, path := range []string{"status", "status_code", "error.status", "error.status_code", "response.error.status", "response.error.status_code"} {
 		candidate := int(gjson.GetBytes(payload, path).Int())
 		if candidate >= http.StatusBadRequest && candidate <= 599 {
 			status = candidate
+			foundStatus = true
 			break
 		}
 	}
+	if !foundStatus {
+		status = responsesSSEPayloadErrorStatus(payload)
+	}
 	return sanitizeResponsesStreamErrorMessage(&interfaces.ErrorMessage{StatusCode: status, Error: fmt.Errorf("%s", payload)})
+}
+
+func responsesSSEPayloadErrorStatus(payload []byte) int {
+	fields := gjson.GetManyBytes(payload, "error.type", "response.error.type", "body.error.type", "type", "error.code", "response.error.code", "body.error.code", "code")
+	errorType := ""
+	for _, f := range fields[:4] {
+		candidate := strings.ToLower(strings.TrimSpace(f.String()))
+		if candidate != "" && candidate != "error" && candidate != "response.failed" && candidate != "response.error" {
+			errorType = candidate
+			break
+		}
+	}
+	errorCode := ""
+	for _, f := range fields[4:] {
+		candidate := strings.ToLower(strings.TrimSpace(f.String()))
+		if candidate != "" {
+			errorCode = candidate
+			break
+		}
+	}
+	switch {
+	case errorCode == "cyber_policy",
+		errorCode == "cyber_policy_violation",
+		errorCode == "bio_policy",
+		errorCode == "misalignment_policy_violation",
+		errorCode == "invalid_prompt",
+		errorCode == "content_policy_violation",
+		errorCode == "image_content_policy_violation":
+		return http.StatusBadRequest
+	case errorType == "not_found_error", errorCode == "not_found", errorCode == "model_not_found":
+		return http.StatusNotFound
+	case errorType == "authentication_error", errorCode == "invalid_api_key", errorCode == "unauthorized":
+		return http.StatusUnauthorized
+	case errorType == "permission_error", errorCode == "forbidden", errorCode == "permission_denied":
+		return http.StatusForbidden
+	case errorType == "rate_limit_error", errorCode == "rate_limit_exceeded":
+		return http.StatusTooManyRequests
+	case errorType == "invalid_request", errorType == "invalid_request_error", errorType == "bad_request_error", errorCode == "invalid_value", errorCode == "invalid_request_error":
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 func (f *responsesSSEFramer) repairErrorPayload(payload []byte) []byte {
@@ -414,7 +461,7 @@ func responsesSSETerminalEvent(eventType string) bool {
 }
 
 func responsesSSEPayloadHasError(payload []byte) bool {
-	for _, path := range []string{"error", "response.error"} {
+	for _, path := range []string{"error", "response.error", "body.error"} {
 		result := gjson.GetBytes(payload, path)
 		if result.Exists() && result.Type != gjson.Null {
 			return true

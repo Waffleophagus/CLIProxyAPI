@@ -519,7 +519,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				continue
 			}
 			payload = bytes.TrimSpace(payload)
-			eventType := gjson.GetBytes(payload, "type").String()
+			eventType := helps.CodexResponseEventType(payload)
+			if eventType == "error" && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "" {
+				payload, _ = sjson.SetBytes(payload, "type", eventType)
+			}
 			establishing := firstResponse && eventType == "response.created"
 			if eventType == "response.created" {
 				metadataMu.Lock()
