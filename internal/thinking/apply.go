@@ -191,6 +191,13 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	}
 
 	// 3. Model capability check
+	if nativeResponses {
+		var errNormalize error
+		body, errNormalize = normalizeNativeResponsesEffort(body, modelInfo, applier, fromFormat, providerFormat, HasThinkingSuffix(model))
+		if errNormalize != nil {
+			return body, errNormalize
+		}
+	}
 	// Unknown models are treated as user-defined so thinking config can still be applied.
 	// The upstream service is responsible for validating the configuration.
 	if !suffixResult.HasSuffix && len(sourceBody) > 0 && isResponsesFormat(fromFormat) && !gjson.ValidBytes(body) && hasThinkingConfig(extractConfigurationUpdateConfig(sourceBody)) {
@@ -198,8 +205,7 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 		return body, nil
 	}
 	if nativeResponses && !suffixResult.HasSuffix {
-		// Native Responses keeps the top-level baseline and in-turn updates as-is.
-		// Log the effective effort without validating or rewriting the payload.
+		// Native Responses preserves the baseline and update timeline after validation.
 		if log.IsLevelEnabled(log.DebugLevel) && (modelInfo.Thinking != nil || modelInfo.UserDefined) {
 			if config := extractCodexUsageConfig(body); hasThinkingConfig(config) {
 				fields := log.Fields{

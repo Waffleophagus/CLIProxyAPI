@@ -1,8 +1,10 @@
 package thinking
 
 import (
+	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -43,6 +45,54 @@ func extractConfigurationUpdateConfig(body []byte) ThinkingConfig {
 	default:
 		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(effort)}
 	}
+}
+
+// normalizeNativeResponsesEffort validates each effort without collapsing the
+// baseline or update timeline. A valid model suffix replaces the baseline later.
+func normalizeNativeResponsesEffort(body []byte, modelInfo *registry.ModelInfo, applier ProviderApplier, fromFormat, toFormat string, skipBaseline bool) ([]byte, error) {
+	if len(body) == 0 || !gjson.ValidBytes(body) || IsUserDefinedModel(modelInfo) || modelInfo.Thinking == nil || len(modelInfo.Thinking.Levels) == 0 {
+		return body, nil
+	}
+
+	var paths []string
+	if !skipBaseline {
+		paths = append(paths, "reasoning.effort")
+	}
+	if input := gjson.GetBytes(body, "input"); input.IsArray() {
+		input.ForEach(func(index, item gjson.Result) bool {
+			if item.Get("type").String() == "configuration_update" {
+				paths = append(paths, "input."+strconv.FormatInt(index.Int(), 10)+".reasoning.effort")
+			}
+			return true
+		})
+	}
+
+	for _, path := range paths {
+		effort := gjson.GetBytes(body, path)
+		if effort.Type != gjson.String || strings.TrimSpace(effort.String()) == "" || HasLevel(modelInfo.Thinking.Levels, effort.String()) {
+			continue
+		}
+		config := ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(strings.ToLower(strings.TrimSpace(effort.String())))}
+		validated, errValidate := ValidateConfig(config, modelInfo, fromFormat, toFormat, false)
+		if errValidate != nil {
+			return body, errValidate
+		}
+
+		// Use the provider's output rules, including ModeNone with a minimum Level.
+		normalized, errApply := applier.Apply([]byte("{}"), *validated, modelInfo)
+		if errApply != nil {
+			return body, errApply
+		}
+		value := gjson.GetBytes(normalized, "reasoning.effort")
+		if value.Type == gjson.String && value.String() != effort.String() {
+			updated, errSet := sjson.SetBytes(body, path, value.String())
+			if errSet != nil {
+				return body, errSet
+			}
+			body = updated
+		}
+	}
+	return body, nil
 }
 
 // CollapseConfigurationUpdates removes every configuration_update input item.
