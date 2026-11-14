@@ -56,7 +56,7 @@ type Handler struct {
 	postAuthHook            coreauth.PostAuthHook
 	postAuthPersistHook     coreauth.PostAuthHook
 	configReloadHook        func(context.Context, *config.Config)
-	siwcOAuthFactory        func(*config.Config) siwcOAuthService
+	siwcOAuthFactory        func(*config.Config, string) siwcOAuthService
 	siwcCommitMu            sync.Mutex
 	slugResolver            *slugs.Manager
 	usageRuntime            *usagestore.Runtime
