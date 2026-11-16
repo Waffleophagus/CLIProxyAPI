@@ -49,6 +49,44 @@ func codexWebsocketErrorStatus(payload []byte) int {
 	return 0
 }
 
+func codexWebsocketErrorStatusWithHeaders(payload []byte, headers http.Header) int {
+	if status := codexWebsocketErrorStatus(payload); status > 0 {
+		return status
+	}
+	if len(headers) == 0 {
+		return 0
+	}
+	return inferCodexWebsocketErrorStatus(payload)
+}
+
+func inferCodexWebsocketErrorStatus(payload []byte) int {
+	if isCodexWebsocketConnectionLimitError(payload) {
+		return http.StatusTooManyRequests
+	}
+	body, ok := codexTerminalFailureBody(payload)
+	if !ok {
+		return 0
+	}
+	if isCodexUsageLimitError(body) || isCodexTransientCapacityError(body) {
+		return http.StatusTooManyRequests
+	}
+	if codexTerminalErrorIsContextLength(body) {
+		return http.StatusBadRequest
+	}
+	if code, _, classified := codexStatusErrorClassification(http.StatusBadRequest, body); classified {
+		if code == "auth_unavailable" {
+			return http.StatusUnauthorized
+		}
+		return http.StatusBadRequest
+	}
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	if errorType == "service_unavailable_error" || errorCode == "server_is_overloaded" {
+		return http.StatusServiceUnavailable
+	}
+	return codexTerminalFailureStatus(body)
+}
+
 func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool) (error, bool) {
 	if len(payload) == 0 {
 		return nil, false
@@ -56,13 +94,13 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
 	if helps.CodexResponseEventType(payload) != "error" {
 		return nil, false
 	}
-	status := codexWebsocketErrorStatus(payload)
+	headers := parseCodexWebsocketErrorHeaders(payload)
+	status := codexWebsocketErrorStatusWithHeaders(payload, headers)
 	if status <= 0 {
 		return nil, false
 	}
 
 	out := buildCodexWebsocketErrorPayload(payload, status)
-	headers := parseCodexWebsocketErrorHeaders(payload)
 	isUsageLimit := isCodexUsageLimitError(out)
 	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(out)
 	statusError := statusErr{
@@ -90,7 +128,8 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
 }
 
 func clearCodexReasoningReplayOnWebsocketError(ctx context.Context, scope codexReasoningReplayScope, payload []byte) error {
-	status := codexWebsocketErrorStatus(payload)
+	headers := parseCodexWebsocketErrorHeaders(payload)
+	status := codexWebsocketErrorStatusWithHeaders(payload, headers)
 	if status <= 0 {
 		return nil
 	}
@@ -169,6 +208,9 @@ func isCodexWebsocketConnectionLimitError(payload []byte) bool {
 
 func parseCodexWebsocketErrorHeaders(payload []byte) http.Header {
 	headersNode := gjson.GetBytes(payload, "headers")
+	if !headersNode.Exists() || !headersNode.IsObject() {
+		headersNode = gjson.GetBytes(payload, "body.headers")
+	}
 	if !headersNode.Exists() || !headersNode.IsObject() {
 		return nil
 	}
