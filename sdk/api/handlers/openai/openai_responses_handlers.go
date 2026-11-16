@@ -307,7 +307,7 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 
 	f.dataFrames++
 
-	if responsesSSEErrorEvent(payloadType) || responsesSSEPayloadHasError(payload) {
+	if responsesSSEErrorEvent(payloadType) || responsesSSEPayloadHasErrorForEvent(streamEvent, payload) {
 		if payloadType != "" {
 			f.lastEvent = sanitizeResponsesStreamEventName(payloadType)
 		}
@@ -460,14 +460,45 @@ func responsesSSETerminalEvent(eventType string) bool {
 	}
 }
 
+func responsesSSETypeDenotesError(eventType string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(eventType))
+	if trimmed == "" {
+		return false
+	}
+	return responsesSSEErrorEvent(trimmed) ||
+		trimmed == "invalid_request" ||
+		strings.HasSuffix(trimmed, "_error") ||
+		strings.HasSuffix(trimmed, ".error")
+}
+
+func responsesSSECanInferBodyError(streamEvent, payloadType string) bool {
+	if s := strings.TrimSpace(streamEvent); s != "" && !responsesSSETypeDenotesError(s) {
+		return false
+	}
+	if p := strings.TrimSpace(payloadType); p != "" && !responsesSSETypeDenotesError(p) {
+		return false
+	}
+	return true
+}
+
 func responsesSSEPayloadHasError(payload []byte) bool {
-	for _, path := range []string{"error", "response.error", "body.error"} {
-		result := gjson.GetBytes(payload, path)
+	return responsesSSEPayloadHasErrorForEvent("", payload)
+}
+
+func responsesSSEPayloadHasErrorForEvent(streamEvent string, payload []byte) bool {
+	fields := gjson.GetManyBytes(payload, "error", "response.error", "body.error", "code", "message", "type")
+	for _, result := range fields[:2] {
 		if result.Exists() && result.Type != gjson.Null {
 			return true
 		}
 	}
-	return gjson.GetBytes(payload, "code").Exists() && gjson.GetBytes(payload, "message").Exists()
+	if fields[2].Exists() && fields[2].Type != gjson.Null {
+		if !(fields[2].Type == gjson.String && strings.TrimSpace(fields[2].String()) == "") &&
+			responsesSSECanInferBodyError(streamEvent, fields[5].String()) {
+			return true
+		}
+	}
+	return fields[3].Exists() && fields[4].Exists()
 }
 
 func responsesSSEDataPayload(frame []byte) ([]byte, bool) {
