@@ -344,7 +344,7 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 func responsesSSEPayloadErrorMessage(payload []byte) *interfaces.ErrorMessage {
 	status := http.StatusBadGateway
 	foundStatus := false
-	for _, path := range []string{"status", "status_code", "error.status", "error.status_code", "response.error.status", "response.error.status_code"} {
+	for _, path := range []string{"status", "status_code", "error.status", "error.status_code", "response.error.status", "response.error.status_code", "body.status", "body.status_code", "body.error.status", "body.error.status_code"} {
 		candidate := int(gjson.GetBytes(payload, path).Int())
 		if candidate >= http.StatusBadRequest && candidate <= 599 {
 			status = candidate

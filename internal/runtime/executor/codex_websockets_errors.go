@@ -92,9 +92,16 @@ func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
 	}
 
 	fillBlankErrorMessage := func() {
-		if node := gjson.GetBytes(out, "error"); node.Type == gjson.String && strings.TrimSpace(node.String()) != "" {
-			out, _ = sjson.SetBytes(out, "error", map[string]any{"message": node.String()})
-			return
+		if node := gjson.GetBytes(out, "error"); !node.IsObject() {
+			scalar := ""
+			if node.Type != gjson.Null && strings.TrimSpace(node.String()) != "" {
+				scalar = node.String()
+			}
+			out, _ = sjson.SetRawBytes(out, "error", []byte(`{}`))
+			if scalar != "" {
+				out, _ = sjson.SetBytes(out, "error.message", scalar)
+				return
+			}
 		}
 		if strings.TrimSpace(gjson.GetBytes(out, "error.message").String()) != "" {
 			return
