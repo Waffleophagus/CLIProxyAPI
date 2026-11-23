@@ -36,6 +36,9 @@ type ClaudeExecutor struct {
 	// oauthToolAliases is shared by every ForAPIKey copy of this executor;
 	// constructors allocate it so copies made per request reuse one store.
 	oauthToolAliases *claudeOAuthToolAliasStore
+	// advisorOwners is shared the same way so advisor ownership survives
+	// per-request executor copies.
+	advisorOwners *helps.ClaudeAdvisorOwnerStore
 	// streamDrainTimeout overrides claudeStreamDrainTimeout when positive.
 	// Tests set it per executor so no test mutates shared state that a
 	// previous test's still-running drain may read.
@@ -222,7 +225,53 @@ func stripTranslatedDefaultMaxTokens(from sdktranslator.Format, originalPayload,
 }
 
 func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor {
-	return &ClaudeExecutor{cfg: cfg, oauthToolAliases: &claudeOAuthToolAliasStore{}}
+	return &ClaudeExecutor{
+		cfg:              cfg,
+		oauthToolAliases: &claudeOAuthToolAliasStore{},
+		advisorOwners:    helps.NewClaudeAdvisorOwnerStore(),
+	}
+}
+
+func (e *ClaudeExecutor) claudeAdvisorOwnerStore() *helps.ClaudeAdvisorOwnerStore {
+	claudeOAuthToolAliasStoreInitMu.Lock()
+	defer claudeOAuthToolAliasStoreInitMu.Unlock()
+	if e.advisorOwners == nil {
+		e.advisorOwners = helps.NewClaudeAdvisorOwnerStore()
+	}
+	return e.advisorOwners
+}
+
+func claudeAdvisorCredentialOwner(auth *cliproxyauth.Auth, apiKey string) string {
+	if identity := claudeDiagnosticsCredentialIdentity(auth); identity != "" {
+		return identity
+	}
+	if key := strings.TrimSpace(apiKey); key != "" {
+		sum := sha256.Sum256([]byte(key))
+		return "key:" + hex.EncodeToString(sum[:])
+	}
+	return ""
+}
+
+// stripForeignClaudeAdvisorBlocks removes advisor state minted by another
+// credential from body.messages and returns per-request ownership tracking.
+func (e *ClaudeExecutor) stripForeignClaudeAdvisorBlocks(ctx context.Context, auth *cliproxyauth.Auth, apiKey string, body []byte) ([]byte, *helps.ClaudeAdvisorRequestState) {
+	if e == nil || len(body) == 0 {
+		return body, nil
+	}
+	owner := claudeAdvisorCredentialOwner(auth, apiKey)
+	if owner == "" {
+		return body, nil
+	}
+	scope := e.upstreamRequestLogProvider()
+	body, state, stripped := e.claudeAdvisorOwnerStore().StripForeignAdvisorBlocks(body, scope, owner)
+	if stripped > 0 {
+		helps.LogWithRequestID(ctx).WithFields(log.Fields{
+			"component":       "advisor_sanitizer",
+			"executor":        scope,
+			"stripped_blocks": stripped,
+		}).Debug("claude executor: stripped foreign advisor blocks before upstream")
+	}
+	return body, state
 }
 
 func (e *ClaudeExecutor) Identifier() string { return "claude" }

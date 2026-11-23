@@ -196,6 +196,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
 		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
+	body, _ = e.stripForeignClaudeAdvisorBlocks(ctx, auth, apiKey, body)
 
 	directAnthropic := isAnthropicUpstreamBase(baseURL)
 	// Claude Code's count_tokens carries only model, messages and tools, so the
