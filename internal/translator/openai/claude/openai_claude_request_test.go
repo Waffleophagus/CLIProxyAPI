@@ -2096,6 +2096,30 @@ func TestConvertClaudeRequestToOpenAI_ToolResultDocumentRelayedAsFilePart(t *tes
 		}
 	})
 
+	t.Run("URL document keeps its link as tool text", func(t *testing.T) {
+		inputJSON := `{
+			"model": "gpt-5",
+			"messages": [
+				{"role": "assistant", "content": [{"type": "tool_use", "id": "call_url", "name": "find_doc", "input": {}}]},
+				{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_url", "content": [
+					{"type": "text", "text": "Found it"},
+					{"type": "document", "source": {"type": "url", "url": "https://example.test/report.pdf"}}
+				]}]}
+			]
+		}`
+		out, err := ConvertClaudeRequestToOpenAI("gpt-5", []byte(inputJSON), false)
+		if err != nil {
+			t.Fatalf("ConvertClaudeRequestToOpenAI error: %v", err)
+		}
+		messages := gjson.GetBytes(out, "messages").Array()
+		if len(messages) != 2 {
+			t.Fatalf("expected 2 messages, got %d: %s", len(messages), out)
+		}
+		if got := messages[1].Get("content").String(); !strings.Contains(got, "https://example.test/report.pdf") {
+			t.Fatalf("tool message content = %q, want the document URL", got)
+		}
+	})
+
 	t.Run("mixed text and unconvertible document surfaces placeholder instead of silent drop", func(t *testing.T) {
 		inputJSON := `{
 			"model": "gpt-5",

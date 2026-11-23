@@ -808,6 +808,14 @@ func appendOpenAIToolResultDocument(item gjson.Result, parts *[]string, relayedM
 		*relayedMedia = append(*relayedMedia, []byte(contentItem))
 		return
 	}
+	// A URL-backed document cannot be attached, but its link may be the only
+	// reference the model gets, so keep it as tool text.
+	if item.Get("source.type").String() == "url" {
+		if docURL := strings.TrimSpace(item.Get("source.url").String()); strings.HasPrefix(docURL, "https://") || strings.HasPrefix(docURL, "http://") {
+			*parts = append(*parts, docURL)
+			return
+		}
+	}
 	*parts = append(*parts, toolResultUnsupportedDocumentPlaceholder)
 }
 
