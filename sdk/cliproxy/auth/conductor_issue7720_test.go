@@ -359,3 +359,42 @@ func TestIssue7720_CountTokensPreservesCooldownOnCancel(t *testing.T) {
 		t.Fatalf("auth was not cooled: unavailable=%t next=%v", current.Unavailable, current.NextRetryAfter)
 	}
 }
+
+// TestIssue7720_CanceledCountTokensKeepsQuotaObservation ensures the cooldown
+// recorded for a canceled count_tokens attempt, like every count result, does
+// not replace the quota snapshot taken from generation responses.
+func TestIssue7720_CanceledCountTokensKeepsQuotaObservation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	model := "issue7720-count-quota-model-" + uuid.NewString()
+	observedAt := time.Unix(10, 0)
+	auth := &Auth{
+		ID:       "issue7720-count-quota-auth-" + uuid.NewString(),
+		Provider: "issue7720",
+		Status:   StatusActive,
+		Quota:    QuotaState{ObservedAt: observedAt, Signals: map[string]string{"Anthropic-Ratelimit-Unified-Status": "allowed"}},
+	}
+	manager := NewManager(nil, nil, nil)
+	manager.SetRetryConfig(0, 0, 0)
+	quotaErr := &issue7720RetryAfterError{status: http.StatusTooManyRequests, message: "quota exceeded", retryAfter: 10 * time.Minute}
+	manager.RegisterExecutor(&issue7720NonStreamExecutor{cancel: cancel, err: quotaErr})
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+
+	if _, errCount := manager.ExecuteCount(ctx, []string{"issue7720"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); !errors.Is(errCount, context.Canceled) {
+		t.Fatalf("ExecuteCount() error = %v, want context.Canceled", errCount)
+	}
+	current, ok := manager.GetByID(auth.ID)
+	if !ok || current == nil {
+		t.Fatalf("GetByID(%q) did not return auth", auth.ID)
+	}
+	if !current.Unavailable {
+		t.Fatal("canceled count_tokens lost its Retry-After cooldown")
+	}
+	if current.Quota.Signals["Anthropic-Ratelimit-Unified-Status"] != "allowed" || !current.Quota.ObservedAt.Equal(observedAt) {
+		t.Fatalf("canceled count_tokens replaced the generation quota snapshot: %#v", current.Quota)
+	}
+}
