@@ -391,9 +391,10 @@ func TestClaudeIssue7638_CountTokensStripsForeignAdvisorBlocks(t *testing.T) {
 		t.Fatalf("exec1.Execute() error = %v", err)
 	}
 
-	// The fork keeps advisor ownership in memory only (no shared KV store), so
-	// the same executor serves the rebound credential.
-	exec2 := exec1
+	// The service builds a new executor whenever a Claude credential is
+	// (re)bound or the config reloads; ownership lives in the process-wide
+	// in-memory store, so the new executor still knows A minted the block.
+	exec2 := NewClaudeExecutor(&config.Config{})
 
 	replayPayload := []byte(`{
 		"model": "claude-opus-5-5",

@@ -36,8 +36,10 @@ type ClaudeExecutor struct {
 	// oauthToolAliases is shared by every ForAPIKey copy of this executor;
 	// constructors allocate it so copies made per request reuse one store.
 	oauthToolAliases *claudeOAuthToolAliasStore
-	// advisorOwners is shared the same way so advisor ownership survives
-	// per-request executor copies.
+	// advisorOwners records which credential minted each advisor block.
+	// NewClaudeExecutor hands every executor the process-wide store, because
+	// the service builds a new executor whenever a Claude credential is
+	// (re)bound or the config reloads, and ownership must survive that.
 	advisorOwners *helps.ClaudeAdvisorOwnerStore
 	// streamDrainTimeout overrides claudeStreamDrainTimeout when positive.
 	// Tests set it per executor so no test mutates shared state that a
@@ -224,11 +226,15 @@ func stripTranslatedDefaultMaxTokens(from sdktranslator.Format, originalPayload,
 	return stripped
 }
 
+// sharedClaudeAdvisorOwners is the process-wide advisor owner store. It is
+// bounded by entry count and TTL (see helps.ClaudeAdvisorOwnerStore).
+var sharedClaudeAdvisorOwners = helps.NewClaudeAdvisorOwnerStore()
+
 func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor {
 	return &ClaudeExecutor{
 		cfg:              cfg,
 		oauthToolAliases: &claudeOAuthToolAliasStore{},
-		advisorOwners:    helps.NewClaudeAdvisorOwnerStore(),
+		advisorOwners:    sharedClaudeAdvisorOwners,
 	}
 }
 
