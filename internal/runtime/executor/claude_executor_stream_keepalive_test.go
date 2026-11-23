@@ -300,16 +300,97 @@ func TestClaudeExecutor_ExecuteStream_CapsDrainWhenUpstreamNeverFinishes(t *test
 	h.exec.streamDrainTimeout = 50 * time.Millisecond
 	// Released only after the assertions, so it cannot end the drain itself.
 	t.Cleanup(func() { close(stall) })
+	probe := &keepaliveDrainProbe{started: make(chan struct{}), ended: make(chan struct{})}
+	h.transport = keepaliveDrainProbeRoundTripper{base: h.transport, total: len(keepaliveStreamData), probe: probe}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	h.drainChunks(h.start(ctx))
+	// The drain must actually start reading past message_stop; closing the
+	// unread body right away would also close the connection.
+	select {
+	case <-probe.started:
+	case <-time.After(keepaliveFailSafe):
+		t.Fatal("no read past message_stop started")
+	}
+	// Only the cap can end that read: it cancels the request context, and the
+	// read must return before the body is closed.
+	select {
+	case <-probe.ended:
+	case <-time.After(keepaliveFailSafe):
+		t.Fatal("drain read was not aborted by the cap")
+	}
+	if probe.readErr == nil || probe.ctxErr == nil {
+		t.Fatalf("drain read error = %v, request context error = %v; want both set by the cap", probe.readErr, probe.ctxErr)
+	}
+	if probe.closedFirst {
+		t.Fatal("body was closed before the drain read returned; the cap did not end the read")
+	}
 	// The server reports the connection closed once the capped drain aborts
-	// the read; without the cap this waits until the fail-safe and fails.
+	// the read.
 	h.waitSettled()
 	if got := h.newConns.Load(); got != 1 {
 		t.Fatalf("upstream connections = %d, want 1", got)
 	}
+}
+
+// keepaliveDrainProbe records the first body read past the event data: when it
+// starts and how it ends. readErr, ctxErr and closedFirst are written before
+// ended is closed.
+type keepaliveDrainProbe struct {
+	started     chan struct{}
+	ended       chan struct{}
+	readErr     error
+	ctxErr      error
+	closedFirst bool
+}
+
+type keepaliveDrainProbeRoundTripper struct {
+	base  http.RoundTripper
+	total int
+	probe *keepaliveDrainProbe
+}
+
+func (rt keepaliveDrainProbeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &keepaliveDrainProbeBody{ReadCloser: resp.Body, rt: rt, ctx: req.Context()}
+	return resp, nil
+}
+
+type keepaliveDrainProbeBody struct {
+	io.ReadCloser
+	rt     keepaliveDrainProbeRoundTripper
+	ctx    context.Context
+	read   int
+	closed atomic.Bool
+	start  sync.Once
+	end    sync.Once
+}
+
+func (b *keepaliveDrainProbeBody) Read(p []byte) (int, error) {
+	past := b.read >= b.rt.total
+	if past {
+		b.start.Do(func() { close(b.rt.probe.started) })
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.read += n
+	if past && err != nil {
+		b.end.Do(func() {
+			b.rt.probe.readErr = err
+			b.rt.probe.ctxErr = b.ctx.Err()
+			b.rt.probe.closedFirst = b.closed.Load()
+			close(b.rt.probe.ended)
+		})
+	}
+	return n, err
+}
+
+func (b *keepaliveDrainProbeBody) Close() error {
+	b.closed.Store(true)
+	return b.ReadCloser.Close()
 }
 
 // TestClaudeExecutor_ExecuteStream_DownstreamCancelBeforeMessageStopAbortsUpstream
