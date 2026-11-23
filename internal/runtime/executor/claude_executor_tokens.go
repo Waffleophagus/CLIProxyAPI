@@ -75,8 +75,8 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	body = helps.NormalizeClaudeToolPropertyNames(body)
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel, helps.APIKeyModelIsCompat(req))
 	body = applyClaudePreservedThinkingBinding(body)
-	body = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(body)
 	body = stripPromptCacheOptions(body)
+	body = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(body)
 	if errValidate := validateClaudeTokenCountRequest(body); errValidate != nil {
 		return cliproxyexecutor.Response{}, errValidate
 	}
@@ -226,11 +226,6 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		body = normalizeCacheControlTTL(body)
 	}
 
-	// Extract betas from body and convert to header (for count_tokens too)
-	var extraBetas []string
-	extraBetas, body = extractAndRemoveBetas(body)
-	// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
-	extraBetas = append(extraBetas, claudeTokenCountingBeta)
 	if fp.MCPAlias && cloaked {
 		mcpAliases := resolveClaudeMCPAliasOptions(ctx)
 		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, mcpAliases)
@@ -238,7 +233,6 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	body = helps.NormalizeClaudeToolPropertyNames(body)
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel, helps.APIKeyModelIsCompat(req))
 	body = applyClaudePreservedThinkingBinding(body)
-	body = stripPromptCacheOptions(body)
 	// Two different reasons converge on the same deletions, and they must stay
 	// separable.
 	//
@@ -262,6 +256,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if alignCLICountTokensShape {
 		body = util.StripClaudeCodeAttributionSystem(body)
 	}
+	body = stripPromptCacheOptions(body)
 	// Runs on the finished body: payload rules can rewrite model and messages
 	// long after translation, so an earlier check would not describe the request
 	// that is about to be sent.
@@ -269,7 +264,11 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		return cliproxyexecutor.Response{}, errMidSystem
 	}
 	body = helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(body)
-	body = stripPromptCacheOptions(body)
+	// Convert final configured betas to headers without changing business semantics.
+	var extraBetas []string
+	extraBetas, body = extractAndRemoveBetas(body)
+	// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
+	extraBetas = append(extraBetas, claudeTokenCountingBeta)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return cliproxyexecutor.Response{}, err

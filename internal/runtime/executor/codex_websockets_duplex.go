@@ -223,25 +223,20 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				metadataMu.Lock()
 				parentSettings := responseSettings[prevID]
 				metadataMu.Unlock()
-				targetSettings := parentSettings
-				if targetSettings == nil {
-					targetSettings = initial
+				// Inherit normalized settings before user rules, not the previous final body.
+				var instructions string
+				if parentSettings != nil {
+					instructions = parentSettings.unconfiguredInstructions
 				}
-				var inst gjson.Result
-				if targetSettings != nil {
-					inst = gjson.GetBytes(targetSettings.clientBody, "instructions")
-					if !inst.Exists() {
-						inst = gjson.GetBytes(targetSettings.originalPayload, "instructions")
-					}
+				// Preserve the legacy fallback only when the parent has neither a caller
+				// value nor a final field (including a built-in empty or payload default).
+				// Inspect final presence only; never inherit the configured text.
+				if instructions == "" && initial != nil &&
+					(parentSettings == nil || !gjson.GetBytes(parentSettings.clientBody, "instructions").Exists()) {
+					instructions = initial.unconfiguredInstructions
 				}
-				if !inst.Exists() && initial != nil {
-					inst = gjson.GetBytes(initial.clientBody, "instructions")
-					if !inst.Exists() {
-						inst = gjson.GetBytes(initial.originalPayload, "instructions")
-					}
-				}
-				if inst.Exists() {
-					payload, _ = sjson.SetRawBytes(payload, "instructions", []byte(inst.Raw))
+				if instructions != "" {
+					payload, _ = sjson.SetRawBytes(payload, "instructions", []byte(instructions))
 				}
 			}
 			nextReq, nextOpts := req, opts
@@ -556,7 +551,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					current, pending = pending[0], pending[1:]
 				}
 				responseID = gjson.GetBytes(payload, "response.id").String()
-				// Retain response settings, not request history or authorization headers.
+				// Retain final settings for automatic-successor accounting, and the independent
+				// unconfigured instructions for explicit rebuilds. Drop history and credentials.
 				// In-flight steering pins its parent's settings independently of this window.
 				snapshot := *current
 				snapshot.originalPayload, snapshot.wsHeaders = nil, nil

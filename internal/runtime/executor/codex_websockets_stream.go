@@ -818,6 +818,10 @@ type codexWebsocketPrepared struct {
 	replayScope          codexReasoningReplayScope
 	optimizeMultiAgentV2 bool
 	multiAgentV2Conflict bool
+
+	// Immutable pre-payload JSON value for duplex inheritance; never rebuild from clientBody.
+	// An empty Go string means absent, not an explicitly empty JSON string.
+	unconfiguredInstructions string
 }
 
 func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*codexWebsocketPrepared, error) {
@@ -866,6 +870,8 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	finalizePayload := helps.NewPayloadFinalizer(e.cfg, "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = ensureWebSearchToolForHistory(body, opts.Headers)
+	// Do not let a built-in empty default become caller-provided on the next turn.
+	hadUnconfiguredInstructions := gjson.GetBytes(body, "instructions").Exists()
 	if !useSIWC {
 		body = normalizeCodexInstructions(body, preserveNativeOutput)
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
@@ -893,6 +899,12 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, errPromptCache
 	}
 	body = helps.SanitizeCodexInputItemIDs(body)
+	// Retain explicit clearing intent before SIWC removes empty instructions.
+	// The outbound body still follows SIWC cleanup; only inheritance keeps the value.
+	var unconfiguredInstructions string
+	if hadUnconfiguredInstructions {
+		unconfiguredInstructions = strings.Clone(gjson.GetBytes(body, "instructions").Raw)
+	}
 	if useSIWC {
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
@@ -913,5 +925,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		replayScope:          replayScope,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
 		multiAgentV2Conflict: multiAgentV2Conflict,
+
+		unconfiguredInstructions: unconfiguredInstructions,
 	}, nil
 }

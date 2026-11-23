@@ -2025,3 +2025,18 @@ func xaiCustomToolCallOutput(output gjson.Result) string {
 	}
 	return output.Raw
 }
+
+// normalizeXAIWebsocketRequest prepares business fields before payload rules.
+func normalizeXAIWebsocketRequest(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	body, _ = sjson.DeleteBytes(body, "stream")
+	body, _ = sjson.DeleteBytes(body, "stream_options")
+	body, _ = sjson.DeleteBytes(body, "background")
+	body, _ = sjson.SetBytes(body, "store", true)
+	if strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != "" {
+		body, _ = sjson.DeleteBytes(body, "instructions")
+	}
+	return body
+}

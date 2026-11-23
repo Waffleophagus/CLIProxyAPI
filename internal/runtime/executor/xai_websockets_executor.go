@@ -180,11 +180,14 @@ func (s *xaiWebsocketIDState) prependTranscriptInput(payload []byte) []byte {
 	return out
 }
 
-func (s *xaiWebsocketIDState) recordTranscriptTurn(requestPayload []byte, completedPayload []byte, reset bool) {
-	if s == nil || len(requestPayload) == 0 || len(completedPayload) == 0 {
+func (s *xaiWebsocketIDState) recordTranscriptTurn(inputSnapshot []json.RawMessage, completedPayload []byte, reset bool) {
+	if s == nil || len(completedPayload) == 0 {
 		return
 	}
-	inputItems := xaiJSONRawMessages(gjson.GetBytes(requestPayload, "input"))
+	inputItems := make([]json.RawMessage, 0, len(inputSnapshot))
+	for _, item := range inputSnapshot {
+		inputItems = append(inputItems, bytes.Clone(item))
+	}
 	outputItems := xaiJSONRawMessages(gjson.GetBytes(completedPayload, "response.output"))
 
 	s.mu.Lock()
@@ -521,7 +524,14 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 
 	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
 	wsHeaders := applyXAIWebsocketHeaders(ctx, http.Header{}, auth, token, prepared.sessionID, opts.Headers)
-	wsReqBody := buildXAIWebsocketRequestBody(prepared.body, prepared.finalizePayload)
+	prepared.body = normalizeXAIWebsocketRequest(prepared.body)
+	// Keep provider-normalized input independent of payload mutations and transport retries.
+	transcriptInput := xaiJSONRawMessages(gjson.GetBytes(prepared.body, "input"))
+	finalBody := prepared.body
+	if prepared.finalizePayload != nil {
+		finalBody = prepared.finalizePayload(finalBody)
+	}
+	wsReqBody := buildXAIWebsocketRequestBody(finalBody)
 	requestType := strings.TrimSpace(gjson.GetBytes(req.Payload, "type").String())
 	transcriptReset := strings.TrimSpace(gjson.GetBytes(wsReqBody, "previous_response_id").String()) == "" &&
 		(requestType != "response.append" || (idMapper != nil && idMapper.replayedCompactedTranscript))
@@ -612,7 +622,8 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			conn = connRetry
 			closer = closerRetry
 			readCh = sess.activate(conn)
-			wsReqBodyRetry := buildXAIWebsocketRequestBody(prepared.body, prepared.finalizePayload)
+			// Transport retries reuse the exact final frame.
+			wsReqBodyRetry := wsReqBody
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 				URL:       wsURL,
 				Method:    "WEBSOCKET",
@@ -825,7 +836,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 						if warmupRequest {
 							warmupCompletedPayload = buildXAIWebsocketWarmupCompletedPayload(payload)
 							if idMapper != nil && idMapper.state != nil && !recordedTranscript {
-								idMapper.state.recordTranscriptTurn(wsReqBody, warmupCompletedPayload, transcriptReset)
+								idMapper.state.recordTranscriptTurn(transcriptInput, warmupCompletedPayload, transcriptReset)
 								recordedTranscript = true
 							}
 							logXAIWebsocketWarmupCompleted(executionSessionID, authID, wsURL, payload)
@@ -841,7 +852,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 						payload = xaiNormalizeReasoningSummaryData(payload)
 						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, payload)
 						if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
-							idMapper.state.recordTranscriptTurn(wsReqBody, payload, transcriptReset)
+							idMapper.state.recordTranscriptTurn(transcriptInput, payload, transcriptReset)
 							recordedTranscript = true
 						}
 					case "response.done":
@@ -850,7 +861,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 							streamUsage.Observe(detail, true)
 						}
 						if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
-							idMapper.state.recordTranscriptTurn(wsReqBody, payload, transcriptReset)
+							idMapper.state.recordTranscriptTurn(transcriptInput, payload, transcriptReset)
 							recordedTranscript = true
 						}
 					}
@@ -885,7 +896,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 
 					payload = normalizeCodexWebsocketCompletion(payload)
 					line := encodeCodexWebsocketAsSSE(payload)
-					chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, line, &param, claudeInputTokens)
+					chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, wsReqBody, line, &param, claudeInputTokens)
 					if helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 						invalidatePatchAttempt()
 					}
@@ -903,7 +914,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 					if len(warmupCompletedPayload) > 0 {
 						line = encodeCodexWebsocketAsSSE(warmupCompletedPayload)
-						chunks = helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, line, &param, claudeInputTokens)
+						chunks = helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, wsReqBody, line, &param, claudeInputTokens)
 						if helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 							invalidatePatchAttempt()
 						}
@@ -1573,23 +1584,12 @@ func closeXAIWebsocketSession(sess *codexWebsocketSession, reason string) {
 	}
 }
 
-func buildXAIWebsocketRequestBody(body []byte, finalizers ...helps.PayloadFinalizer) []byte {
+// buildXAIWebsocketRequestBody only adds transport framing to a final business body.
+func buildXAIWebsocketRequestBody(body []byte) []byte {
 	if len(body) == 0 {
 		return nil
 	}
-	wsReqBody := bytes.Clone(body)
-	wsReqBody, _ = sjson.SetBytes(wsReqBody, "type", "response.create")
-	wsReqBody, _ = sjson.DeleteBytes(wsReqBody, "stream")
-	wsReqBody, _ = sjson.DeleteBytes(wsReqBody, "stream_options")
-	wsReqBody, _ = sjson.DeleteBytes(wsReqBody, "background")
-	wsReqBody, _ = sjson.SetBytes(wsReqBody, "store", true)
-	if strings.TrimSpace(gjson.GetBytes(wsReqBody, "previous_response_id").String()) != "" {
-		wsReqBody, _ = sjson.DeleteBytes(wsReqBody, "instructions")
-	}
-	if len(finalizers) > 0 && finalizers[0] != nil {
-		wsReqBody = finalizers[0](wsReqBody)
-	}
-	wsReqBody, _ = sjson.SetBytes(wsReqBody, "type", "response.create")
+	wsReqBody, _ := sjson.SetBytes(bytes.Clone(body), "type", "response.create")
 	return wsReqBody
 }
 

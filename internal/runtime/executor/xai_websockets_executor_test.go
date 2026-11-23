@@ -1580,7 +1580,7 @@ func TestXAIWebsocketPostCompactionAppendWithoutPreviousReplaysCompactedTranscri
 		t.Fatalf("post-compaction append input[1].id = %q, want msg-2: %s", gotID, got)
 	}
 
-	state.recordTranscriptTurn(got, []byte(`{"type":"response.completed","response":{"id":"resp-after-compact","output":[{"type":"message","id":"out-2"}]}}`), true)
+	state.recordTranscriptTurn(xaiJSONRawMessages(gjson.GetBytes(got, "input")), []byte(`{"type":"response.completed","response":{"id":"resp-after-compact","output":[{"type":"message","id":"out-2"}]}}`), true)
 	nextPayload := []byte(`{"type":"response.create","model":"grok-4.3","input":[{"type":"message","id":"msg-3"}]}`)
 	nextMapper := newXAIWebsocketRequestIDMapper(store, "post-compaction-append-session", nextPayload)
 	next := nextMapper.upstreamRequestPayload(nextPayload)
@@ -1601,7 +1601,7 @@ func TestXAIWebsocketPostCompactionWarmupPreservesTranscriptForLaterCompaction(t
 		t.Fatal("post-compaction warmup did not mark full transcript replay")
 	}
 	state.recordTranscriptTurn(
-		warmupUpstream,
+		xaiJSONRawMessages(gjson.GetBytes(warmupUpstream, "input")),
 		[]byte(`{"type":"response.completed","response":{"id":"resp-warmup","output":[]}}`),
 		true,
 	)
@@ -1614,7 +1614,7 @@ func TestXAIWebsocketPostCompactionWarmupPreservesTranscriptForLaterCompaction(t
 		t.Fatalf("warmup retained pending replay instead of native append: %s", appendUpstream)
 	}
 	state.recordTranscriptTurn(
-		appendUpstream,
+		xaiJSONRawMessages(gjson.GetBytes(appendUpstream, "input")),
 		[]byte(`{"type":"response.completed","response":{"id":"resp-after-warmup","output":[{"type":"message","id":"out-after-warmup"}]}}`),
 		false,
 	)
@@ -1636,7 +1636,7 @@ func TestXAIWebsocketEmptyFullResetClearsPendingCompactionReplay(t *testing.T) {
 	state := getXAIWebsocketIDState(store, "empty-reset-session")
 	state.replaceTranscriptWithItems([]byte(`{"type":"compaction","encrypted_content":"stale-compact-state"}`))
 	state.recordTranscriptTurn(
-		[]byte(`{"type":"response.create","model":"grok-4.3","input":[]}`),
+		nil,
 		[]byte(`{"type":"response.completed","response":{"id":"resp-empty","output":[]}}`),
 		true,
 	)
@@ -1678,7 +1678,7 @@ func TestValidateXAIWebsocketCompactionResponse(t *testing.T) {
 func TestBuildXAIWebsocketRequestBodySetsStoreAndKeepsPromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"grok-4.3","stream":true,"stream_options":{"include_usage":true},"background":true,"prompt_cache_key":"cache-1","previous_response_id":"resp-prev","instructions":"system prompt","input":[{"type":"message","role":"user","content":"hello"}]}`)
 
-	payload := buildXAIWebsocketRequestBody(body)
+	payload := buildXAIWebsocketRequestBody(normalizeXAIWebsocketRequest(body))
 
 	if got := gjson.GetBytes(payload, "type").String(); got != "response.create" {
 		t.Fatalf("type = %q, want response.create; payload=%s", got, payload)

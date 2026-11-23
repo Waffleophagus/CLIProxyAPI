@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -13,6 +14,14 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+var payloadConfigEvaluations atomic.Int64
+
+// PayloadConfigEvaluationCount returns the cumulative number of payload rule
+// evaluations. Tests use it to assert that rules run exactly once per request.
+func PayloadConfigEvaluationCount() int64 {
+	return payloadConfigEvaluations.Load()
+}
 
 // ApplyPayloadConfigWithRoot behaves like applyPayloadConfig but treats all parameter
 // paths as relative to the provided root path and restricts matches to the given
@@ -52,6 +61,7 @@ func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fro
 // it normalizes tool parameter integer types to satisfy client-side integer deserialization (#6237).
 // For Codex and Codex WebSocket targets, integer normalization is skipped (#6244).
 func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
+	payloadConfigEvaluations.Add(1)
 	touched := make(map[string]bool)
 	if len(payload) == 0 {
 		return payload, touched
