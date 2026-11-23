@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"bytes"
 	"net/http"
 	"testing"
 
@@ -1417,6 +1418,215 @@ func TestNormalizeCodexToolSchemas_StripsOutOfRangeInt64Bounds(t *testing.T) {
 	}
 
 	// Idempotence check.
+	outAgain := NormalizeCodexToolSchemas(out)
+	if string(outAgain) != string(out) {
+		t.Errorf("expected NormalizeCodexToolSchemas to be idempotent")
+	}
+}
+
+func TestNormalizeCodexToolSchemas_StripsUniqueItemsAcrossSchemaLocations(t *testing.T) {
+	raw := []byte(`{
+		"model": "gpt-6.2-astra",
+		"tools": [
+			{
+				"type": "function",
+				"name": "ask_user",
+				"description": "Ask the user a structured question.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"question": {"type": "string"},
+						"options": {
+							"type": "array",
+							"items": {"type": "string"},
+							"uniqueItems": true
+						}
+					},
+					"required": ["question"]
+				}
+			},
+			{
+				"type": "function",
+				"name": "strict_tool",
+				"strict": true,
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"nested_array": {
+							"type": "array",
+							"uniqueItems": false,
+							"items": {
+								"type": "array",
+								"items": {"type": "string"},
+								"uniqueItems": true
+							}
+						},
+						"union_array": {
+							"anyOf": [
+								{"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+								{"type": "null"}
+							]
+						},
+						"escaped": {
+							"type": "array",
+							"items": {"type": "string"},
+							"\u0075niqueItems": true
+						},
+						"uniqueItems": {
+							"type": "boolean",
+							"description": "User property literally named uniqueItems"
+						},
+						"user_data": {
+							"type": "object",
+							"default": {"uniqueItems": true},
+							"enum": [{"uniqueItems": true}]
+						}
+					},
+					"additionalProperties": {
+						"type": "array",
+						"items": {"type": "string"},
+						"uniqueItems": true
+					},
+					"$defs": {
+						"tag_list": {
+							"type": "array",
+							"items": {"type": "string"},
+							"uniqueItems": true
+						}
+					}
+				}
+			},
+			{
+				"type": "namespace",
+				"name": "workspace",
+				"tools": [
+					{
+						"type": "function",
+						"name": "tag_items",
+						"parameters": {
+							"type": "object",
+							"properties": {
+								"tags": {
+									"type": "array",
+									"items": {"type": "string"},
+									"uniqueItems": true
+								}
+							}
+						}
+					}
+				]
+			}
+		]
+	}`)
+
+	got := NormalizeCodexToolSchemas(raw)
+	if bytes.Equal(got, raw) {
+		t.Fatal("expected NormalizeCodexToolSchemas to report changes")
+	}
+	if again := NormalizeCodexToolSchemas(got); !bytes.Equal(again, got) {
+		t.Fatal("expected second NormalizeCodexToolSchemas call to be idempotent")
+	}
+
+	askTool := gjson.GetBytes(got, "tools.0")
+	if askTool.Get("strict").Exists() {
+		t.Fatalf("expected omitted strict on tools.0 to stay omitted, got %s", askTool.Get("strict").Raw)
+	}
+	if askTool.Get("parameters.properties.options.uniqueItems").Exists() {
+		t.Fatalf("expected ask_user options.uniqueItems to be removed, got %s", askTool.Get("parameters.properties.options").Raw)
+	}
+	if gotType := askTool.Get("parameters.properties.options.items.type").String(); gotType != "string" {
+		t.Fatalf("ask_user options.items.type = %q, want string", gotType)
+	}
+
+	strictTool := gjson.GetBytes(got, "tools.1")
+	if strictTool.Get("strict").Type != gjson.True {
+		t.Fatalf("expected strict=true preserved on tools.1, got %s", strictTool.Get("strict").Raw)
+	}
+	strictParams := strictTool.Get("parameters")
+	for _, removedPath := range []string{
+		"properties.nested_array.uniqueItems",
+		"properties.nested_array.items.uniqueItems",
+		"properties.union_array.anyOf.0.uniqueItems",
+		"properties.escaped.uniqueItems",
+		"additionalProperties.uniqueItems",
+		"$defs.tag_list.uniqueItems",
+	} {
+		if strictParams.Get(removedPath).Exists() {
+			t.Errorf("expected %s to be removed, got %s", removedPath, strictParams.Get(removedPath).Raw)
+		}
+	}
+	if gotType := strictParams.Get("properties.uniqueItems.type").String(); gotType != "boolean" {
+		t.Errorf("expected literal property named uniqueItems preserved, got type=%q (%s)", gotType, strictParams.Get("properties.uniqueItems").Raw)
+	}
+	if gotDefault := strictParams.Get("properties.user_data.default.uniqueItems"); gotDefault.Type != gjson.True {
+		t.Errorf("expected user_data.default.uniqueItems preserved, got %s", strictParams.Get("properties.user_data.default").Raw)
+	}
+	if gotEnum := strictParams.Get("properties.user_data.enum.0.uniqueItems"); gotEnum.Type != gjson.True {
+		t.Errorf("expected user_data.enum.0.uniqueItems preserved, got %s", strictParams.Get("properties.user_data.enum").Raw)
+	}
+
+	if gjson.GetBytes(got, "tools.2.tools.0.parameters.properties.tags.uniqueItems").Exists() {
+		t.Errorf("expected namespace nested tags.uniqueItems to be removed")
+	}
+
+	unchanged := []byte(`{"model":"gpt-6.2-astra","tools":[{"type":"function","name":"prose_only","parameters":{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"},"description":"Keep uniqueItems semantics in prose"}}}}]}`)
+	if out := NormalizeCodexToolSchemas(unchanged); !bytes.Equal(out, unchanged) {
+		t.Fatalf("expected prose-only mention of uniqueItems not to mutate schema")
+	}
+}
+
+func TestNormalizeCodexToolSchemas_StripsUniqueItems(t *testing.T) {
+	input := []byte(`{
+		"model": "gpt-6.2-astra",
+		"tools": [{
+			"type": "function",
+			"name": "ask_user",
+			"description": "Ask the user a structured question.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"question": {"type": "string"},
+					"options": {
+						"type": "array",
+						"items": {"type": "string"},
+						"uniqueItems": true
+					},
+					"uniqueItems": {
+						"type": "boolean"
+					},
+					"user_data": {
+						"type": "object",
+						"default": {"uniqueItems": true},
+						"enum": [{"uniqueItems": false}]
+					}
+				},
+				"required": ["question"]
+			}
+		}]
+	}`)
+
+	out := NormalizeCodexToolSchemas(input)
+	params := gjson.GetBytes(out, "tools.0.parameters")
+
+	if params.Get("properties.options.uniqueItems").Exists() {
+		t.Errorf("expected properties.options.uniqueItems to be removed, got %s", params.Get("properties.options").Raw)
+	}
+	if got := params.Get("properties.options.type").String(); got != "array" {
+		t.Errorf("expected properties.options.type == 'array', got %q", got)
+	}
+	if got := params.Get("properties.options.items.type").String(); got != "string" {
+		t.Errorf("expected properties.options.items.type == 'string', got %q", got)
+	}
+	if got := params.Get("properties.uniqueItems.type").String(); got != "boolean" {
+		t.Errorf("expected literal property 'uniqueItems' preserved, got %q", got)
+	}
+	if params.Get("properties.user_data.default.uniqueItems").Type != gjson.True {
+		t.Errorf("expected user_data.default.uniqueItems preserved, got %s", params.Get("properties.user_data.default").Raw)
+	}
+	if params.Get("properties.user_data.enum.0.uniqueItems").Type != gjson.False {
+		t.Errorf("expected user_data.enum.0.uniqueItems preserved, got %s", params.Get("properties.user_data.enum").Raw)
+	}
+
 	outAgain := NormalizeCodexToolSchemas(out)
 	if string(outAgain) != string(out) {
 		t.Errorf("expected NormalizeCodexToolSchemas to be idempotent")

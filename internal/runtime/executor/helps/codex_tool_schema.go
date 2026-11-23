@@ -47,7 +47,7 @@ func NormalizeCodexToolIntegerTypes(body []byte, headers http.Header) []byte {
 // NormalizeCodexToolSchemas inspects function tools in a Codex request payload
 // and simplifies pure constant union combinations (e.g. large oneOf branch sets
 // representing enums with descriptions, as emitted by MCP servers) into semantically
-// equivalent enum lists, and sanitizes unsupported schema patterns.
+// equivalent enum lists, and sanitizes unsupported schema keywords and patterns.
 // It does not normalize tool integer types because upstream OpenAI Codex models
 // strictly validate reserved tool schemas (e.g. collaboration.wait_agent).
 func NormalizeCodexToolSchemas(body []byte) []byte {
@@ -163,7 +163,8 @@ func normalizeCodexParameters(params gjson.Result) ([]byte, bool) {
 // stripIncompatiblePatternsFromJSON recursively removes pattern attributes that strict
 // upstream validators reject: unsupported Unicode property escapes (\p{...} / \P{...})
 // and the octal NUL escape (\0), as well as integer numeric bounds (minimum, maximum,
-// exclusiveMinimum, exclusiveMaximum) outside the signed 64-bit integer range (#6579).
+// exclusiveMinimum, exclusiveMaximum) outside the signed 64-bit integer range (#6579),
+// and the uniqueItems keyword.
 // See util.HasUnsupportedUnicodePropertyEscape for the regex predicate and upstream errors.
 // It is schema-aware: only subschemas under known JSON Schema keyword locations are visited,
 // preventing accidental deletion of keys inside user data (e.g. description, default, enum).
@@ -172,8 +173,10 @@ func stripIncompatiblePatternsFromJSON(raw []byte) ([]byte, bool) {
 	// The fast path avoids parsing when no candidate escape or numeric bound is present.
 	// Patterns arrive JSON-escaped, so a literal backslash before '0' is `\\0` in the raw bytes.
 	// "inimum" and "aximum" match minimum, maximum, exclusiveMinimum, and exclusiveMaximum.
+	// uniqueItems is rejected by the Codex tool schema validator.
 	if !strings.Contains(rawStr, `\p{`) && !strings.Contains(rawStr, `\P{`) && !strings.Contains(rawStr, `\u`) &&
-		!strings.Contains(rawStr, `\\0`) && !strings.Contains(rawStr, "inimum") && !strings.Contains(rawStr, "aximum") {
+		!strings.Contains(rawStr, `\\0`) && !strings.Contains(rawStr, "inimum") && !strings.Contains(rawStr, "aximum") &&
+		!strings.Contains(rawStr, `"uniqueItems"`) {
 		return raw, false
 	}
 	var root any
@@ -298,6 +301,10 @@ func stripIncompatiblePatterns(v any) bool {
 				delete(schema, boundKey)
 				changed = true
 			}
+		}
+		if _, exists := schema["uniqueItems"]; exists {
+			delete(schema, "uniqueItems")
+			changed = true
 		}
 
 		// Inspect regex keys under patternProperties
