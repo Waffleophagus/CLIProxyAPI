@@ -181,7 +181,7 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 	// Ensure the request satisfies Claude constraints:
 	//  1) Determine effective max_tokens (request overrides model default)
 	//  2) If budget_tokens >= max_tokens, reduce budget_tokens to max_tokens-1
-	//  3) If the adjusted budget falls below the model minimum, leave the request unchanged
+	//  3) If the adjusted budget falls below the model minimum, disable thinking
 	//  4) If max_tokens came from model default, write it back into the request
 
 	effectiveMax, setDefaultMax := a.effectiveMaxTokens(body, modelInfo)
@@ -199,10 +199,10 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 	if modelInfo != nil && modelInfo.Thinking != nil {
 		minBudget = modelInfo.Thinking.Min
 	}
-	if minBudget > 0 && adjustedBudget > 0 && adjustedBudget < minBudget {
-		// If enforcing the max_tokens constraint would push the budget below the model minimum,
-		// leave the request unchanged.
-		return body
+	if minBudget > 0 && adjustedBudget >= 0 && adjustedBudget < minBudget {
+		// max_tokens cannot fit the model minimum budget, so thinking cannot be
+		// enabled validly; disable it instead of sending an invalid budget.
+		return disableThinking(body, modelInfo)
 	}
 
 	if adjustedBudget != budgetTokens {
