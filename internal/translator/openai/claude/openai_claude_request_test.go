@@ -2103,7 +2103,7 @@ func TestConvertClaudeRequestToOpenAI_ToolResultDocumentRelayedAsFilePart(t *tes
 				{"role": "assistant", "content": [{"type": "tool_use", "id": "call_url", "name": "find_doc", "input": {}}]},
 				{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_url", "content": [
 					{"type": "text", "text": "Found it"},
-					{"type": "document", "source": {"type": "url", "url": "https://example.test/report.pdf"}}
+					{"type": "document", "source": {"type": "url", "url": "HTTPS://example.test/report.pdf"}}
 				]}]}
 			]
 		}`
@@ -2115,7 +2115,7 @@ func TestConvertClaudeRequestToOpenAI_ToolResultDocumentRelayedAsFilePart(t *tes
 		if len(messages) != 2 {
 			t.Fatalf("expected 2 messages, got %d: %s", len(messages), out)
 		}
-		if got := messages[1].Get("content").String(); !strings.Contains(got, "https://example.test/report.pdf") {
+		if got := messages[1].Get("content").String(); !strings.Contains(got, "HTTPS://example.test/report.pdf") {
 			t.Fatalf("tool message content = %q, want the document URL", got)
 		}
 	})
