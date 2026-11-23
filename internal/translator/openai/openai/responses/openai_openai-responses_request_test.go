@@ -2774,20 +2774,30 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ToolOutputFilesAnd
 		}
 	})
 
-	t.Run("keeps unconvertible JSON string tool output as text", func(t *testing.T) {
-		const data = `{"type":"file","path":"/tmp/report.pdf","size":123}`
-		cases := map[string]string{
-			"function_call_output":    `{"model":"gpt-5","input":[{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"},{"type":"function_call_output","call_id":"c1","output":"{\"type\":\"file\",\"path\":\"/tmp/report.pdf\",\"size\":123}"}]}`,
-			"custom_tool_call_output": `{"model":"gpt-5","input":[{"type":"custom_tool_call","call_id":"c1","name":"f","input":""},{"type":"custom_tool_call_output","call_id":"c1","output":"{\"type\":\"file\",\"path\":\"/tmp/report.pdf\",\"size\":123}"}]}`,
+	t.Run("keeps JSON string tool output that is not an image array as text", func(t *testing.T) {
+		datas := []string{
+			`{"type":"file","path":"/tmp/report.pdf","size":123}`,
+			`{"type":"file","file_id":"artifact-42","path":"/tmp/report.pdf","size":123}`,
 		}
-		for name, raw := range cases {
-			out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5", []byte(raw), false)
-			if err != nil {
-				t.Fatalf("%s: unexpected error: %v", name, err)
-			}
-			toolMsg := gjson.GetBytes(out, "messages.1")
-			if toolMsg.Get("role").String() != "tool" || toolMsg.Get("content").String() != data {
-				t.Fatalf("%s: tool message = %s, want content %s; out=%s", name, toolMsg.Raw, data, out)
+		for _, data := range datas {
+			for _, kind := range []string{"function_call_output", "custom_tool_call_output"} {
+				call := `{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"}`
+				if kind == "custom_tool_call_output" {
+					call = `{"type":"custom_tool_call","call_id":"c1","name":"f","input":""}`
+				}
+				outputJSON, _ := json.Marshal(data)
+				raw := `{"model":"gpt-5","input":[` + call + `,{"type":"` + kind + `","call_id":"c1","output":` + string(outputJSON) + `}]}`
+				out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5", []byte(raw), false)
+				if err != nil {
+					t.Fatalf("%s %s: unexpected error: %v", kind, data, err)
+				}
+				toolMsg := gjson.GetBytes(out, "messages.1")
+				if toolMsg.Get("role").String() != "tool" || toolMsg.Get("content").String() != data {
+					t.Fatalf("%s: tool message = %s, want content %s; out=%s", kind, toolMsg.Raw, data, out)
+				}
+				if gjson.GetBytes(out, "messages.#").Int() != 2 {
+					t.Fatalf("%s: unexpected relayed messages: %s", kind, out)
+				}
 			}
 		}
 	})

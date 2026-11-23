@@ -704,10 +704,11 @@ func setFunctionCallOutputContent(toolMessage []byte, output gjson.Result, separ
 	}
 
 	items, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType := inspectChatToolOutputParts(structuredContent)
-	if output.Type == gjson.String && (unsupportedType != "" || badImageType != "") {
-		// A JSON string is the tool's own data (for example a file listing
-		// entry {"type":"file","path":...}). Treat it as media only when every
-		// part converts; otherwise pass it through as text, as before.
+	if output.Type == gjson.String && !isStringifiedChatImageArray(structuredContent, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType) {
+		// A JSON string is the tool's own data (for example a file entry
+		// {"type":"file","file_id":...,"path":...}). As before the media
+		// handling, only a stringified array of valid text and image parts is
+		// converted; everything else reaches the model verbatim as text.
 		toolMessage, _ = sjson.SetBytes(toolMessage, "content", output.String())
 		return toolMessage, nil, nil
 	}
@@ -787,8 +788,9 @@ func setCustomToolCallOutputContent(toolMessage []byte, output gjson.Result, sep
 		structuredContent = gjson.Parse(output.String())
 	}
 	_, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType := inspectChatToolOutputParts(structuredContent)
-	if output.Type == gjson.String && (unsupportedType != "" || badImageType != "") {
-		// See setFunctionCallOutputContent: unconvertible JSON strings stay text.
+	if output.Type == gjson.String && !isStringifiedChatImageArray(structuredContent, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType) {
+		// See setFunctionCallOutputContent: JSON strings stay text unless they
+		// are a stringified text/image array.
 		toolMessage, _ = sjson.SetBytes(toolMessage, "content", responsesToolOutputText(output))
 		return toolMessage, nil, nil
 	}
@@ -801,6 +803,14 @@ func setCustomToolCallOutputContent(toolMessage []byte, output gjson.Result, sep
 
 	toolMessage, _ = sjson.SetBytes(toolMessage, "content", responsesToolOutputText(output))
 	return toolMessage, nil, nil
+}
+
+// isStringifiedChatImageArray reports whether a tool output that arrived as a
+// JSON string is an array of valid text and image parts, the only stringified
+// shape converted to Chat content parts. File and single-object media
+// handling applies to native structured output only.
+func isStringifiedChatImageArray(content gjson.Result, hasImage, hasFile, invalidTextOrImage bool, badImageType, unsupportedType string) bool {
+	return content.IsArray() && hasImage && !hasFile && !invalidTextOrImage && badImageType == "" && unsupportedType == ""
 }
 
 func chatToolOutputContentPart(item gjson.Result) []byte {
