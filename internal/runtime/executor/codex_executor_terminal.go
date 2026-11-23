@@ -337,16 +337,31 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 		return true
 	}
 	// Message matching only applies to request errors, like
-	// codexStatusErrorClassification: a rate_limit_error saying
-	// "Too many tokens per minute" must keep its 429.
+	// codexStatusErrorClassification: a rate limit saying "Too many tokens
+	// per minute" must keep its 429, whether it is marked by error.type,
+	// error.code or an explicit status.
 	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
 	if errorType != "" && errorType != "invalid_request_error" {
+		return false
+	}
+	if errorCode == "rate_limit_exceeded" || codexTerminalBodyHasStatus(body, http.StatusTooManyRequests) {
 		return false
 	}
 	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
 	return strings.Contains(message, "context window") ||
 		strings.Contains(message, "context length") ||
 		strings.Contains(message, "too many tokens")
+}
+
+// codexTerminalBodyHasStatus reports whether a terminal error body carries
+// status as an explicit numeric status field.
+func codexTerminalBodyHasStatus(body []byte, status int) bool {
+	for _, path := range []string{"error.status_code", "error.status", "status_code", "status"} {
+		if int(gjson.GetBytes(body, path).Int()) == status {
+			return true
+		}
+	}
+	return false
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {
@@ -415,7 +430,8 @@ func codexStatusErrorClassification(statusCode int, body []byte) (code string, e
 	lower := strings.ToLower(strings.TrimSpace(string(body)))
 	upstreamCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
 	upstreamType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
-	isInvalidRequest := upstreamType == "" || upstreamType == "invalid_request_error"
+	isInvalidRequest := (upstreamType == "" || upstreamType == "invalid_request_error") &&
+		upstreamCode != "rate_limit_exceeded" && statusCode != http.StatusTooManyRequests
 
 	switch {
 	case statusCode == http.StatusRequestEntityTooLarge || upstreamCode == "context_length_exceeded" || upstreamCode == "context_too_large" || isInvalidRequest && (strings.Contains(errorMessage, "context length") || strings.Contains(errorMessage, "context_length") || strings.Contains(errorMessage, "maximum context") || strings.Contains(errorMessage, "too many tokens")):
