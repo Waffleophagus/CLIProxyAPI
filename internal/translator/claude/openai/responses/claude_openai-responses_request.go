@@ -574,7 +574,7 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 			// decided on the raw id so two distinct ids that sanitize to the
 			// same Claude id are not mistaken for the same call.
 			if _, paired := emittedRawToolUses[rawID]; rawID == "" || !paired {
-				standaloneParts, errStandalone := convertResponsesStandaloneToolOutputToClaudeText(output)
+				standaloneParts, errStandalone := convertResponsesStandaloneToolOutputToClaudeText(outputItem, output)
 				if errStandalone != nil && toolOutputErr == nil {
 					toolOutputErr = errStandalone
 				}
@@ -592,9 +592,17 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 				toolResult, _ = sjson.SetBytes(toolResult, "is_error", true)
 			}
 			var errToolResult error
-			toolResult, errToolResult = applyResponsesToolResultContent(toolResult, output)
+			var partCacheSource gjson.Result
+			toolResult, partCacheSource, errToolResult = applyResponsesToolResultContent(toolResult, output)
 			if errToolResult != nil && toolOutputErr == nil {
 				toolOutputErr = errToolResult
+			}
+			// Anthropic rejects cache_control inside tool_result.content, so
+			// hoist the last valid part-level marker (or fall back to
+			// outputItem) onto the outer tool_result block.
+			var attached bool
+			if toolResult, attached = attachClaudeCacheControl(toolResult, partCacheSource); !attached {
+				toolResult, _ = attachClaudeCacheControl(toolResult, outputItem)
 			}
 
 			appendParts("user", toolResult)
@@ -933,6 +941,39 @@ func responsesSystemItemToClaudeBlocks(item gjson.Result) [][]byte {
 	return blocks
 }
 
+// hasValidClaudeCacheControl reports whether src carries a cache_control
+// object Claude accepts (type "ephemeral").
+func hasValidClaudeCacheControl(src gjson.Result) bool {
+	cc := src.Get("cache_control")
+	if !cc.Exists() || cc.Type == gjson.Null || !cc.IsObject() {
+		return false
+	}
+	typ := cc.Get("type")
+	return typ.Type == gjson.String && typ.String() == "ephemeral"
+}
+
+// attachClaudeCacheControl copies a valid cache_control from src onto block
+// and reports whether it did. Thinking blocks and empty text blocks cannot
+// host cache_control and are returned unchanged.
+func attachClaudeCacheControl(block []byte, src gjson.Result) ([]byte, bool) {
+	if len(block) == 0 || !hasValidClaudeCacheControl(src) {
+		return block, false
+	}
+	switch gjson.GetBytes(block, "type").String() {
+	case "thinking", "redacted_thinking":
+		return block, false
+	case "text":
+		if strings.TrimSpace(gjson.GetBytes(block, "text").String()) == "" {
+			return block, false
+		}
+	}
+	out, errSet := sjson.SetRawBytes(block, "cache_control", []byte(src.Get("cache_control").Raw))
+	if errSet != nil {
+		return block, false
+	}
+	return out, true
+}
+
 // isResponsesMessageItem reports whether an input item is a message, which is
 // the only item shape that can become a role=system turn.
 func isResponsesMessageItem(item gjson.Result) bool {
@@ -1233,13 +1274,14 @@ func responsesToolOutputItems(output gjson.Result) ([]gjson.Result, bool) {
 	return nil, false
 }
 
-func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) ([]byte, error) {
+func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) ([]byte, gjson.Result, error) {
 	if items, ok := responsesToolOutputItems(output); ok {
 		var partsJSON [][]byte
 		hasImage := false
 		hasFile := false
 		droppedEmptyPart := false
 		var unsupportedType string
+		var lastPartCacheSource gjson.Result
 		for _, part := range items {
 			partJSON := convertResponsesContentPartToClaude(part)
 			if len(partJSON) == 0 {
@@ -1247,6 +1289,9 @@ func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) ([]
 					unsupportedType = unsupportedResponsesToolPartType(part)
 				}
 				continue
+			}
+			if hasValidClaudeCacheControl(part) {
+				lastPartCacheSource = part
 			}
 			if !contentPartHasVisibleContent(partJSON) {
 				droppedEmptyPart = true
@@ -1262,33 +1307,33 @@ func applyResponsesToolResultContent(toolResult []byte, output gjson.Result) ([]
 			}
 		}
 		if unsupportedType != "" {
-			return toolResult, &common.UnsupportedPartError{Type: unsupportedType}
+			return toolResult, gjson.Result{}, &common.UnsupportedPartError{Type: unsupportedType}
 		}
 		if len(partsJSON) == 0 {
 			if droppedEmptyPart {
 				toolResult, _ = sjson.SetBytes(toolResult, "content", "")
-				return toolResult, nil
+				return toolResult, lastPartCacheSource, nil
 			}
 			if output.IsArray() {
 				toolResult, _ = sjson.SetBytes(toolResult, "content", output.Raw)
 			} else {
 				toolResult, _ = sjson.SetBytes(toolResult, "content", output.String())
 			}
-			return toolResult, nil
+			return toolResult, lastPartCacheSource, nil
 		}
 		if len(partsJSON) == 1 && !hasImage && !hasFile {
 			textPart := gjson.ParseBytes(partsJSON[0])
 			if textPart.Get("type").String() == "text" {
 				toolResult, _ = sjson.SetBytes(toolResult, "content", textPart.Get("text").String())
-				return toolResult, nil
+				return toolResult, lastPartCacheSource, nil
 			}
 		}
 		toolResult, _ = sjson.DeleteBytes(toolResult, "content")
 		toolResult, _ = sjson.SetRawBytes(toolResult, "content", common.JoinRawArray(partsJSON))
-		return toolResult, nil
+		return toolResult, lastPartCacheSource, nil
 	}
 	toolResult, _ = sjson.SetBytes(toolResult, "content", output.String())
-	return toolResult, nil
+	return toolResult, gjson.Result{}, nil
 }
 
 // claudeMessageInvariantProblems reports shapes Anthropic rejects. It only
@@ -1486,14 +1531,20 @@ func normalizeClaudeToolResultMessage(msg []byte, answeredIDs map[string]struct{
 			if _, ok := answeredIDs[block.Get("tool_use_id").String()]; !ok {
 				changed = true
 				seenOther = true
-				if textParts := toolResultTextParts(block); len(textParts) > 0 {
-					otherParts = append(otherParts, textParts...)
-				} else {
+				foldedParts := toolResultTextParts(block)
+				if len(foldedParts) == 0 {
 					// An empty orphan result folds to nothing, so keep an
 					// explicit marker instead of producing an empty user
 					// message that Anthropic also rejects.
-					otherParts = append(otherParts, []byte(`{"type":"text","text":"Tool result was empty."}`))
+					foldedParts = [][]byte{[]byte(`{"type":"text","text":"Tool result was empty."}`)}
 				}
+				if block.Get("cache_control").Exists() {
+					lastIdx := len(foldedParts) - 1
+					if last := foldedParts[lastIdx]; !gjson.GetBytes(last, "cache_control").Exists() {
+						foldedParts[lastIdx], _ = attachClaudeCacheControl(last, block)
+					}
+				}
+				otherParts = append(otherParts, foldedParts...)
 				return true
 			}
 			resultParts = append(resultParts, raw)
@@ -1553,7 +1604,8 @@ func toolResultTextParts(block gjson.Result) [][]byte {
 
 // convertResponsesStandaloneToolOutputToClaudeText renders a tool output that
 // has no matching tool_use as ordinary user content blocks.
-func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) ([][]byte, error) {
+func convertResponsesStandaloneToolOutputToClaudeText(outputItem, output gjson.Result) ([][]byte, error) {
+	var droppedPartCacheSource gjson.Result
 	if items, ok := responsesToolOutputItems(output); ok {
 		var partsJSON [][]byte
 		var unsupportedType string
@@ -1568,14 +1620,27 @@ func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) ([][]
 			// Drop empty text parts so a mixed array never emits blocks
 			// Anthropic rejects; images and documents always count.
 			if !contentPartHasVisibleContent(partJSON) {
+				if len(partsJSON) > 0 {
+					prevIdx := len(partsJSON) - 1
+					if !gjson.GetBytes(partsJSON[prevIdx], "cache_control").Exists() {
+						partsJSON[prevIdx], _ = attachClaudeCacheControl(partsJSON[prevIdx], part)
+					}
+				} else if hasValidClaudeCacheControl(part) {
+					droppedPartCacheSource = part
+				}
 				continue
 			}
+			partJSON, _ = attachClaudeCacheControl(partJSON, part)
 			partsJSON = append(partsJSON, partJSON)
 		}
 		if unsupportedType != "" {
 			return nil, &common.UnsupportedPartError{Type: unsupportedType}
 		}
 		if len(partsJSON) > 0 {
+			lastIdx := len(partsJSON) - 1
+			if !gjson.GetBytes(partsJSON[lastIdx], "cache_control").Exists() {
+				partsJSON[lastIdx], _ = attachClaudeCacheControl(partsJSON[lastIdx], outputItem)
+			}
 			return partsJSON, nil
 		}
 	}
@@ -1585,10 +1650,16 @@ func convertResponsesStandaloneToolOutputToClaudeText(output gjson.Result) ([][]
 		// it joins never degenerates to an empty content array. The IsArray
 		// guard keeps the raw array dump from leaking in as literal text when
 		// every converted part was empty.
-		return [][]byte{[]byte(`{"type":"text","text":"Tool result was empty."}`)}, nil
+		fallback := []byte(`{"type":"text","text":"Tool result was empty."}`)
+		var attached bool
+		if fallback, attached = attachClaudeCacheControl(fallback, droppedPartCacheSource); !attached {
+			fallback, _ = attachClaudeCacheControl(fallback, outputItem)
+		}
+		return [][]byte{fallback}, nil
 	}
 	contentPart := []byte(`{"type":"text","text":""}`)
 	contentPart, _ = sjson.SetBytes(contentPart, "text", text)
+	contentPart, _ = attachClaudeCacheControl(contentPart, outputItem)
 	return [][]byte{contentPart}, nil
 }
 
