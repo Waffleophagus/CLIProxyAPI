@@ -2593,3 +2593,24 @@ func TestExtractExplicitSessionIDs_EnhancedHarnesses(t *testing.T) {
 		t.Fatalf("subagent did not inherit parent task credential: got %s, want %s", subagentAuth.ID, parentAuth.ID)
 	}
 }
+
+// TestExtractConversationAliasCannotAliasSubagentKey ensures the
+// prompt_cache_key conversation alias encodes its ID like session extraction,
+// so a conversation ID containing ":agent:" cannot share the affinity key of
+// a header-composed subagent session.
+func TestExtractConversationAliasCannotAliasSubagentKey(t *testing.T) {
+	sub, ok := cliproxysession.ExtractSessionInfo(http.Header{
+		"X-Conversation-Id": []string{"root"},
+		"X-Agent-Id":        []string{"worker"},
+	}, nil, nil)
+	if !ok || sub.SessionID != "conv:root:agent:worker" {
+		t.Fatalf("subagent session = %+v, want conv:root:agent:worker", sub)
+	}
+	alias := extractConversationAlias([]byte(`{"prompt_cache_key":"k","conversation":{"id":"root:agent:worker"}}`))
+	if alias == "" || alias == sub.SessionID {
+		t.Fatalf("conversation alias = %q, must differ from subagent key %q", alias, sub.SessionID)
+	}
+	if plain := extractConversationAlias([]byte(`{"conversation":"abc-123"}`)); plain != "conv:abc-123" {
+		t.Fatalf("ordinary conversation alias changed: %q", plain)
+	}
+}

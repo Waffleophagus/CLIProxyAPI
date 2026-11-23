@@ -1837,11 +1837,13 @@ func extractConversationAlias(payload []byte) string {
 	}
 	root := gjson.ParseBytes(payload)
 	conversation := root.Get("conversation")
+	// Encode like session extraction does, so a raw conversation ID containing
+	// ":agent:" cannot alias a composed subagent key.
 	if sid := normalizedSessionCandidate(conversation.Get("id").String()); sid != "" {
-		return "conv:" + sid
+		return "conv:" + cliproxysession.EncodeSessionSegment(sid)
 	} else if conversation.Type == gjson.String {
 		if sid := normalizedSessionCandidate(conversation.String()); sid != "" {
-			return "conv:" + sid
+			return "conv:" + cliproxysession.EncodeSessionSegment(sid)
 		}
 	}
 	return ""

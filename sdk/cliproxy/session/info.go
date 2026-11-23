@@ -707,6 +707,13 @@ func encodeSessionSegment(raw string) string {
 	return encoded
 }
 
+// EncodeSessionSegment applies the session-ID segment escaping used for
+// affinity keys, so callers that build their own "<prefix>:<id>" aliases cannot
+// collide with composed "<sid>:agent:<agent>" subagent IDs.
+func EncodeSessionSegment(raw string) string {
+	return encodeSessionSegment(raw)
+}
+
 func applyHeaderSessionInfo(
 	info SessionInfo,
 	clientType, prefix, sid, parentSID, parentCandidate, defaultAgentName string,
