@@ -401,8 +401,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			// Close waits on a read of the unfinished upstream body is bounded
 			// too. zstd decoders are synchronous (see decodeResponseBody), so
 			// after message_stop the drain is the only reader of httpResp.Body.
+			//
+			// Only HTTP/1.x needs the drain: an HTTP/2 stream closed early is
+			// reset without losing the shared connection, and the HTTP/2
+			// transport can block a reader behind a stalled RST_STREAM write,
+			// which the cap could not interrupt.
 			var drainCap *time.Timer
-			if detached {
+			if detached && httpResp.ProtoMajor == 1 {
 				drainCap = time.AfterFunc(e.streamDrainCap(), releaseUpstream)
 				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64<<10))
 			}
