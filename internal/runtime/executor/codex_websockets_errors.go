@@ -116,7 +116,7 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
 	} else if isCodexWebsocketConnectionLimitError(payload) {
 		retryAfter := time.Duration(0)
 		statusError.retryAfter = &retryAfter
-	} else if status == http.StatusTooManyRequests {
+	} else if shouldParseCodexRetryAfterHeader(status) {
 		if retryAfter := parseRetryAfterHeader(headers, time.Now()); retryAfter != nil {
 			statusError.retryAfter = retryAfter
 		}
@@ -206,33 +206,58 @@ func isCodexWebsocketConnectionLimitError(payload []byte) bool {
 	return false
 }
 
-func parseCodexWebsocketErrorHeaders(payload []byte) http.Header {
-	headersNode := gjson.GetBytes(payload, "headers")
-	if !headersNode.Exists() || !headersNode.IsObject() {
-		headersNode = gjson.GetBytes(payload, "body.headers")
+func shouldParseCodexRetryAfterHeader(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests,
+		http.StatusRequestTimeout,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+		520, 521, 522, 523, 524, 525, 526:
+		return true
+	default:
+		return false
 	}
-	if !headersNode.Exists() || !headersNode.IsObject() {
+}
+
+func parseCodexWebsocketErrorHeaders(payload []byte) http.Header {
+	if len(payload) == 0 {
 		return nil
 	}
 	mapped := make(http.Header)
-	headersNode.ForEach(func(key, value gjson.Result) bool {
-		name := strings.TrimSpace(key.String())
-		if name == "" {
+	seen := make(map[string]struct{})
+	for _, path := range []string{"headers", "body.headers", "error.headers", "body.error.headers", "response.error.headers"} {
+		headersNode := gjson.GetBytes(payload, path)
+		if !headersNode.Exists() || !headersNode.IsObject() {
+			continue
+		}
+		headersNode.ForEach(func(key, value gjson.Result) bool {
+			name := strings.TrimSpace(key.String())
+			if name == "" {
+				return true
+			}
+			canonical := http.CanonicalHeaderKey(name)
+			if _, exists := seen[canonical]; exists {
+				return true
+			}
+			// Mark the header as seen before validating its value so an explicit outer
+			// blank or unsupported entry still shadows any nested fallback value.
+			seen[canonical] = struct{}{}
+			switch value.Type {
+			case gjson.String:
+				if v := strings.TrimSpace(value.String()); v != "" {
+					mapped.Set(name, v)
+				}
+			case gjson.Number, gjson.True, gjson.False:
+				if v := strings.TrimSpace(value.Raw); v != "" {
+					mapped.Set(name, v)
+				}
+			default:
+			}
 			return true
-		}
-		switch value.Type {
-		case gjson.String:
-			if v := strings.TrimSpace(value.String()); v != "" {
-				mapped.Set(name, v)
-			}
-		case gjson.Number, gjson.True, gjson.False:
-			if v := strings.TrimSpace(value.Raw); v != "" {
-				mapped.Set(name, v)
-			}
-		default:
-		}
-		return true
-	})
+		})
+	}
 	if len(mapped) == 0 {
 		return nil
 	}
