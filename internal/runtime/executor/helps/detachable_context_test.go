@@ -204,6 +204,9 @@ func TestNewDetachableContext_HTTPErrorsMatchParent(t *testing.T) {
 		}
 		if !inBody {
 			end()
+			// AfterFunc forwards the parent's cancellation from its own
+			// goroutine; wait for it so RoundTrip always sees a canceled ctx.
+			<-ctx.Done()
 			resp, errRoundTrip := transport.RoundTrip(req)
 			if errRoundTrip == nil {
 				_ = resp.Body.Close()
