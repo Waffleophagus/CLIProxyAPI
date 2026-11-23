@@ -415,28 +415,16 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 								part := contentResults[k]
 								toolResultContentType := part.Get("type").String()
 								if toolResultContentType == "image" {
-									sourceResult := part.Get("source")
-									if sourceResult.Exists() {
-										data := sourceResult.Get("data").String()
-										if data == "" {
-											data = sourceResult.Get("base64").String()
-										}
-										if data != "" {
-											mediaType := sourceResult.Get("media_type").String()
-											if mediaType == "" {
-												mediaType = sourceResult.Get("mime_type").String()
-											}
-											if mediaType == "" {
-												mediaType = "application/octet-stream"
-											}
-											dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
-
-											toolResultContent := []byte(`{"type":"input_image","image_url":""}`)
-											toolResultContent, _ = sjson.SetBytes(toolResultContent, "image_url", dataURL)
-											toolResultContentItems = append(toolResultContentItems, toolResultContent)
-											hasRichToolResultItems = true
-										}
+									if imagePart, ok := claudeImageInputPart(part.Get("source")); ok {
+										toolResultContentItems = append(toolResultContentItems, imagePart)
+										hasRichToolResultItems = true
 									}
+									if rewroteToolRefName {
+										rewrittenToolRefs = append(rewrittenToolRefs, []byte(part.Raw))
+									}
+								} else if toolResultContentType == "document" {
+									toolResultContentItems = append(toolResultContentItems, codexToolResultDocumentParts(part)...)
+									hasRichToolResultItems = true
 									if rewroteToolRefName {
 										rewrittenToolRefs = append(rewrittenToolRefs, []byte(part.Raw))
 									}
@@ -484,6 +472,19 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							} else if rewroteToolRefName && len(rewrittenToolRefs) == len(contentResults) {
 								functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", string(translatorcommon.JoinRawArray(rewrittenToolRefs)))
 							} else {
+								functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", messageContentResult.Get("content").String())
+							}
+						} else if contentResult.IsObject() {
+							switch contentResult.Get("type").String() {
+							case "image":
+								if imagePart, ok := claudeImageInputPart(contentResult.Get("source")); ok {
+									functionCallOutputMessage, _ = sjson.SetRawBytes(functionCallOutputMessage, "output", translatorcommon.JoinRawArray([][]byte{imagePart}))
+								} else {
+									functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", messageContentResult.Get("content").String())
+								}
+							case "document":
+								functionCallOutputMessage, _ = sjson.SetRawBytes(functionCallOutputMessage, "output", translatorcommon.JoinRawArray(codexToolResultDocumentParts(contentResult)))
+							default:
 								functionCallOutputMessage, _ = sjson.SetBytes(functionCallOutputMessage, "output", messageContentResult.Get("content").String())
 							}
 						} else {
@@ -1360,4 +1361,38 @@ func claudeDocumentInputFile(part gjson.Result) ([]byte, bool) {
 	default:
 		return nil, false
 	}
+}
+
+const codexUnsupportedDocumentPlaceholder = "[Unsupported document content]"
+
+func codexInputTextPart(text string) []byte {
+	doc := []byte(`{"type":"input_text","text":""}`)
+	doc, _ = sjson.SetBytes(doc, "text", text)
+	return doc
+}
+
+func codexUnsupportedDocumentPart() []byte {
+	return codexInputTextPart(codexUnsupportedDocumentPlaceholder)
+}
+
+func codexToolResultDocumentParts(part gjson.Result) [][]byte {
+	if docText, ok := translatorcommon.ClaudeDocumentTextBlock(part); ok {
+		return [][]byte{codexInputTextPart(docText)}
+	}
+	var items [][]byte
+	if translatorcommon.ExpandClaudeContentDocument(
+		part,
+		func(text string) { items = append(items, codexInputTextPart(text)) },
+		func(img gjson.Result) ([]byte, bool) {
+			return claudeImageInputPart(img.Get("source"))
+		},
+		func(img []byte) { items = append(items, img) },
+		nil,
+	) {
+		return items
+	}
+	if docPart, ok := claudeDocumentInputFile(part); ok {
+		return [][]byte{docPart}
+	}
+	return [][]byte{codexUnsupportedDocumentPart()}
 }
