@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -22,6 +23,11 @@ func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
 type streamBootstrapError struct {
 	cause   error
 	headers http.Header
+	// attemptID identifies the upstream attempt marker this wrapper was
+	// built from, so syncPreferredUpstreamError can tell a retry hint
+	// refreshed for the same attempt apart from one raised by a different
+	// credential attempt that surfaced an equal error value.
+	attemptID uint64
 }
 
 func cloneHTTPHeader(headers http.Header) http.Header {
@@ -36,6 +42,11 @@ func newStreamBootstrapError(err error, headers http.Header) error {
 		return nil
 	}
 	upstreamAttempt := hasUpstreamExecutionAttempt(err)
+	var marked *upstreamExecutionAttemptError
+	attemptID := uint64(0)
+	if errors.As(err, &marked) && marked != nil {
+		attemptID = marked.attemptID
+	}
 	err = unwrapUpstreamExecutionAttempt(err)
 	if existing, ok := err.(*streamBootstrapError); ok && existing != nil {
 		// Already wrapped: refresh the captured headers when the caller
@@ -49,8 +60,9 @@ func newStreamBootstrapError(err error, headers http.Header) error {
 		return existing
 	}
 	bootstrapErr := &streamBootstrapError{
-		cause:   err,
-		headers: cloneHTTPHeader(headers),
+		cause:     err,
+		headers:   cloneHTTPHeader(headers),
+		attemptID: attemptID,
 	}
 	if upstreamAttempt {
 		return markUpstreamExecutionAttempt(bootstrapErr)

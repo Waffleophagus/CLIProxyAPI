@@ -476,8 +476,8 @@ func withTrustedRetryAfter(err error, retryAfter *time.Duration) error {
 	if err == nil || retryAfter == nil || *retryAfter <= 0 {
 		return err
 	}
-	if _, ok := err.(*upstreamExecutionAttemptError); ok {
-		return markUpstreamExecutionAttempt(withTrustedRetryAfter(unwrapUpstreamExecutionAttempt(err), retryAfter))
+	if marked, ok := err.(*upstreamExecutionAttemptError); ok && marked != nil {
+		return markUpstreamExecutionAttemptWithID(withTrustedRetryAfter(unwrapUpstreamExecutionAttempt(err), retryAfter), marked.attemptID)
 	}
 	if bootstrap, ok := err.(*streamBootstrapError); ok && bootstrap != nil {
 		wrapped := withTrustedRetryAfter(bootstrap.cause, retryAfter)

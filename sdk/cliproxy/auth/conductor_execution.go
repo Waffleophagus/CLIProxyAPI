@@ -8,9 +8,12 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redact"
@@ -49,8 +52,16 @@ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) 
 	return nil
 }
 
+// upstreamAttemptSeq allocates a process-unique identifier for every
+// upstream execution attempt marker so error wrappers rebuilt during
+// annotation can still be traced back to the same physical attempt.
+var upstreamAttemptSeq atomic.Uint64
+
 type upstreamExecutionAttemptError struct {
 	cause error
+	// attemptID identifies the physical upstream attempt this error was
+	// raised for; it is preserved when bookkeeping wrappers are rebuilt.
+	attemptID uint64
 }
 
 func (e *upstreamExecutionAttemptError) Error() string {
@@ -74,7 +85,19 @@ func markUpstreamExecutionAttempt(err error) error {
 	if hasUpstreamExecutionAttempt(err) {
 		return err
 	}
-	return &upstreamExecutionAttemptError{cause: err}
+	return markUpstreamExecutionAttemptWithID(err, upstreamAttemptSeq.Add(1))
+}
+
+// markUpstreamExecutionAttemptWithID tags err with the caller's attempt
+// identity, reusing the existing marker when the error already carries one.
+func markUpstreamExecutionAttemptWithID(err error, id uint64) error {
+	if err == nil {
+		return nil
+	}
+	if hasUpstreamExecutionAttempt(err) {
+		return err
+	}
+	return &upstreamExecutionAttemptError{cause: err, attemptID: id}
 }
 
 func markUpstreamExecutionAttemptFromContext(ctx context.Context, err error) error {
@@ -301,18 +324,79 @@ func syncPreferredUpstreamError(upstreamErr *error, errExec error) {
 	}
 	// A stream bootstrap wrapper built from an earlier attempt already
 	// carries the response headers needed to hand that failure back as an
-	// error stream; keep that earlier failure preferred. When the wrapper
-	// was built from this same attempt, annotate that wrapper in place
-	// instead of replacing it (error values are compared by identity only
-	// through reflect here because dynamic types may be uncomparable).
+	// error stream; keep that earlier failure preferred. Only a hint
+	// raised for the very same upstream attempt may annotate that wrapper
+	// in place; a hint from a different credential attempt must not mutate
+	// an earlier bootstrap, even when both attempts surfaced an equal
+	// error value.
 	var bootstrap *streamBootstrapError
 	if errors.As(*upstreamErr, &bootstrap) && bootstrap != nil {
-		if hint := trustedRetryAfterHint(errExec); hint != nil && *hint > 0 {
+		if hint := trustedRetryAfterHint(errExec); hint != nil && *hint > 0 &&
+			upstreamErrorMatchesBootstrap(errExec, bootstrap) {
 			bootstrap.cause = withTrustedRetryAfter(bootstrap.cause, hint)
 		}
 		return
 	}
 	*upstreamErr = errExec
+}
+
+// upstreamErrorMatchesBootstrap reports whether err belongs to the same
+// upstream attempt that produced bootstrap. Attempt markers carry a
+// process-unique id that survives annotation rebuilds, so a hint refreshed
+// for the same attempt matches while a different credential attempt is
+// rejected even when both surfaced the very same error value. The id is
+// read from the innermost source the attempt owns: a nested bootstrap
+// wrapper's recorded id first, then the outer attempt marker. Only when
+// neither side carries an attempt id (for example tests that bypass the
+// marking helpers) does the check fall back to cause identity.
+func upstreamErrorMatchesBootstrap(err error, bootstrap *streamBootstrapError) bool {
+	if err == nil || bootstrap == nil {
+		return false
+	}
+	execAttemptID := uint64(0)
+	var execBootstrap *streamBootstrapError
+	if errors.As(err, &execBootstrap) && execBootstrap != nil {
+		execAttemptID = execBootstrap.attemptID
+	}
+	if execAttemptID == 0 {
+		var marked *upstreamExecutionAttemptError
+		if errors.As(err, &marked) && marked != nil {
+			execAttemptID = marked.attemptID
+		}
+	}
+	if execAttemptID != 0 && bootstrap.attemptID != 0 {
+		return execAttemptID == bootstrap.attemptID
+	}
+	return sameInterfaceHeader(unwrapBootstrapSyncError(err), bootstrap.cause)
+}
+
+// sameInterfaceHeader reports whether two interface values share the same
+// (type, data) header, i.e. are the very same value. It never compares the
+// dynamic values themselves, which may be uncomparable.
+func sameInterfaceHeader(a, b any) bool {
+	ha := *(*[2]uintptr)(unsafe.Pointer(&a))
+	hb := *(*[2]uintptr)(unsafe.Pointer(&b))
+	runtime.KeepAlive(a)
+	runtime.KeepAlive(b)
+	return ha == hb
+}
+
+// unwrapBootstrapSyncError peels the wrappers syncPreferredUpstreamError
+// deals with so the underlying failure can be compared by identity.
+func unwrapBootstrapSyncError(err error) error {
+	for err != nil {
+		switch wrapped := err.(type) {
+		case *upstreamExecutionAttemptError:
+			err = wrapped.cause
+		case *trustedRetryAfterError:
+			err = wrapped.cause
+		case *streamBootstrapError:
+			err = wrapped.cause
+		default:
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
