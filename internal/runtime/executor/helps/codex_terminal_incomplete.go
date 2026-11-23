@@ -17,7 +17,7 @@ const (
 func HasMeaningfulCodexOutputDelta(eventData []byte) bool {
 	eventType := gjson.GetBytes(eventData, "type").String()
 	switch eventType {
-	case "response.output_text.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
+	case "response.output_text.delta", "response.refusal.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
 		delta := gjson.GetBytes(eventData, "delta")
 		return delta.Exists() && len(strings.TrimSpace(delta.String())) > 0
 	case "response.function_call_arguments.delta":

@@ -126,6 +126,7 @@ type ConvertCliToOpenAIParams struct {
 	currentToolCall       *toolCallStreamState
 	citationKeys          map[string]struct{}
 	emittedTextRunes      int64
+	HasMessageTextDelta   bool
 	LastImageHashByItemID map[string][32]byte
 }
 
@@ -231,12 +232,15 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	} else if dataType == "response.reasoning_summary_text.done" || dataType == "response.reasoning_text.done" {
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 		template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", "\n\n")
-	} else if dataType == "response.output_text.delta" {
+	} else if dataType == "response.output_text.delta" || dataType == "response.refusal.delta" {
 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
 			delta := deltaResult.String()
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 			template, _ = sjson.SetBytes(template, "choices.0.delta.content", delta)
 			p.emittedTextRunes += int64(utf8.RuneCountInString(delta))
+			if delta != "" {
+				p.HasMessageTextDelta = true
+			}
 		}
 	} else if dataType == "response.output_text.annotation.added" || dataType == "response.output_text.done" || dataType == "response.content_part.done" {
 		citations := buildCodexURLCitations(codexAnnotationsFromEvent(rootResult), p.emittedTextRunes, p.citationKeys)
@@ -297,6 +301,10 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", nativeFinishReason)
 	} else if dataType == "response.output_item.added" {
 		itemResult := rootResult.Get("item")
+		if itemResult.Exists() && itemResult.Get("type").String() == "message" {
+			p.HasMessageTextDelta = false
+			return [][]byte{}
+		}
 		if !itemResult.Exists() || !isCodexToolCallType(itemResult.Get("type").String()) {
 			return [][]byte{}
 		}
@@ -376,12 +384,36 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			return [][]byte{}
 		}
 		if itemResult.Get("type").String() == "message" {
+			defer func() { p.HasMessageTextDelta = false }()
+			var fallbackText string
+			if !p.HasMessageTextDelta {
+				var sb strings.Builder
+				for _, part := range itemResult.Get("content").Array() {
+					switch part.Get("type").String() {
+					case "output_text":
+						sb.WriteString(part.Get("text").String())
+					case "refusal":
+						if txt := part.Get("refusal").String(); txt != "" {
+							sb.WriteString(txt)
+						} else {
+							sb.WriteString(part.Get("text").String())
+						}
+					}
+				}
+				fallbackText = sb.String()
+			}
 			citations := buildCodexURLCitations(codexAnnotationsFromEvent(rootResult), p.emittedTextRunes, p.citationKeys)
-			if len(citations) == 0 {
+			if fallbackText == "" && len(citations) == 0 {
 				return [][]byte{}
 			}
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
-			template, _ = sjson.SetRawBytes(template, "choices.0.delta.annotations", translatorcommon.JoinRawArray(citations))
+			if fallbackText != "" {
+				template, _ = sjson.SetBytes(template, "choices.0.delta.content", fallbackText)
+				p.emittedTextRunes += int64(utf8.RuneCountInString(fallbackText))
+			}
+			if len(citations) > 0 {
+				template, _ = sjson.SetRawBytes(template, "choices.0.delta.annotations", translatorcommon.JoinRawArray(citations))
+			}
 			return [][]byte{template}
 		}
 		itemType := itemResult.Get("type").String()
@@ -598,10 +630,16 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 				// Extract message content and URL citations.
 				if contentResult := outputItem.Get("content"); contentResult.IsArray() {
 					for _, contentItem := range contentResult.Array() {
-						if contentItem.Get("type").String() != "output_text" {
+						partType := contentItem.Get("type").String()
+						if partType != "output_text" && partType != "refusal" {
 							continue
 						}
 						text := contentItem.Get("text").String()
+						if partType == "refusal" {
+							if refusal := contentItem.Get("refusal").String(); refusal != "" {
+								text = refusal
+							}
+						}
 						contentText += text
 						messageAnnotations = append(messageAnnotations, buildCodexURLCitations(
 							codexAnnotationResults(contentItem.Get("annotations")),
