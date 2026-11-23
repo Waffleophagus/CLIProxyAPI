@@ -43,11 +43,52 @@ func isRequestStopError(err error) bool {
 }
 
 func unwrapRequestStopError(err error) error {
-	var stopErr requestStopError
-	if errors.As(err, &stopErr) {
-		return stopErr.error
+	unwrapped, _ := unwrapRequestStopErrorChanged(err)
+	return unwrapped
+}
+
+// unwrapRequestStopErrorChanged removes request-stop markers while keeping the
+// header-carrying stream wrappers and upstream attempt markers around them.
+func unwrapRequestStopErrorChanged(err error) (error, bool) {
+	if err == nil {
+		return nil, false
 	}
-	return err
+	switch wrapped := err.(type) {
+	case requestStopError:
+		inner, _ := unwrapRequestStopErrorChanged(wrapped.error)
+		return inner, true
+	case *streamHeaderError:
+		if wrapped == nil {
+			return nil, false
+		}
+		inner, changed := unwrapRequestStopErrorChanged(wrapped.cause)
+		if !changed {
+			return err, false
+		}
+		return newStreamHeaderError(inner, wrapped.headers), true
+	case *streamBootstrapError:
+		if wrapped == nil {
+			return nil, false
+		}
+		inner, changed := unwrapRequestStopErrorChanged(wrapped.cause)
+		if !changed {
+			return err, false
+		}
+		copied := *wrapped
+		copied.cause = inner
+		return &copied, true
+	case *upstreamExecutionAttemptError:
+		if wrapped == nil {
+			return nil, false
+		}
+		inner, changed := unwrapRequestStopErrorChanged(wrapped.cause)
+		if !changed {
+			return err, false
+		}
+		return markUpstreamExecutionAttemptWithID(inner, wrapped.attemptID), true
+	default:
+		return err, false
+	}
 }
 
 func wrapRequestStopError(err error) error {
@@ -245,4 +286,17 @@ func applyRequestScopedActionToResult(action string, okAction bool, result *Resu
 
 func isRequestScopedStop(action string, okAction bool) bool {
 	return okAction && (action == RequestScopedActionStop || action == RequestScopedActionStopAndCooldown)
+}
+
+// isTerminalRequestStopError reports whether err must terminate request retries
+// and credential failover immediately (an explicit request-stop error, or a
+// preserved terminal response that is not credential-scoped).
+func isTerminalRequestStopError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isRequestStopError(err) {
+		return true
+	}
+	return isRequestTerminatedError(err) && !isCredentialScopedError(err)
 }

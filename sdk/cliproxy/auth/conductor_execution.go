@@ -122,8 +122,59 @@ func unwrapUpstreamExecutionAttempt(err error) error {
 }
 
 func unwrapExecutionBoundaryError(err error) error {
-	err = unwrapRequestStopError(err)
-	return unwrapUpstreamExecutionAttempt(err)
+	unwrapped, _ := unwrapExecutionBoundaryErrorChanged(err)
+	return unwrapped
+}
+
+// unwrapExecutionBoundaryErrorChanged strips internal request-stop and upstream
+// attempt markers, including those nested inside header-carrying stream
+// wrappers, so callers keep the upstream response headers.
+func unwrapExecutionBoundaryErrorChanged(err error) (error, bool) {
+	changed := false
+	for err != nil {
+		switch wrapped := err.(type) {
+		case requestStopError:
+			err = wrapped.error
+			changed = true
+		case *upstreamExecutionAttemptError:
+			if wrapped == nil || wrapped.cause == nil {
+				return err, changed
+			}
+			err = wrapped.cause
+			changed = true
+		case *streamHeaderError:
+			if wrapped == nil {
+				return nil, changed
+			}
+			inner, innerChanged := unwrapExecutionBoundaryErrorChanged(wrapped.cause)
+			if !innerChanged {
+				return err, changed
+			}
+			return newStreamHeaderError(inner, wrapped.headers), true
+		case *streamBootstrapError:
+			if wrapped == nil {
+				return nil, changed
+			}
+			inner, innerChanged := unwrapExecutionBoundaryErrorChanged(wrapped.cause)
+			if !innerChanged {
+				return err, changed
+			}
+			copied := *wrapped
+			copied.cause = inner
+			return &copied, true
+		default:
+			return err, changed
+		}
+	}
+	return nil, changed
+}
+
+func unwrapStoppedStreamError(err error) error {
+	unwrapped := unwrapExecutionBoundaryError(err)
+	if bootstrap, ok := unwrapped.(*streamBootstrapError); ok && bootstrap != nil {
+		return newStreamHeaderError(bootstrap.cause, bootstrap.headers)
+	}
+	return unwrapped
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
@@ -159,7 +210,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+		if isTerminalRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
@@ -211,7 +262,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+		if isTerminalRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
@@ -265,6 +316,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if errStream == nil {
 			return result, nil
 		}
+		if isTerminalRequestStopError(errStream) {
+			// Keep stopped/terminated bootstrap failures as direct errors carrying
+			// upstream headers via streamHeaderError rather than streamErrorResult so
+			// outer bootstrap retries cannot replay an explicitly stopped request.
+			return nil, unwrapStoppedStreamError(errStream)
+		}
 		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errStream, time.Now())
 		if hasUpstreamExecutionAttempt(errStream) {
 			if isDirectStreamTerminalError(errStream) {
@@ -272,9 +329,6 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			} else {
 				syncPreferredUpstreamError(&preferredUpstreamErr, errStream)
 			}
-		}
-		if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
-			return nil, unwrapExecutionBoundaryError(errStream)
 		}
 		lastErr = errStream
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errStream, attempt, normalized, retryModel, maxWait, defaultRequestRetry, roundAttempted)
@@ -376,7 +430,7 @@ func isDirectStreamTerminalError(err error) bool {
 	if errors.As(err, &headerErr) && headerErr != nil {
 		return true
 	}
-	return isRequestInvalidError(err) || isRequestTerminatedError(err) || isRequestStopError(err)
+	return isTerminalRequestStopError(err) || isRequestInvalidError(err)
 }
 
 // upstreamErrorMatchesBootstrap reports whether err belongs to the same
@@ -620,6 +674,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				} else if preRefreshExecErr != nil {
 					syncPreferredUpstreamError(&upstreamErr, preRefreshExecErr)
 				}
+				if isRequestStopError(errExec) {
+					return cliproxyexecutor.Response{}, errExec
+				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
 						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
@@ -849,6 +906,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				} else if preRefreshExecErr != nil {
 					syncPreferredUpstreamError(&upstreamErr, preRefreshExecErr)
 				}
+				if isRequestStopError(errExec) {
+					return cliproxyexecutor.Response{}, errExec
+				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
 						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
@@ -971,10 +1031,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			m.MarkResult(execCtx, result)
 			errPrepare = annotateTrustedRetryAfterByHint(errPrepare)
 			syncPreferredUpstreamError(&upstreamErr, errPrepare)
+			if isRequestStopError(errPrepare) {
+				return nil, errPrepare
+			}
 			if isRequestScopedStop(action, okAction) {
 				return nil, wrapRequestStopError(errPrepare)
 			}
-			if !okAction && isRequestInvalidError(errPrepare) {
+			if !okAction && (isTerminalRequestStopError(errPrepare) || isRequestInvalidError(errPrepare)) {
 				return nil, errPrepare
 			}
 			lastErr = errPrepare
@@ -1016,6 +1079,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
 				return nil, errCtx
 			}
+			if isRequestStopError(errStream) {
+				return nil, errStream
+			}
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
@@ -1024,7 +1090,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				lastErr = errStream
 				continue
 			}
-			if isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
+			if isTerminalRequestStopError(errStream) || isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream) {
 				return nil, errStream
 			}
 			lastErr = errStream
