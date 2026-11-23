@@ -704,6 +704,13 @@ func setFunctionCallOutputContent(toolMessage []byte, output gjson.Result, separ
 	}
 
 	items, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType := inspectChatToolOutputParts(structuredContent)
+	if output.Type == gjson.String && (unsupportedType != "" || badImageType != "") {
+		// A JSON string is the tool's own data (for example a file listing
+		// entry {"type":"file","path":...}). Treat it as media only when every
+		// part converts; otherwise pass it through as text, as before.
+		toolMessage, _ = sjson.SetBytes(toolMessage, "content", output.String())
+		return toolMessage, nil, nil
+	}
 	if unsupportedType != "" {
 		return toolMessage, nil, &translatorcommon.UnsupportedPartError{Type: unsupportedType}
 	}
@@ -780,6 +787,11 @@ func setCustomToolCallOutputContent(toolMessage []byte, output gjson.Result, sep
 		structuredContent = gjson.Parse(output.String())
 	}
 	_, hasImage, hasFile, invalidTextOrImage, badImageType, unsupportedType := inspectChatToolOutputParts(structuredContent)
+	if output.Type == gjson.String && (unsupportedType != "" || badImageType != "") {
+		// See setFunctionCallOutputContent: unconvertible JSON strings stay text.
+		toolMessage, _ = sjson.SetBytes(toolMessage, "content", responsesToolOutputText(output))
+		return toolMessage, nil, nil
+	}
 	if unsupportedType != "" {
 		return toolMessage, nil, &translatorcommon.UnsupportedPartError{Type: unsupportedType}
 	}
