@@ -375,12 +375,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	streamStarted = true
 	go func() {
 		// detached is set once message_stop has been observed and the upstream
-		// request was detached from downstream cancellation in time.
+		// request was detached from downstream cancellation in time. Only
+		// HTTP/1.x responses detach, because only they are drained (see
+		// below); HTTP/2 keeps downstream cancellation, so closing a stalled
+		// stream can always be ended by the client going away.
 		detached := false
 		markUpstreamCompleted := func() {
 			// detach reports false on repeated calls, so a failed first
 			// attempt is never turned into a success later.
-			if !detached {
+			if !detached && httpResp.ProtoMajor == 1 {
 				detached = detachUpstream()
 			}
 		}
@@ -402,12 +405,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			// too. zstd decoders are synchronous (see decodeResponseBody), so
 			// after message_stop the drain is the only reader of httpResp.Body.
 			//
-			// Only HTTP/1.x needs the drain: an HTTP/2 stream closed early is
-			// reset without losing the shared connection, and the HTTP/2
-			// transport can block a reader behind a stalled RST_STREAM write,
-			// which the cap could not interrupt.
+			// Only HTTP/1.x needs the drain, so only HTTP/1.x detaches: an
+			// HTTP/2 stream closed early is reset without losing the shared
+			// connection, and the HTTP/2 transport can block a reader behind a
+			// stalled RST_STREAM write, which the cap could not interrupt.
 			var drainCap *time.Timer
-			if detached && httpResp.ProtoMajor == 1 {
+			if detached {
 				drainCap = time.AfterFunc(e.streamDrainCap(), releaseUpstream)
 				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64<<10))
 			}
