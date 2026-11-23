@@ -430,7 +430,7 @@ func parseSuffixToConfig(rawSuffix, provider, model string) ThinkingConfig {
 		}
 	}
 
-	// 2. Try level parsing (minimal, low, medium, high, xhigh)
+	// 2. Try level parsing (minimal, low, medium, high, xhigh, max)
 	if level, ok := ParseLevelSuffix(rawSuffix); ok {
 		return ThinkingConfig{Mode: ModeLevel, Level: level}
 	}
@@ -510,6 +510,13 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		return body, nil
 	}
 
+	// Validate user-defined models that declare thinking support so translated
+	// budgets are clamped to model limits; invalid configs pass through unchanged.
+	if modelInfo != nil && modelInfo.Thinking != nil {
+		if normalized, errValidate := ValidateConfig(config, modelInfo, fromFormat, toFormat, suffixResult.HasSuffix); errValidate == nil {
+			config = *normalized
+		}
+	}
 	log.WithFields(log.Fields{
 		"provider": toFormat,
 		"model":    modelID,

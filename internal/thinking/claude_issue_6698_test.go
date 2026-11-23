@@ -214,8 +214,8 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
 				t.Fatalf("thinking.budget_tokens still present: %s", out)
 			}
-			if got := gjson.GetBytes(out, "output_config.effort").String(); got != "xhigh" {
-				t.Fatalf("output_config.effort = %q, want xhigh; body=%s", got, out)
+			if got := gjson.GetBytes(out, "output_config.effort").String(); got != "max" {
+				t.Fatalf("output_config.effort = %q, want max; body=%s", got, out)
 			}
 		})
 
@@ -281,5 +281,52 @@ func TestApplyThinking_ClaudeAdaptiveOnlyModelsConvertBudgetAndAuto(t *testing.T
 				t.Fatalf("thinking.budget_tokens = %d, want 16384; body=%s", got, out)
 			}
 		})
+	}
+}
+
+func TestApplyThinking_ClaudeHybridUsesNearestEffortForTranslatedBudget(t *testing.T) {
+	info := &registry.ModelInfo{
+		ID:   "claude-hybrid",
+		Type: "claude",
+		Thinking: &registry.ThinkingSupport{
+			Min: 1024, Max: 128000, Levels: []string{"low", "medium", "high", "max"},
+		},
+	}
+	for _, tt := range []struct {
+		budget     string
+		wantEffort string
+	}{
+		{budget: "32768", wantEffort: "high"},
+		{budget: "32769", wantEffort: "max"},
+	} {
+		t.Run(tt.budget, func(t *testing.T) {
+			// The fork has no Gemini source format; a numeric suffix carries the
+			// translated budget from another protocol instead.
+			out, errApply := thinking.ApplyThinkingWithModelInfo([]byte(`{}`), nil, info.ID+"("+tt.budget+")", "openai", "claude", "claude", info)
+			if errApply != nil {
+				t.Fatal(errApply)
+			}
+			if got := gjson.GetBytes(out, "output_config.effort").String(); got != tt.wantEffort {
+				t.Fatalf("output_config.effort = %q, want %q; body=%s", got, tt.wantEffort, out)
+			}
+		})
+	}
+}
+
+func TestApplyThinking_UserDefinedOpenAIToClaudeClampsTranslatedBudget(t *testing.T) {
+	modelInfo := &registry.ModelInfo{
+		ID:          "custom-claude",
+		Type:        "claude",
+		UserDefined: true,
+		Thinking:    &registry.ThinkingSupport{Min: 1024, Max: 20000},
+	}
+	body := []byte(`{"max_tokens":200000,"thinking":{"type":"enabled","budget_tokens":128000}}`)
+	source := []byte(`{"reasoning_effort":"max"}`)
+	out, errApply := thinking.ApplyThinkingWithModelInfo(body, source, modelInfo.ID, "openai", "claude", "claude", modelInfo)
+	if errApply != nil {
+		t.Fatal(errApply)
+	}
+	if got := gjson.GetBytes(out, "thinking.budget_tokens").Int(); got != 20000 {
+		t.Fatalf("budget_tokens = %d, want 20000; body=%s", got, out)
 	}
 }
