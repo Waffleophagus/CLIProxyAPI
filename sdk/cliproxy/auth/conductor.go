@@ -204,9 +204,9 @@ type Manager struct {
 	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
 	refreshJobs map[string]*authRefreshJob
 
-	requestPrepareLocks sync.Map
-	// refreshLocks serializes credential refresh per auth ID so concurrent
-	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
+	// refreshLocks serializes credential refresh and request-auth preparation
+	// per auth ID so concurrent refreshes, 401 recoveries, and preparations do
+	// not race the same credential.
 	refreshLocks sync.Map
 	// persistLocks serializes disk persistence per auth ID and guards against out-of-order writes.
 	persistLocks sync.Map

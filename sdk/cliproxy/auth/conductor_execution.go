@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
@@ -364,8 +363,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
-		var errPrepare error
-		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+		preparedAuth, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			errPrepare = markUpstreamExecutionAttemptFromContext(execCtx, errPrepare)
 			if hasUpstreamExecutionAttempt(errPrepare) {
@@ -401,6 +399,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			lastErr = errPrepare
 			continue
+		}
+		if preparedAuth != nil {
+			auth = preparedAuth
 		}
 		executor = executorForAuth(executor, auth)
 		var authErr error
@@ -586,8 +587,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
-		var errPrepare error
-		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+		preparedAuth, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			errPrepare = markUpstreamExecutionAttemptFromContext(execCtx, errPrepare)
 			if hasUpstreamExecutionAttempt(errPrepare) {
@@ -623,6 +623,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			lastErr = errPrepare
 			continue
+		}
+		if preparedAuth != nil {
+			auth = preparedAuth
 		}
 		executor = executorForAuth(executor, auth)
 		var authErr error
@@ -817,8 +820,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
-		var errPrepare error
-		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+		preparedAuth, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			errPrepare = markUpstreamExecutionAttemptFromContext(execCtx, errPrepare)
 			if hasUpstreamExecutionAttempt(errPrepare) {
@@ -854,6 +856,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			lastErr = errPrepare
 			continue
+		}
+		if preparedAuth != nil {
+			auth = preparedAuth
 		}
 		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
 		streamExecutionModel := ""
@@ -1002,10 +1007,6 @@ func hasRequestedModelMetadata(meta map[string]any) bool {
 	}
 }
 
-type requestAuthPrepareLock struct {
-	mu sync.Mutex
-}
-
 func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
 	if m == nil || executor == nil || auth == nil {
 		return auth, nil
@@ -1030,27 +1031,23 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 		return preparer.PrepareRequestAuth(ctx, auth.Clone())
 	}
 
-	var prepareMu *sync.Mutex
-	if strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") {
-		// Meta also mints on 401 recovery. Serialize both paths per credential.
-		lockValue, _ := m.refreshLocks.LoadOrStore(id, &authRefreshLock{})
-		prepareMu = &lockValue.(*authRefreshLock).mu
-	} else {
-		lockValue, _ := m.requestPrepareLocks.LoadOrStore(id, &requestAuthPrepareLock{})
-		prepareMu = &lockValue.(*requestAuthPrepareLock).mu
+	// Serialize preparation with credential refresh (including 401 recovery)
+	// per credential so they never race the same credential state.
+	releaseRefresh, errLock := m.lockRefreshContext(ctx, id)
+	if errLock != nil {
+		return nil, errLock
 	}
-	prepareMu.Lock()
-	defer prepareMu.Unlock()
+	defer releaseRefresh()
 
-	target := auth.Clone()
 	m.mu.RLock()
 	current := m.auths[id]
+	var target *Auth
 	if current != nil {
 		target = current.Clone()
 	}
 	m.mu.RUnlock()
-	if current == nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") {
-		return nil, fmt.Errorf("prepare meta auth: credential no longer registered")
+	if target == nil {
+		return nil, fmt.Errorf("prepare %s auth: credential no longer registered", prepareProviderLabel(auth.Provider))
 	}
 
 	if !preparer.ShouldPrepareRequestAuth(target) {
@@ -1076,7 +1073,15 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") {
 		return nil, fmt.Errorf("prepare meta auth: credential removed during mint")
 	}
-	return target, nil
+	return nil, fmt.Errorf("prepare %s auth: credential removed during preparation", prepareProviderLabel(auth.Provider))
+}
+
+func prepareProviderLabel(provider string) string {
+	label := strings.ToLower(strings.TrimSpace(provider))
+	if label == "" {
+		return "request"
+	}
+	return label
 }
 
 func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.Options, fallback string) context.Context {
