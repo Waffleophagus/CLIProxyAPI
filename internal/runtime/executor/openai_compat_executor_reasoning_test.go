@@ -9,12 +9,101 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+func TestOpenAICompatExecutorClampsChatThinkingBudget(t *testing.T) {
+	const model = "chat-with-thinking"
+	const chatBody = `{"messages":[{"role":"user","content":"hi"}]}`
+	// The fork has no Gemini source format, so translated budgets come from
+	// Claude bodies and numeric suffixes.
+	const claudeBody = `{"messages":[{"role":"user","content":"hi"}],"max_tokens":65536,"thinking":{"type":"enabled","budget_tokens":%d}}`
+
+	for _, tt := range []struct {
+		name, suffix, body string
+		from               sdktranslator.Format
+		levelOnly          bool
+		supportsMax        bool
+		wantEffort         string
+	}{
+		{name: "Claude xhigh boundary", body: fmt.Sprintf(claudeBody, 32768), from: sdktranslator.FormatClaude, wantEffort: "xhigh"},
+		{name: "Claude just above xhigh", body: fmt.Sprintf(claudeBody, 32769), from: sdktranslator.FormatClaude, wantEffort: "xhigh"},
+		{name: "Claude budget", body: fmt.Sprintf(claudeBody, 64000), from: sdktranslator.FormatClaude, wantEffort: "xhigh"},
+		{name: "numeric suffix", suffix: "(64000)", body: chatBody, from: sdktranslator.FormatOpenAI, wantEffort: "xhigh"},
+		{name: "level-only model", body: fmt.Sprintf(claudeBody, 64000), from: sdktranslator.FormatClaude, levelOnly: true, wantEffort: "xhigh"},
+		{name: "model supports max", body: fmt.Sprintf(claudeBody, 64000), from: sdktranslator.FormatClaude, supportsMax: true, wantEffort: "max"},
+		{name: "auto falls back to a supported level", suffix: "(auto)", body: chatBody, from: sdktranslator.FormatOpenAI, wantEffort: "low"},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tt.name, stream), func(t *testing.T) {
+				bodies := make(chan []byte, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/v1/chat/completions" {
+						t.Errorf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+					}
+					body, errRead := io.ReadAll(r.Body)
+					if errRead != nil {
+						t.Errorf("read upstream request: %v", errRead)
+					}
+					bodies <- body
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+				}))
+				t.Cleanup(server.Close)
+
+				support := &registry.ThinkingSupport{Levels: []string{"low", "high", "xhigh"}}
+				if !tt.levelOnly {
+					support.Min, support.Max = 128, 128000
+				}
+				if tt.supportsMax {
+					support.Levels = append(support.Levels, "max")
+				}
+				executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+				auth := &cliproxyauth.Auth{Provider: "openai-compatibility", Attributes: map[string]string{"base_url": server.URL + "/v1"}}
+				req := cliproxyexecutor.Request{
+					Model:   model + tt.suffix,
+					Payload: []byte(tt.body),
+					Metadata: map[string]any{
+						"cliproxy.resolved_api_key_model_info": modelconfig.ResolveModelInfo(model, "openai-compatibility", support),
+					},
+				}
+				opts := cliproxyexecutor.Options{SourceFormat: tt.from, Stream: stream}
+				if stream {
+					result, errStream := executor.ExecuteStream(t.Context(), auth, req, opts)
+					if errStream != nil {
+						t.Fatalf("ExecuteStream: %v", errStream)
+					}
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							t.Fatalf("stream chunk: %v", chunk.Err)
+						}
+					}
+				} else if _, errExecute := executor.Execute(t.Context(), auth, req, opts); errExecute != nil {
+					t.Fatalf("Execute: %v", errExecute)
+				}
+
+				select {
+				case body := <-bodies:
+					if got := gjson.GetBytes(body, "reasoning_effort").String(); got != tt.wantEffort {
+						t.Fatalf("upstream reasoning_effort = %q, want %q; body=%s", got, tt.wantEffort, body)
+					}
+				default:
+					t.Fatal("no upstream request captured")
+				}
+			})
+		}
+	}
+}
 
 func TestOpenAICompatExecutorUsesCompatibleClaudeTranslation(t *testing.T) {
 	var upstreamBody []byte

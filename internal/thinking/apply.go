@@ -191,6 +191,14 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	}
 
 	// 3. Model capability check
+	if (isOpenAIFamily(providerFormat) || providerFormat == "xai") && detectModelCapability(modelInfo) == CapabilityHybrid {
+		// OpenAI Chat/Responses and xAI appliers accept effort levels only.
+		// Keep the original budget range in the model catalog.
+		levelModel, levelSupport := *modelInfo, *modelInfo.Thinking
+		levelSupport.Min, levelSupport.Max = 0, 0
+		levelModel.Thinking = &levelSupport
+		modelInfo = &levelModel
+	}
 	if nativeResponses {
 		var errNormalize error
 		body, errNormalize = normalizeNativeResponsesEffort(body, modelInfo, applier, fromFormat, providerFormat, HasThinkingSuffix(model))
