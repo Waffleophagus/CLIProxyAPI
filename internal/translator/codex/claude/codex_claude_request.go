@@ -235,9 +235,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 				bufferedSendable++
 			}
 
-			appendDocumentContent := func(dataURL string) {
-				content := []byte(`{"type":"input_file","file_data":"","filename":"document.pdf"}`)
-				content, _ = sjson.SetBytes(content, "file_data", dataURL)
+			appendDocumentContent := func(content []byte) {
 				contentItems = append(contentItems, content)
 				bufferedSendable++
 			}
@@ -326,8 +324,29 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							inputItems = append(inputItems, pendingSystemReminders...)
 							pendingSystemReminders = nil
 						}
-						if dataURL, ok := claudeDocumentDataURL(messageContentResult); ok {
-							appendDocumentContent(dataURL)
+						if contentType == "document" {
+							if docText, ok := translatorcommon.ClaudeDocumentTextBlock(messageContentResult); ok {
+								appendTextContent(docText)
+								break
+							}
+							var onImageDrop func()
+							if messageRole == "user" {
+								onImageDrop = func() { drops.Drop("image") }
+							}
+							if translatorcommon.ExpandClaudeContentDocument(
+								messageContentResult,
+								appendTextContent,
+								func(img gjson.Result) ([]byte, bool) {
+									return claudeImageInputPart(img.Get("source"))
+								},
+								appendImageContent,
+								onImageDrop,
+							) {
+								break
+							}
+						}
+						if filePart, ok := claudeDocumentInputFile(messageContentResult); ok {
+							appendDocumentContent(filePart)
 						} else if messageRole == "user" {
 							drops.Drop(contentType)
 						}
@@ -1301,21 +1320,44 @@ func claudeImageInputPart(source gjson.Result) ([]byte, bool) {
 	return part, true
 }
 
-func claudeDocumentDataURL(part gjson.Result) (string, bool) {
+func claudeDocumentInputFile(part gjson.Result) ([]byte, bool) {
 	source := part.Get("source")
-	if source.Get("type").String() == "base64" {
+	filename := strings.TrimSpace(part.Get("filename").String())
+	if filename == "" {
+		filename = strings.TrimSpace(part.Get("title").String())
+	}
+	switch source.Get("type").String() {
+	case "base64":
 		mediaType := strings.TrimSpace(source.Get("media_type").String())
 		if !strings.EqualFold(mediaType, "application/pdf") {
-			return "", false
+			return nil, false
 		}
 		data := source.Get("data").String()
 		if data == "" {
 			data = source.Get("base64").String()
 		}
 		if data == "" {
-			return "", false
+			return nil, false
 		}
-		return fmt.Sprintf("data:%s;base64,%s", mediaType, data), true
+		if filename == "" {
+			filename = "document.pdf"
+		}
+		part := []byte(`{"type":"input_file","file_data":"","filename":""}`)
+		part, _ = sjson.SetBytes(part, "file_data", fmt.Sprintf("data:%s;base64,%s", mediaType, data))
+		part, _ = sjson.SetBytes(part, "filename", filename)
+		return part, true
+	case "url":
+		fileURL := strings.TrimSpace(source.Get("url").String())
+		if !translatorcommon.IsHTTPURL(fileURL) {
+			return nil, false
+		}
+		part := []byte(`{"type":"input_file","file_url":""}`)
+		part, _ = sjson.SetBytes(part, "file_url", fileURL)
+		if filename != "" {
+			part, _ = sjson.SetBytes(part, "filename", filename)
+		}
+		return part, true
+	default:
+		return nil, false
 	}
-	return "", false
 }

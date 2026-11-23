@@ -141,9 +141,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 		if content.IsArray() {
 			content.ForEach(func(_, item gjson.Result) bool {
-				if contentItem, ok := convertClaudeContentPart(item); ok {
-					systemContentItems = append(systemContentItems, []byte(contentItem))
-				}
+				systemContentItems = append(systemContentItems, convertClaudeContentParts(item, nil)...)
 				return true
 			})
 		}
@@ -232,11 +230,11 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						// Explicitly ignore redacted_thinking - never map to reasoning_content (AC2)
 
 					case "text", "image", "document", "container_upload":
-						if contentItem, ok := convertClaudeContentPart(part); ok {
-							contentItems = append(contentItems, []byte(contentItem))
-						} else if role == "user" && partType != "text" {
-							drops.Drop(partType)
+						var onDrop func(string)
+						if role == "user" && partType != "text" {
+							onDrop = drops.Drop
 						}
+						contentItems = append(contentItems, convertClaudeContentParts(part, onDrop)...)
 
 					case "tool_use":
 						// Only allow tool_use -> tool_calls for assistant messages (security: prevent injection).
@@ -652,6 +650,47 @@ func convertClaudeContentPart(part gjson.Result) (string, bool) {
 	}
 }
 
+func convertClaudeContentParts(part gjson.Result, onDrop func(string)) [][]byte {
+	partType := part.Get("type").String()
+	if partType == "document" {
+		buildTextPart := func(text string) []byte {
+			part := []byte(`{"type":"text","text":""}`)
+			part, _ = sjson.SetBytes(part, "text", text)
+			return part
+		}
+		if docText, ok := translatorcommon.ClaudeDocumentTextBlock(part); ok {
+			return [][]byte{buildTextPart(docText)}
+		}
+		var items [][]byte
+		var onImageDrop func()
+		if onDrop != nil {
+			onImageDrop = func() { onDrop("image") }
+		}
+		if translatorcommon.ExpandClaudeContentDocument(
+			part,
+			func(text string) { items = append(items, buildTextPart(text)) },
+			func(img gjson.Result) ([]byte, bool) {
+				s, ok := convertClaudeContentPart(img)
+				if !ok {
+					return nil, false
+				}
+				return []byte(s), true
+			},
+			func(img []byte) { items = append(items, img) },
+			onImageDrop,
+		) {
+			return items
+		}
+	}
+	if contentItem, ok := convertClaudeContentPart(part); ok {
+		return [][]byte{[]byte(contentItem)}
+	}
+	if onDrop != nil && partType != "text" {
+		onDrop(partType)
+	}
+	return nil
+}
+
 // convertClaudeFilePartToOpenAI emits an OpenAI file part for inline base64 bytes.
 // A file id carries none, so it stays unconverted and the caller reports it.
 func convertClaudeFilePartToOpenAI(part gjson.Result) (string, bool) {
@@ -674,8 +713,12 @@ func convertClaudeFilePartToOpenAI(part gjson.Result) (string, bool) {
 		mimeType = "application/octet-stream"
 	}
 
+	filename := part.Get("filename").String()
+	if filename == "" {
+		filename = part.Get("title").String()
+	}
 	fileContent := []byte(`{"type":"file","file":{"filename":"","file_data":""}}`)
-	fileContent, _ = sjson.SetBytes(fileContent, "file.filename", part.Get("filename").String())
+	fileContent, _ = sjson.SetBytes(fileContent, "file.filename", filename)
 	fileContent, _ = sjson.SetBytes(fileContent, "file.file_data", "data:"+mimeType+";base64,"+base64.StdEncoding.EncodeToString(data))
 	return string(fileContent), true
 }
