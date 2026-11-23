@@ -2031,7 +2031,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if !eligibility.allows(candidate) {
 			continue
 		}
-		providerKey := executorKeyFromAuth(candidate)
+		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
 		if providerKey == "" {
 			continue
 		}
@@ -2079,7 +2079,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
-	providerKey := executorKeyFromAuth(selected)
+	providerKey := canonicalSchedulingProvider(executorKeyFromAuth(selected))
 	executor, okExecutor := m.Executor(providerKey)
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
@@ -2380,7 +2380,10 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 		if isAuthDisabled(candidate) {
 			continue
 		}
-		providerKey := executorKeyFromAuth(candidate)
+		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
+		if providerKey == "" {
+			continue
+		}
 		if len(providerSet) > 0 {
 			if _, ok := providerSet[providerKey]; !ok {
 				continue
