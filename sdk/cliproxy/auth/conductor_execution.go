@@ -431,8 +431,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth)
-
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
@@ -447,6 +445,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
+		publishSelectedAuthMetadata(opts.Metadata, auth)
 		preparedAuth, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			errPrepare = markUpstreamExecutionAttemptFromContext(execCtx, errPrepare)
@@ -655,8 +654,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth)
-
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
@@ -671,6 +668,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
+		publishSelectedAuthMetadata(opts.Metadata, auth)
 		preparedAuth, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			errPrepare = markUpstreamExecutionAttemptFromContext(execCtx, errPrepare)
@@ -887,8 +885,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
-		publishSelectedAuthMetadata(opts.Metadata, auth)
-
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
@@ -904,6 +900,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
+		publishSelectedAuthMetadata(opts.Metadata, auth)
 		preparedAuth, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			errPrepare = markUpstreamExecutionAttemptFromContext(execCtx, errPrepare)
