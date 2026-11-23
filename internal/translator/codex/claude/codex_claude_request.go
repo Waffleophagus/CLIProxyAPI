@@ -367,7 +367,11 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							}
 							functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "name", name)
 						}
-						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "arguments", messageContentResult.Get("input").Raw)
+						arguments := strings.TrimSpace(messageContentResult.Get("input").Raw)
+						if arguments == "" {
+							arguments = "{}"
+						}
+						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "arguments", arguments)
 						inputItems = append(inputItems, functionCallMessage)
 					case "tool_reference":
 						if len(pendingSystemReminders) > 0 {
