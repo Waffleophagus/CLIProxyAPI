@@ -859,6 +859,9 @@ func TestExtractSessionInfoHeaderSessionReservedAgentDelimiterNoCollision(t *tes
 		{name: "sub (r, w)", headers: http.Header{"X-Session-Id": []string{"r"}, "X-Agent-Id": []string{"w"}}},
 		{name: "sub (r:agent:a, b)", headers: http.Header{"X-Session-Id": []string{"r:agent:a"}, "X-Agent-Id": []string{"b"}}},
 		{name: "sub (r, a:agent:b)", headers: http.Header{"X-Session-Id": []string{"r"}, "X-Agent-Id": []string{"a:agent:b"}}},
+		{name: "sub (x, agent:y)", headers: http.Header{"X-Session-Id": []string{"x"}, "X-Agent-Id": []string{"agent:y"}}},
+		{name: "sub (x:agent, y)", headers: http.Header{"X-Session-Id": []string{"x:agent"}, "X-Agent-Id": []string{"y"}}},
+		{name: "sub (x:agent~, y)", headers: http.Header{"X-Session-Id": []string{"x:agent~"}, "X-Agent-Id": []string{"y"}}},
 	}
 	seen := make(map[string]string, len(cases))
 	for _, tc := range cases {

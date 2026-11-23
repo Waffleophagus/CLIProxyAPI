@@ -692,12 +692,19 @@ var sessionSegmentReplacer = strings.NewReplacer(
 
 // encodeSessionSegment escapes the reserved ":agent:" delimiter so raw
 // session IDs containing it cannot collide with composed "<sid>:agent:<agent>" IDs
-// while leaving ordinary identifiers unchanged.
+// while leaving ordinary identifiers unchanged. A trailing ":agent" is escaped
+// as well: otherwise it runs into the ":agent:" separator, so (sid "x:agent",
+// agent "y") and (sid "x", agent "agent:y") would both compose to
+// "x:agent:agent:y".
 func encodeSessionSegment(raw string) string {
 	if !strings.Contains(raw, ":agent") {
 		return raw
 	}
-	return sessionSegmentReplacer.Replace(raw)
+	encoded := sessionSegmentReplacer.Replace(raw)
+	if strings.HasSuffix(encoded, ":agent") {
+		encoded += "~"
+	}
+	return encoded
 }
 
 func applyHeaderSessionInfo(
