@@ -155,6 +155,17 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
+				if ctx != nil && ctx.Err() != nil {
+					if retryAfterFromError(chunk.Err) != nil {
+						m.recordCanceledUpstreamCooldown(ctx, auth, provider, resultModel, routeModel, opts, chunk.Err, executionSeq)
+						failed = true
+						return false
+					}
+					if !isRequestScopedError(chunk.Err) {
+						failed = true
+						return false
+					}
+				}
 				failed = true
 				entry := logEntryWithRequestID(ctx)
 				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
@@ -220,7 +231,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return
 			}
 		}
-		if !failed && claudeOAuthRequestCancellation(ctx, auth, nil) == nil {
+		if !failed && (ctx == nil || ctx.Err() == nil) {
 			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: opts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}, auth)
 		}
 	}()
@@ -352,6 +363,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				publishSelectedAuthMetadata(execOpts.Metadata, auth)
 				didRefreshOnUnauthorized = true
 				ctx = newUpstreamAttemptContext(ctx)
+				ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 				executionSeq = m.nextExecutionSeq()
 				startRetry := time.Now()
 				retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
@@ -370,6 +382,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					streamResult = retryStream
 					buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
 					bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
+					if errCtx := ctx.Err(); errCtx != nil {
+						m.recordCanceledUpstreamCooldown(ctx, auth, provider, resultModel, routeModel, execOpts, bootstrapErr, executionSeq)
+						discardStreamChunks(streamResult.Chunks)
+						return nil, errCtx
+					}
 					if bootstrapErr != nil {
 						warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
 					}
