@@ -310,3 +310,90 @@ func TestSessionAffinitySubagentAliasIsolation(t *testing.T) {
 		t.Fatalf("parent cache key %s = (%q, %v), want (auth-1, true)", parentCacheKey, val, ok)
 	}
 }
+
+// TestSessionAffinityHeaderSessionSubagentIsolation verifies that header-based
+// sessions split subagents identified by X-Agent-Id onto their own affinity key.
+func TestSessionAffinityHeaderSessionSubagentIsolation(t *testing.T) {
+	t.Parallel()
+
+	disabled := false
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback:         &RoundRobinSelector{},
+		TTL:              time.Minute,
+		SubagentAffinity: &disabled,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-hdr-1", Provider: "claude"},
+		{ID: "auth-hdr-2", Provider: "claude"},
+	}
+
+	// 1. Root session via X-Session-Id binds to auth-hdr-1.
+	parentOpts := cliproxyexecutor.Options{
+		Headers: http.Header{
+			"X-Session-Id": []string{"cascade-root-1"},
+		},
+		Metadata: map[string]any{},
+	}
+	parentAuth, errParent := selector.Pick(context.Background(), "claude", "claude-sonnet-5", parentOpts, auths)
+	if errParent != nil {
+		t.Fatalf("parent Pick() error = %v", errParent)
+	}
+	if parentAuth.ID != "auth-hdr-1" {
+		t.Fatalf("parent auth = %q, want auth-hdr-1", parentAuth.ID)
+	}
+	if got := parentOpts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != "header:cascade-root-1" {
+		t.Fatalf("parent canonical session ID = %v, want header:cascade-root-1", got)
+	}
+
+	// 2. Worker with X-Agent-Id must not collapse onto root session when SubagentAffinity is false.
+	sub1Opts := cliproxyexecutor.Options{
+		Headers: http.Header{
+			"X-Session-Id": []string{"cascade-root-1"},
+			"X-Agent-Id":   []string{"swarm-worker-1"},
+		},
+		Metadata: map[string]any{},
+	}
+	sub1Auth, errSub1 := selector.Pick(context.Background(), "claude", "claude-sonnet-5", sub1Opts, auths)
+	if errSub1 != nil {
+		t.Fatalf("subagent 1 Pick() error = %v", errSub1)
+	}
+	if sub1Auth.ID != "auth-hdr-2" {
+		t.Fatalf("subagent 1 auth = %q, want auth-hdr-2", sub1Auth.ID)
+	}
+	if got := sub1Opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != "header:cascade-root-1:agent:swarm-worker-1" {
+		t.Fatalf("subagent 1 canonical session ID = %v, want header:cascade-root-1:agent:swarm-worker-1", got)
+	}
+
+	// 3. Subsequent turn of worker 1 stays sticky to auth-hdr-2.
+	sub1Turn2Opts := cliproxyexecutor.Options{
+		Headers: http.Header{
+			"X-Session-Id": []string{"cascade-root-1"},
+			"X-Agent-Id":   []string{"swarm-worker-1"},
+		},
+		Metadata: map[string]any{},
+	}
+	sub1Turn2Auth, errSub1Turn2 := selector.Pick(context.Background(), "claude", "claude-sonnet-5", sub1Turn2Opts, auths)
+	if errSub1Turn2 != nil {
+		t.Fatalf("subagent 1 turn 2 Pick() error = %v", errSub1Turn2)
+	}
+	if sub1Turn2Auth.ID != "auth-hdr-2" {
+		t.Fatalf("subagent 1 turn 2 auth = %q, want auth-hdr-2", sub1Turn2Auth.ID)
+	}
+
+	// 4. Root session second turn remains sticky to auth-hdr-1.
+	parentTurn2Opts := cliproxyexecutor.Options{
+		Headers: http.Header{
+			"X-Session-Id": []string{"cascade-root-1"},
+		},
+		Metadata: map[string]any{},
+	}
+	parentTurn2Auth, errParent2 := selector.Pick(context.Background(), "claude", "claude-sonnet-5", parentTurn2Opts, auths)
+	if errParent2 != nil {
+		t.Fatalf("parent turn 2 Pick() error = %v", errParent2)
+	}
+	if parentTurn2Auth.ID != "auth-hdr-1" {
+		t.Fatalf("parent turn 2 auth = %q, want auth-hdr-1", parentTurn2Auth.ID)
+	}
+}
