@@ -556,8 +556,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			// delivering it instead of waiting for the separator; translators ignore
 			// non-data lines, and the buffered event is observed after the loop. Like
 			// the event observer, only valid JSON counts, and like the translators,
-			// only data: lines (JSONPayload also accepts bare JSON lines).
-			if payload := helps.JSONPayload(line); !upstreamCompleted && payload != nil && bytes.HasPrefix(bytes.TrimSpace(line), []byte("data:")) && gjson.ValidBytes(payload) && gjson.GetBytes(payload, "type").String() == "message_stop" {
+			// only lines starting with data: at byte zero (JSONPayload also
+			// accepts bare and indented lines).
+			if payload := helps.JSONPayload(line); !upstreamCompleted && payload != nil && bytes.HasPrefix(line, []byte("data:")) && gjson.ValidBytes(payload) && gjson.GetBytes(payload, "type").String() == "message_stop" {
 				upstreamCompleted = true
 				markUpstreamCompleted()
 			}
