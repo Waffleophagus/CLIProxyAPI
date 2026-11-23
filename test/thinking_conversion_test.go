@@ -358,7 +358,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 73: Budget 64000 → passthrough logic → xhigh
+		// Case 73: Budget 64000 → passthrough logic → max
 		{
 			name:        "73",
 			from:        "claude",
@@ -366,7 +366,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "user-defined-model(64000)",
 			inputJSON:   `{"model":"user-defined-model(64000)","messages":[{"role":"user","content":"hi"}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "xhigh",
+			expectValue: "max",
 			expectErr:   false,
 		},
 		// Case 74: Budget 0 → passthrough logic → none
@@ -489,6 +489,78 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 
 		// Case 88: Gemini to Acme, budget 64000 (suffix) → clamped to Max
 		// Case 89: Gemini to Acme, budget 8192 → passthrough (normal value)
+
+		// Global max effort and clamping after conversion.
+		// Case 90: Keep an explicitly supported max effort.
+		{
+			name:        "90",
+			from:        "openai-response",
+			to:          "codex",
+			model:       "level-max-model(max)",
+			inputJSON:   `{"model":"level-max-model(max)","input":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "max",
+		},
+		// Case 91: 32768 is the last budget in the xhigh band.
+		{
+			name:        "91",
+			from:        "claude",
+			to:          "codex",
+			model:       "level-max-model(32768)",
+			inputJSON:   `{"model":"level-max-model(32768)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "xhigh",
+		},
+		// Case 92: 32769 is the first budget in the max band.
+		{
+			name:        "92",
+			from:        "claude",
+			to:          "codex",
+			model:       "level-max-model(32769)",
+			inputJSON:   `{"model":"level-max-model(32769)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "max",
+		},
+		// Case 93: Budgets above 128000 still select max.
+		{
+			name:        "93",
+			from:        "claude",
+			to:          "codex",
+			model:       "level-max-model(128001)",
+			inputJSON:   `{"model":"level-max-model(128001)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning.effort",
+			expectValue: "max",
+		},
+		// Case 96: Convert max effort to its representative budget of 128000.
+		{
+			name:        "96",
+			from:        "claude",
+			to:          "claude",
+			model:       "claude-budget-model(max)",
+			inputJSON:   `{"model":"claude-budget-model(max)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "thinking.budget_tokens",
+			expectValue: "128000",
+		},
+		// Case 97: Raise the budget for minimal effort to the Claude model minimum.
+		{
+			name:        "97",
+			from:        "claude",
+			to:          "claude",
+			model:       "claude-budget-model(minimal)",
+			inputJSON:   `{"model":"claude-budget-model(minimal)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "thinking.budget_tokens",
+			expectValue: "1024",
+		},
+		// Case 99: Clamp a derived level to the custom model levels.
+		{
+			name:        "99",
+			from:        "claude",
+			to:          "openai",
+			model:       "user-defined-level-model(64000)",
+			inputJSON:   `{"model":"user-defined-level-model(64000)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "reasoning_effort",
+			expectValue: "xhigh",
+		},
 	}
 
 	runThinkingTests(t, cases)
@@ -807,7 +879,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 73: thinking.budget_tokens=64000 → xhigh (passthrough)
+		// Case 73: thinking.budget_tokens=64000 → max (passthrough)
 		{
 			name:        "73",
 			from:        "claude",
@@ -815,7 +887,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":64000}}`,
 			expectField: "reasoning.effort",
-			expectValue: "xhigh",
+			expectValue: "max",
 			expectErr:   false,
 		},
 		// Case 74: thinking.budget_tokens=0 → none
@@ -937,6 +1009,78 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 
 		// Case 88: Gemini to Acme, thinkingBudget=64000 → exceeds Max error (same family strict validation)
 		// Case 89: Gemini to Acme, thinkingBudget=8192 → passthrough (normal value)
+
+		// Global max effort and clamping after conversion.
+		// Case 90: Keep an explicitly supported max effort.
+		{
+			name:        "90",
+			from:        "openai-response",
+			to:          "codex",
+			model:       "level-max-model",
+			inputJSON:   `{"model":"level-max-model","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"max"}}`,
+			expectField: "reasoning.effort",
+			expectValue: "max",
+		},
+		// Case 91: 32768 is the last budget in the xhigh band.
+		{
+			name:        "91",
+			from:        "claude",
+			to:          "codex",
+			model:       "level-max-model",
+			inputJSON:   `{"model":"level-max-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":32768}}`,
+			expectField: "reasoning.effort",
+			expectValue: "xhigh",
+		},
+		// Case 92: 32769 is the first budget in the max band.
+		{
+			name:        "92",
+			from:        "claude",
+			to:          "codex",
+			model:       "level-max-model",
+			inputJSON:   `{"model":"level-max-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":32769}}`,
+			expectField: "reasoning.effort",
+			expectValue: "max",
+		},
+		// Case 93: Budgets above 128000 still select max.
+		{
+			name:        "93",
+			from:        "claude",
+			to:          "codex",
+			model:       "level-max-model",
+			inputJSON:   `{"model":"level-max-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":128001}}`,
+			expectField: "reasoning.effort",
+			expectValue: "max",
+		},
+		// Case 96: Convert max effort to its representative budget of 128000.
+		{
+			name:        "96",
+			from:        "claude",
+			to:          "claude",
+			model:       "claude-budget-model",
+			inputJSON:   `{"model":"claude-budget-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}`,
+			expectField: "thinking.budget_tokens",
+			expectValue: "128000",
+		},
+		// Case 97: Raise the budget for minimal effort to the Claude model minimum.
+		{
+			name:        "97",
+			from:        "claude",
+			to:          "claude",
+			model:       "claude-budget-model",
+			inputJSON:   `{"model":"claude-budget-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"minimal"}}`,
+			expectField: "thinking.budget_tokens",
+			expectValue: "1024",
+		},
+		// Case 99: Clamp a derived level to the custom model levels.
+		{
+			name:        "99",
+			from:        "claude",
+			to:          "openai",
+			model:       "user-defined-level-model",
+			inputJSON:   `{"model":"user-defined-level-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":64000}}`,
+			expectField: "reasoning_effort",
+			expectValue: "xhigh",
+		},
 	}
 
 	runThinkingTests(t, cases)
@@ -1022,6 +1166,15 @@ func TestThinkingE2EProviderTargets(t *testing.T) {
 			to:          "xai",
 			model:       "xai-level-model",
 			inputJSON:   `{"model":"xai-level-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}`,
+			expectField: "reasoning.effort",
+			expectValue: "high",
+		},
+		{
+			name:        "X11",
+			from:        "claude",
+			to:          "xai",
+			model:       "xai-level-model",
+			inputJSON:   `{"model":"xai-level-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":64000}}`,
 			expectField: "reasoning.effort",
 			expectValue: "high",
 		},
@@ -1329,6 +1482,30 @@ func TestThinkingE2EClaudeAdaptive_Body(t *testing.T) {
 			inputJSON: `{"model":"claude-sonnet-4-6-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"xhigh"}}`,
 			expectErr: true,
 		},
+		{
+			name:         "B15",
+			from:         "openai",
+			to:           "claude",
+			model:        "claude-opus-4-6-model(128000)",
+			inputJSON:    `{"model":"claude-opus-4-6-model(128000)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField:  "output_config.effort",
+			expectValue:  "max",
+			expectField2: "thinking.type",
+			expectValue2: "adaptive",
+			expectAbsent: []string{"thinking.budget_tokens"},
+		},
+		{
+			name:         "B16",
+			from:         "openai",
+			to:           "claude",
+			model:        "claude-adaptive-xhigh-model(64000)",
+			inputJSON:    `{"model":"claude-adaptive-xhigh-model(64000)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField:  "output_config.effort",
+			expectValue:  "xhigh",
+			expectField2: "thinking.type",
+			expectValue2: "adaptive",
+			expectAbsent: []string{"thinking.budget_tokens"},
+		},
 	}
 
 	runThinkingTests(t, cases)
@@ -1354,6 +1531,15 @@ func getTestModels() []*registry.ModelInfo {
 			Type:        "gemini",
 			DisplayName: "Level Subset Model",
 			Thinking:    &registry.ThinkingSupport{Levels: []string{"low", "high"}, ZeroAllowed: false, DynamicAllowed: false},
+		},
+		{
+			ID:          "level-max-model",
+			Object:      "model",
+			Created:     1700000000,
+			OwnedBy:     "test",
+			Type:        "openai",
+			DisplayName: "Max Effort Model",
+			Thinking:    &registry.ThinkingSupport{Levels: []string{"high", "xhigh", "max"}},
 		},
 		{
 			ID:          "gemini-budget-model",
@@ -1404,6 +1590,15 @@ func getTestModels() []*registry.ModelInfo {
 			Thinking:            &registry.ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: false, Levels: []string{"low", "medium", "high", "max"}},
 		},
 		{
+			ID:          "claude-adaptive-xhigh-model",
+			Object:      "model",
+			Created:     1700000000,
+			OwnedBy:     "test",
+			Type:        "claude",
+			DisplayName: "Claude Adaptive Xhigh Model",
+			Thinking:    &registry.ThinkingSupport{Levels: []string{"high", "xhigh"}},
+		},
+		{
 			ID:                  "claude-sonnet-4-6-model",
 			Object:              "model",
 			Created:             1771372800, // 2026-02-17
@@ -1451,6 +1646,16 @@ func getTestModels() []*registry.ModelInfo {
 			UserDefined: true,
 			Thinking:    nil,
 		},
+		{
+			ID:          "user-defined-level-model",
+			Object:      "model",
+			Created:     1700000000,
+			OwnedBy:     "test",
+			Type:        "openai",
+			DisplayName: "User Defined Level Model",
+			UserDefined: true,
+			Thinking:    &registry.ThinkingSupport{Levels: []string{"high", "xhigh"}},
+		},
 	}
 }
 
@@ -1478,7 +1683,12 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				true,
 			)
 			if applyTo == "claude" {
-				body, _ = sjson.SetBytes(body, "max_tokens", 200000)
+				// Let the model's thinking range determine the budget in these tests.
+				updated, errSet := sjson.SetBytes(body, "max_tokens", 200000)
+				if errSet != nil {
+					t.Fatalf("setting Claude max_tokens: %v", errSet)
+				}
+				body = updated
 			}
 
 			body, err := thinking.ApplyThinking(body, tc.model, tc.from, applyTo, applyTo)
