@@ -432,6 +432,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
@@ -633,6 +634,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
