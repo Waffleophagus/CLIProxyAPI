@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -92,7 +93,7 @@ func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body 
 		sanitized, report = sigcompat.SanitizeClaudeMessagesForClaudeUpstream(body, baseModel, preserveEmptyThinkingBlocks...)
 		logClaudeSignatureSanitizeReport(ctx, baseModel, report)
 	}
-	return helps.NormalizeClaudeToolCallIDs(sanitizeClaudeWebSearchDomains(sanitized))
+	return helps.NormalizeClaudeToolCallIDs(sanitizeClaudeAdvisorToolModels(sanitizeClaudeWebSearchDomains(sanitized)))
 }
 
 // sanitizeClaudeWebSearchDomains removes empty allowed_domains/blocked_domains
@@ -100,6 +101,38 @@ func sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx context.Context, body 
 // empty array instead of omitting the field, and Anthropic rejects it with
 // "Empty list of domains is ambiguous. Provide at least one domain or null.".
 // Deleting the key is equivalent to leaving it unset.
+// sanitizeClaudeAdvisorToolModels strips thinking suffixes from the model
+// field of advisor_* server tools so Anthropic receives a valid model ID.
+func sanitizeClaudeAdvisorToolModels(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return body
+	}
+	for idx, tool := range tools.Array() {
+		toolType := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
+		if !strings.HasPrefix(toolType, "advisor_") {
+			continue
+		}
+		modelRes := tool.Get("model")
+		if !modelRes.Exists() || modelRes.Type != gjson.String {
+			continue
+		}
+		rawModel := strings.TrimSpace(modelRes.String())
+		if rawModel == "" {
+			continue
+		}
+		parsed := thinking.ParseSuffix(rawModel)
+		baseModel := strings.TrimSpace(parsed.ModelName)
+		if !parsed.HasSuffix || baseModel == "" {
+			continue
+		}
+		if updated, errSet := sjson.SetBytes(body, fmt.Sprintf("tools.%d.model", idx), baseModel); errSet == nil {
+			body = updated
+		}
+	}
+	return body
+}
+
 func sanitizeClaudeWebSearchDomains(body []byte) []byte {
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.Exists() || !tools.IsArray() {

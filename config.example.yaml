@@ -79,7 +79,7 @@ requests:
 
   # Payload rules edit the final upstream request body. Paths use gjson/sjson syntax.
   # Model rules support "*" wildcards and may restrict by protocol (upstream format:
-  # openai, claude, codex), from-protocol (inbound: openai, responses, claude),
+  # openai, claude, codex, meta), from-protocol (inbound: openai, responses, claude),
   # headers, match/not-match values, and exist/not-exist paths.
   # payload:
   #   default: # Set values only when missing.
@@ -88,6 +88,11 @@ requests:
   #           protocol: "claude"
   #       params:
   #         "thinking.budget_tokens": 32768
+  #     - models:
+  #         - name: "muse-*"
+  #           protocol: "meta"
+  #       params:
+  #         prompt_cache_retention: "24h" # opt into Meta's 24h prompt cache when the client omits it
   #   default-raw: # Like default, but values are raw JSON strings.
   #     - models:
   #         - name: "gpt-*"
@@ -158,13 +163,14 @@ upstream:
     disable-claude-cloak-mode: false
     # model-level-cooling: false # Scope quota cooldowns to the model, not the whole credential.
     # tool-search: false # Map Codex tool_search to Anthropic native tool search where supported.
+    # server-side-fallback: false # Inject Anthropic server-side refusal fallbacks (opus-5-5 -> opus-4-8, fable-5-1 -> opus-5) into cloaked requests.
     # session-date-pin-days: 7 # Keep the cloaked currentDate stable per session; 0 = 1h pin.
     # disable-cloaking-model-list: false # Return original model IDs in Anthropic model lists.
     # Claude Code CLI fingerprint defaults. Change only after measuring a new Claude Code release.
     # header-defaults:
-    #   user-agent: "claude-cli/2.1.280 (external, cli)"
-    #   package-version: "0.112.1"
-    #   runtime-version: "v26.3.0"
+    #   user-agent: "claude-cli/2.1.321 (external, cli)"
+    #   package-version: "0.128.0"
+    #   runtime-version: "v26.12.1"
     #   os: "MacOS"
     #   arch: "arm64"
     #   timeout: "600"

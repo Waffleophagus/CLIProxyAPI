@@ -48,6 +48,7 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 	targetModel := resolveMetaSignatureTargetModel(baseModel, req, opts)
 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, targetModel, originalPayload, stream, isCompat)
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
+	originalTranslated = syncMetaPromptCacheRetention(originalTranslated, originalPayload)
 	body, err := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, targetModel, bytes.Clone(req.Payload), stream, isCompat)
 	if err != nil {
 		return nil, err
@@ -64,7 +65,7 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.SetBoolIfDifferent(body, "stream", stream)
 	body, _ = sjson.DeleteBytes(body, "generate")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
+	body = syncMetaPromptCacheRetention(body, req.Payload)
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body, _ = sjson.DeleteBytes(body, "client_metadata")
@@ -96,6 +97,34 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 		originalPayload: originalPayload,
 		body:            body,
 	}, nil
+}
+
+// syncMetaPromptCacheRetention preserves an explicit non-empty string
+// prompt_cache_retention from the client payload and otherwise removes the
+// field, so no 24h default is injected unless a payload rule asks for it.
+func syncMetaPromptCacheRetention(body, source []byte) []byte {
+	if retention := extractMetaPromptCacheRetention(source); retention != "" {
+		return helps.SetStringIfDifferent(body, "prompt_cache_retention", retention)
+	}
+	if !gjson.GetBytes(body, "prompt_cache_retention").Exists() {
+		return body
+	}
+	updated, errDelete := sjson.DeleteBytes(body, "prompt_cache_retention")
+	if errDelete != nil {
+		return body
+	}
+	return updated
+}
+
+func extractMetaPromptCacheRetention(source []byte) string {
+	if len(source) == 0 {
+		return ""
+	}
+	val := gjson.GetBytes(source, "prompt_cache_retention")
+	if val.Type != gjson.String {
+		return ""
+	}
+	return strings.TrimSpace(val.String())
 }
 
 func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
@@ -152,11 +181,11 @@ func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 
 	data, errRead := io.ReadAll(httpResp.Body)
+	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	if errRead != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 		return resp, errRead
 	}
-	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	reporter.ObserveResponseModel(data)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))

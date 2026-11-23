@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1112,6 +1113,305 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
 // cli-chat-proxy ("Usage resets over a rolling 24-hour window").
 const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
 
+const (
+	xaiEmptyStreamMessage      = "xai stream error: empty upstream stream"
+	xaiIncompleteStreamMessage = "xai stream error: stream closed before response.completed or response.incomplete"
+)
+
+type xaiRequestScopedStreamError struct {
+	statusErr
+}
+
+func (xaiRequestScopedStreamError) IsRequestScoped() bool {
+	return true
+}
+
+func newXAIEmptyStreamError() xaiRequestScopedStreamError {
+	return xaiRequestScopedStreamError{statusErr: statusErr{
+		code: http.StatusBadGateway,
+		msg:  xaiEmptyStreamMessage,
+	}}
+}
+
+func newXAIIncompleteStreamError() xaiRequestScopedStreamError {
+	return xaiRequestScopedStreamError{statusErr: statusErr{
+		code: http.StatusBadGateway,
+		msg:  xaiIncompleteStreamMessage,
+	}}
+}
+
+// xaiJSONDoc is a small mutable JSON document over gjson/sjson used to build
+// normalized terminal error bodies.
+type xaiJSONDoc struct {
+	raw []byte
+}
+
+func newXAIJSONDoc(raw string) *xaiJSONDoc {
+	return &xaiJSONDoc{raw: []byte(raw)}
+}
+
+func (d *xaiJSONDoc) Get(path string) gjson.Result {
+	return gjson.GetBytes(d.raw, path)
+}
+
+func (d *xaiJSONDoc) Set(path string, value any) error {
+	updated, errSet := sjson.SetBytes(d.raw, path, value)
+	if errSet != nil {
+		return errSet
+	}
+	d.raw = updated
+	return nil
+}
+
+func (d *xaiJSONDoc) SetRawBytes(path string, value []byte) error {
+	updated, errSet := sjson.SetRawBytes(d.raw, path, value)
+	if errSet != nil {
+		return errSet
+	}
+	d.raw = updated
+	return nil
+}
+
+func (d *xaiJSONDoc) Bytes() []byte {
+	return d.raw
+}
+
+func xaiTerminalFailureErr(eventName string, eventData []byte) (statusErr, bool) {
+	doc, ok := xaiTerminalFailureDoc(eventName, eventData)
+	if !ok || doc == nil {
+		return statusErr{}, false
+	}
+	status := xaiTerminalFailureStatus(eventData, doc)
+	return xaiStatusErr(status, doc.Bytes()), true
+}
+
+func xaiTerminalFailureDoc(eventName string, eventData []byte) (*xaiJSONDoc, bool) {
+	trimmed := bytes.TrimSpace(eventData)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+	if !gjson.ValidBytes(trimmed) {
+		if strings.EqualFold(strings.TrimSpace(eventName), "error") {
+			doc := newXAIJSONDoc(`{"error":{}}`)
+			_ = doc.Set("error.message", string(trimmed))
+			return doc, true
+		}
+		return nil, false
+	}
+
+	eventType := strings.TrimSpace(gjson.GetBytes(trimmed, "type").String())
+	if eventType == "" {
+		normalizedEventName := strings.TrimSpace(eventName)
+		if normalizedEventName == "error" || normalizedEventName == "response.failed" {
+			eventType = normalizedEventName
+		} else if errField := gjson.GetBytes(trimmed, "error"); errField.Exists() && errField.Type != gjson.Null && !gjson.GetBytes(trimmed, "output").Exists() {
+			if errField.Type == gjson.JSON || strings.TrimSpace(errField.String()) != "" {
+				eventType = "error"
+			}
+		}
+	}
+
+	var doc *xaiJSONDoc
+	switch eventType {
+	case "error":
+		doc = xaiTerminalErrorDoc(trimmed, "error")
+		if doc == nil {
+			doc = xaiTerminalErrorDoc(trimmed, "body.error")
+		}
+		if doc == nil {
+			doc = xaiTerminalTopLevelErrorDoc(trimmed)
+		}
+	case "response.failed":
+		doc = xaiTerminalErrorDoc(trimmed, "response.error")
+		if doc == nil {
+			doc = xaiTerminalErrorDoc(trimmed, "error")
+		}
+	default:
+		return nil, false
+	}
+
+	if doc == nil {
+		doc = newXAIJSONDoc(`{"error":{"message":"upstream stream failed without error details"}}`)
+	}
+	if seq := gjson.GetBytes(trimmed, "sequence_number"); seq.Exists() && seq.Type == gjson.Number {
+		_ = doc.Set("sequence_number", seq.Int())
+	}
+	return doc, true
+}
+
+func xaiTerminalErrorDoc(eventData []byte, path string) *xaiJSONDoc {
+	errorResult := gjson.GetBytes(eventData, path)
+	if !errorResult.Exists() || errorResult.Type == gjson.Null {
+		return nil
+	}
+
+	doc := newXAIJSONDoc(`{"error":{}}`)
+	hasField := false
+	if errorResult.Type == gjson.JSON {
+		if errorResult.IsObject() && len(errorResult.Map()) > 0 {
+			_ = doc.SetRawBytes("error", []byte(errorResult.Raw))
+			hasField = true
+		}
+	} else if message := strings.TrimSpace(errorResult.String()); message != "" {
+		_ = doc.Set("error.message", message)
+		hasField = true
+	}
+
+	if strings.TrimSpace(doc.Get("error.code").String()) == "" {
+		for _, codePath := range []string{"response.error.code", "code", "body.error.code"} {
+			if code := strings.TrimSpace(gjson.GetBytes(eventData, codePath).String()); code != "" {
+				_ = doc.Set("error.code", code)
+				hasField = true
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(doc.Get("error.type").String()) == "" {
+		for _, typePath := range []string{"response.error.type", "error_type", "body.error.type"} {
+			if errType := strings.TrimSpace(gjson.GetBytes(eventData, typePath).String()); errType != "" {
+				_ = doc.Set("error.type", errType)
+				hasField = true
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(doc.Get("error.param").String()) == "" {
+		for _, paramPath := range []string{"response.error.param", "param", "body.error.param"} {
+			if param := strings.TrimSpace(gjson.GetBytes(eventData, paramPath).String()); param != "" {
+				_ = doc.Set("error.param", param)
+				hasField = true
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(doc.Get("error.message").String()) == "" {
+		for _, msgPath := range []string{"response.error.message", "message", "body.error.message"} {
+			if message := strings.TrimSpace(gjson.GetBytes(eventData, msgPath).String()); message != "" {
+				_ = doc.Set("error.message", message)
+				hasField = true
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(doc.Get("error.message").String()) == "" {
+		if code := strings.TrimSpace(doc.Get("error.code").String()); code != "" {
+			_ = doc.Set("error.message", code)
+			hasField = true
+		} else if errType := strings.TrimSpace(doc.Get("error.type").String()); errType != "" {
+			_ = doc.Set("error.message", errType)
+			hasField = true
+		}
+	}
+	if !hasField {
+		return nil
+	}
+	return doc
+}
+
+func xaiTerminalTopLevelErrorDoc(eventData []byte) *xaiJSONDoc {
+	message := strings.TrimSpace(gjson.GetBytes(eventData, "message").String())
+	code := strings.TrimSpace(gjson.GetBytes(eventData, "code").String())
+	errorType := strings.TrimSpace(gjson.GetBytes(eventData, "error_type").String())
+	param := strings.TrimSpace(gjson.GetBytes(eventData, "param").String())
+	if message == "" && code == "" && errorType == "" && param == "" {
+		return nil
+	}
+
+	doc := newXAIJSONDoc(`{"error":{}}`)
+	if message != "" {
+		_ = doc.Set("error.message", message)
+	}
+	if code != "" {
+		_ = doc.Set("error.code", code)
+	}
+	if errorType != "" {
+		_ = doc.Set("error.type", errorType)
+	}
+	if param != "" {
+		_ = doc.Set("error.param", param)
+	}
+	if strings.TrimSpace(doc.Get("error.message").String()) == "" {
+		if code != "" {
+			_ = doc.Set("error.message", code)
+		} else if errorType != "" {
+			_ = doc.Set("error.message", errorType)
+		}
+	}
+	return doc
+}
+
+func xaiTerminalFailureStatus(eventData []byte, doc *xaiJSONDoc) int {
+	for _, path := range []string{"status", "status_code", "error.status", "error.status_code", "response.error.status", "response.error.status_code", "body.status", "body.error.status"} {
+		res := gjson.GetBytes(eventData, path)
+		switch res.Type {
+		case gjson.Number:
+			if status := int(res.Int()); status >= 400 && status <= 599 {
+				return status
+			}
+		case gjson.String:
+			if status, errAtoi := strconv.Atoi(strings.TrimSpace(res.String())); errAtoi == nil && status >= 400 && status <= 599 {
+				return status
+			}
+		}
+	}
+
+	errorType := strings.ToLower(strings.TrimSpace(doc.Get("error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(doc.Get("error.code").String()))
+	errorMsg := strings.ToLower(strings.TrimSpace(doc.Get("error.message").String()))
+	if status, errAtoi := strconv.Atoi(errorCode); errAtoi == nil && status >= 400 && status <= 599 {
+		return status
+	}
+
+	switch {
+	case errorType == "authentication_error",
+		errorCode == "invalid_api_key",
+		errorCode == "unauthorized",
+		strings.HasPrefix(errorCode, "unauthenticated"),
+		strings.Contains(errorCode, "bad-credentials"),
+		strings.Contains(errorMsg, "access token could not be validated"):
+		return http.StatusUnauthorized
+	case errorType == "permission_error",
+		errorCode == "forbidden",
+		errorCode == "permission_denied",
+		errorCode == "permission-denied",
+		strings.HasPrefix(errorCode, "permission_denied:"),
+		strings.HasPrefix(errorCode, "permission-denied:"):
+		return http.StatusForbidden
+	case errorType == "not_found_error",
+		errorCode == "not_found",
+		errorCode == "model_not_found":
+		return http.StatusNotFound
+	case errorType == "rate_limit_error",
+		errorCode == "rate_limit_exceeded",
+		errorCode == "rate_limit",
+		strings.Contains(errorCode, "free-usage-exhausted"),
+		strings.Contains(errorCode, "resource_exhausted"),
+		strings.Contains(errorCode, "resource-exhausted"),
+		strings.Contains(errorMsg, "free-usage-exhausted"),
+		strings.Contains(errorMsg, "included free usage"):
+		return http.StatusTooManyRequests
+	case errorCode == "cyber_policy",
+		errorCode == "content_policy_violation",
+		errorType == "invalid_request_error",
+		errorType == "invalid_request",
+		errorType == "bad_request_error",
+		errorType == "image_generation_user_error",
+		errorCode == "invalid_value",
+		errorCode == "invalid_request_error",
+		errorCode == "invalid_argument",
+		errorCode == "invalid-argument",
+		errorCode == "context_length_exceeded",
+		errorCode == "context_too_large":
+		return http.StatusBadRequest
+	case errorType == "service_unavailable_error",
+		errorCode == "server_is_overloaded",
+		errorCode == "service_unavailable":
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusBadGateway
+	}
+}
+
 // xaiStatusErr normalizes upstream xAI error bodies for conductor behavior:
 //   - credential invalidation (403 bad-credentials) is remapped to 401 so the
 //     existing OAuth refresh-once-and-retry path runs instead of payment cooldown
@@ -1134,7 +1434,13 @@ func xaiStatusErr(code int, body []byte) statusErr {
 		return err
 	}
 	codeStr := strings.ToLower(gjson.GetBytes(body, "code").String())
-	msg := strings.ToLower(gjson.GetBytes(body, "error").String())
+	if codeStr == "" {
+		codeStr = strings.ToLower(gjson.GetBytes(body, "error.code").String())
+	}
+	msg := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+	if msg == "" {
+		msg = strings.ToLower(gjson.GetBytes(body, "error").String())
+	}
 	if msg == "" {
 		msg = strings.ToLower(string(body))
 	}

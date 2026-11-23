@@ -23,7 +23,9 @@ import (
 //   - cfg: The application configuration
 //   - configPath: The path to the configuration file
 //   - serverOptions: Optional additional server options
-func StartService(cfg *config.Config, configPath string, serverOptions ...api.ServerOption) {
+//
+// Startup and runtime failures are returned after cleanup; cancellation is a normal shutdown.
+func StartService(cfg *config.Config, configPath string, serverOptions ...api.ServerOption) error {
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath)
@@ -37,11 +39,13 @@ func StartService(cfg *config.Config, configPath string, serverOptions ...api.Se
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
-		return
+		return err
 	}
 
 	err = service.Run(ctxSignal)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Errorf("proxy service exited with error: %v", err)
+		return err
 	}
+	return nil
 }
