@@ -333,10 +333,18 @@ func codexPolicyFallbackMessage(code string) string {
 
 func codexTerminalErrorIsContextLength(body []byte) bool {
 	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	if errorCode == "context_length_exceeded" || errorCode == "context_too_large" {
+		return true
+	}
+	// Message matching only applies to request errors, like
+	// codexStatusErrorClassification: a rate_limit_error saying
+	// "Too many tokens per minute" must keep its 429.
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	if errorType != "" && errorType != "invalid_request_error" {
+		return false
+	}
 	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
-	return errorCode == "context_length_exceeded" ||
-		errorCode == "context_too_large" ||
-		strings.Contains(message, "context window") ||
+	return strings.Contains(message, "context window") ||
 		strings.Contains(message, "context length") ||
 		strings.Contains(message, "too many tokens")
 }

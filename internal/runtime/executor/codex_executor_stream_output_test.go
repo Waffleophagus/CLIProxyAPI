@@ -545,6 +545,26 @@ func TestCodexTerminalStreamErrIgnoresRateLimitTerminalErrors(t *testing.T) {
 	}
 }
 
+// TestCodexTerminalStreamErrKeepsTokenRateLimitAs429 ensures a rate limit
+// whose message mentions "too many tokens" is not mistaken for a context-length
+// request fault and keeps its 429.
+func TestCodexTerminalStreamErrKeepsTokenRateLimitAs429(t *testing.T) {
+	event := []byte(`{"type":"error","status":429,"error":{"type":"rate_limit_error","message":"Too many tokens per minute. Please slow down."}}`)
+	if _, _, ok := codexTerminalStreamErr(event); ok {
+		t.Fatal("token rate limit was handled as a context-length stream error")
+	}
+	err, _, ok := codexTerminalFailureErr(event)
+	if !ok {
+		t.Fatal("expected terminal failure error")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusTooManyRequests, err)
+	}
+	if _, _, ok := codexTerminalStreamErr([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Too many tokens in the request for this model."}}`)); !ok {
+		t.Fatal("request-fault token message must still be treated as context length")
+	}
+}
+
 func TestCodexTerminalFailureErrClassifiesStatus(t *testing.T) {
 	tests := []struct {
 		name       string
