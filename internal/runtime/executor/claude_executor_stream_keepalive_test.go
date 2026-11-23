@@ -470,13 +470,25 @@ func keepaliveGzipParts(data string) (prefix, suffix []byte) {
 // valid JSON, like the event observer: a truncated line must still end in the
 // incomplete-stream error.
 func TestClaudeExecutor_ExecuteStream_Translated_MalformedMessageStopIsNotCompletion(t *testing.T) {
+	assertTranslatedMessageStopIsNotCompletion(t, `data: {"type":"message_stop"`)
+}
+
+// TestClaudeExecutor_ExecuteStream_Translated_BareMessageStopIsNotCompletion
+// ensures a message_stop JSON line without the data: prefix, which the
+// translators ignore, does not end the stream early either.
+func TestClaudeExecutor_ExecuteStream_Translated_BareMessageStopIsNotCompletion(t *testing.T) {
+	assertTranslatedMessageStopIsNotCompletion(t, `{"type":"message_stop"}`)
+}
+
+func assertTranslatedMessageStopIsNotCompletion(t *testing.T, stopLine string) {
+	t.Helper()
 	t.Cleanup(func() { flushKeepaliveUsage(t) })
 	valid := `data: {"type":"message_stop"}`
 	cut := strings.Index(keepaliveStreamData, valid)
 	if cut < 0 {
 		t.Fatal("stream data has no message_stop line")
 	}
-	data := keepaliveStreamData[:cut] + `data: {"type":"message_stop"` + "\n\n"
+	data := keepaliveStreamData[:cut] + stopLine + "\n\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(data))
