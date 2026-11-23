@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -820,12 +821,22 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 	base := auth.Clone()
 	updated, err := exec.Refresh(ctx, base.Clone())
 	now := time.Now()
-	if err != nil && errors.Is(err, context.Canceled) {
+	refreshDeferred := errors.Is(err, baseauth.ErrRefreshDeferred)
+	if err != nil && (errors.Is(err, context.Canceled) || refreshDeferred) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
+		backoff := time.Second
+		if refreshDeferred {
+			backoff = refreshCheckInterval
+		}
+		retryAfter := now.Add(backoff)
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
-			if current.NextRefreshAfter.IsZero() || current.NextRefreshAfter.Before(now) {
-				current.NextRefreshAfter = now.Add(time.Second)
+			// A pending auto-refresh job marker is cleared when the job finishes;
+			// replace it so a deferral never collapses into a tight retry loop.
+			pendingJob := m.refreshJobs[id]
+			isJobPending := pendingJob != nil && current.NextRefreshAfter.Equal(pendingJob.pendingUntil)
+			if isJobPending || current.NextRefreshAfter.IsZero() || current.NextRefreshAfter.Before(retryAfter) {
+				current.NextRefreshAfter = retryAfter
 			}
 			m.auths[id] = current
 			if m.scheduler != nil {
