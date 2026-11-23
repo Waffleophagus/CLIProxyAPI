@@ -126,31 +126,77 @@ func setCodexRequiredBool(rawJSON []byte, path string, value bool) []byte {
 	return updated
 }
 
+const codexRequiredIncludeReasoning = "reasoning.encrypted_content"
+
+// codexAllowedOptionalIncludes lists the Codex-verified optional include values
+// preserved by the Responses-to-Codex translator in canonical order.
+var codexAllowedOptionalIncludes = [...]string{
+	"web_search_call.action.sources",
+	"web_search_call.results",
+	"output.encrypted_content",
+}
+
+func codexAllowedOptionalIncludeIndex(value string) int {
+	for i, allowed := range codexAllowedOptionalIncludes {
+		if value == allowed {
+			return i
+		}
+	}
+	return -1
+}
+
 func setCodexRequiredInclude(rawJSON []byte) []byte {
 	current := gjson.GetBytes(rawJSON, "include")
-	includeSources := false
+	var present [len(codexAllowedOptionalIncludes)]bool
+	hasOptional := false
 	if current.IsArray() {
 		values := current.Array()
-		for _, value := range values {
-			if value.Type == gjson.String && value.String() == "web_search_call.action.sources" {
-				includeSources = true
-				break
+		hasReasoning := false
+		alreadyCanonical := len(values) > 0 && values[0].Type == gjson.String && values[0].String() == codexRequiredIncludeReasoning
+		lastOptionalIdx := -1
+		for i, value := range values {
+			if value.Type != gjson.String {
+				alreadyCanonical = false
+				continue
 			}
+			entry := value.String()
+			if entry == codexRequiredIncludeReasoning {
+				if i != 0 || hasReasoning {
+					alreadyCanonical = false
+				}
+				hasReasoning = true
+				continue
+			}
+			optIdx := codexAllowedOptionalIncludeIndex(entry)
+			if optIdx < 0 {
+				alreadyCanonical = false
+				continue
+			}
+			if present[optIdx] || optIdx <= lastOptionalIdx {
+				alreadyCanonical = false
+			}
+			present[optIdx] = true
+			hasOptional = true
+			lastOptionalIdx = optIdx
 		}
-		if !includeSources && len(values) == 1 && values[0].Type == gjson.String && values[0].String() == "reasoning.encrypted_content" {
-			return rawJSON
-		}
-		if includeSources && len(values) == 2 &&
-			values[0].Type == gjson.String && values[0].String() == "reasoning.encrypted_content" &&
-			values[1].Type == gjson.String && values[1].String() == "web_search_call.action.sources" {
+		if alreadyCanonical && hasReasoning {
 			return rawJSON
 		}
 	}
 
-	encoded := []byte(`["reasoning.encrypted_content"]`)
-	if includeSources {
-		encoded = []byte(`["reasoning.encrypted_content","web_search_call.action.sources"]`)
+	encoded := make([]byte, 0, 128)
+	encoded = append(encoded, `["reasoning.encrypted_content"`...)
+	if hasOptional {
+		for i, allowed := range codexAllowedOptionalIncludes {
+			if !present[i] {
+				continue
+			}
+			encoded = append(encoded, `,"`...)
+			encoded = append(encoded, allowed...)
+			encoded = append(encoded, '"')
+		}
 	}
+	encoded = append(encoded, ']')
 	updated, errSet := sjson.SetRawBytes(rawJSON, "include", encoded)
 	if errSet != nil {
 		return rawJSON

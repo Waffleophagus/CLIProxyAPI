@@ -84,12 +84,18 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibilityForExecutor(ctx, opts.Headers, e.cfg, e.Identifier(), from, to, targetModel, originalPayload, stream, helps.APIKeyModelIsCompat(req))
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	originalTranslated = preserveXAIResponsesOutputControls(originalTranslated, originalPayload, from)
+	if to == sdktranslator.FormatCodex && sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
+		originalTranslated, _ = helps.StripResponsesIncludeValues(originalTranslated, "output.encrypted_content", "web_search_call.results")
+	}
 	body, err := helps.TranslateRequestWithAPIKeyModelCompatibilityCheckedForExecutor(ctx, opts.Headers, e.cfg, e.Identifier(), from, to, targetModel, bytes.Clone(req.Payload), stream, helps.APIKeyModelIsCompat(req))
 	if err != nil {
 		return nil, err
 	}
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = preserveXAIResponsesOutputControls(body, req.Payload, from)
+	if to == sdktranslator.FormatCodex && sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
+		body, _ = helps.StripResponsesIncludeValues(body, "output.encrypted_content", "web_search_call.results")
+	}
 
 	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), e.Identifier(), e.Identifier())
 	if err != nil {

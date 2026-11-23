@@ -49,6 +49,9 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, targetModel, originalPayload, stream, isCompat)
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	originalTranslated = syncMetaPromptCacheRetention(originalTranslated, originalPayload)
+	if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
+		originalTranslated, _ = helps.StripResponsesIncludeValues(originalTranslated, "output.encrypted_content", "web_search_call.results")
+	}
 	body, err := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, targetModel, bytes.Clone(req.Payload), stream, isCompat)
 	if err != nil {
 		return nil, err
@@ -66,6 +69,9 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 	body = helps.SetBoolIfDifferent(body, "stream", stream)
 	body, _ = sjson.DeleteBytes(body, "generate")
 	body = syncMetaPromptCacheRetention(body, req.Payload)
+	if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
+		body, _ = helps.StripResponsesIncludeValues(body, "output.encrypted_content", "web_search_call.results")
+	}
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body, _ = sjson.DeleteBytes(body, "client_metadata")
